@@ -160,6 +160,18 @@ TOOLS = [
         },
         "needs_approval": True,
     },
+    {
+        "name": "audit_program",
+        "description": "Run a configuration audit on NetGuard Pro. Reads settings, blocked IPs, and active rules. Returns structured findings with severity (critical/high/medium/low), category, and a `suggested_fix` field that names a tool you can call next (e.g. block_ip, toggle_auto_block) to remediate. Read-only, no side effects, no approval required.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": False,
+    },
+    {
+        "name": "audit_network",
+        "description": "Run a network-state audit. Reads recent threats, top suspicious IPs, traffic anomalies, geo distribution. Returns structured findings with severity and a `suggested_fix` for each (typically block_ip with the offending address). Read-only, no approval required. Pair with the modifying tools to remediate.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": False,
+    },
 ]
 
 _TOOL_BY_NAME = {t["name"]: t for t in TOOLS}
@@ -232,7 +244,161 @@ def _execute_tool(name: str, args: dict) -> dict:
         if not isinstance(v, int):
             return {"ok": False, "error": "invalid_value"}
         return _ws_send_sync({"cmd": "set_auto_block_hits", "value": v})
+    if name == "audit_program":
+        return _audit_program()
+    if name == "audit_network":
+        return _audit_network()
     return {"ok": False, "error": f"unknown_tool:{name}"}
+
+
+def _read_netguard_settings() -> dict:
+    path = ROOT / "netguard_settings.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _audit_program() -> dict:
+    """Configuration audit. Returns findings with severity + suggested_fix."""
+    findings: list[dict] = []
+    cfg = _read_netguard_settings()
+    state_resp = _ws_send_sync({"cmd": "get_state"}, timeout=3.0)
+    blocked_resp = _ws_send_sync({"cmd": "get_blocked_ips"}, timeout=3.0)
+
+    state = state_resp.get("data", {}) if state_resp.get("ok") else {}
+    blocked = []
+    if blocked_resp.get("ok") and isinstance(blocked_resp.get("data"), dict):
+        blocked = blocked_resp["data"].get("ips", []) or []
+
+    auto_block_enabled = cfg.get("auto_block_enabled", state.get("auto_block_enabled", False))
+    if not auto_block_enabled:
+        findings.append({
+            "id": "auto_block_off",
+            "severity": "high",
+            "category": "config",
+            "title": "Auto-block désactivé",
+            "detail": "Les IPs malveillantes ne sont pas bloquées automatiquement. Risque de compromission élevé en cas d'attaque scriptée.",
+            "suggested_fix": {"tool": "toggle_auto_block", "input": {}},
+        })
+
+    threshold = cfg.get("auto_block_hits", 10)
+    if isinstance(threshold, int) and threshold > 20:
+        findings.append({
+            "id": "auto_block_threshold_high",
+            "severity": "medium",
+            "category": "config",
+            "title": f"Seuil auto-block élevé ({threshold})",
+            "detail": "Une IP attaquante doit générer beaucoup de hits avant blocage. Détection lente.",
+            "suggested_fix": {"tool": "set_auto_block_hits", "input": {"value": 10}},
+        })
+
+    if cfg.get("dpi_enabled") is False:
+        findings.append({
+            "id": "dpi_disabled",
+            "severity": "medium",
+            "category": "config",
+            "title": "DPI (Deep Packet Inspection) désactivé",
+            "detail": "L'inspection profonde des paquets est éteinte — les attaques par payload ne sont pas détectées.",
+            "suggested_fix": None,
+        })
+
+    if not blocked:
+        findings.append({
+            "id": "blacklist_empty",
+            "severity": "low",
+            "category": "config",
+            "title": "Aucune IP bloquée",
+            "detail": "La blacklist locale est vide. Si NetGuard tourne depuis longtemps, c'est suspect — vérifie les rapports.",
+            "suggested_fix": None,
+        })
+
+    return {
+        "ok": True,
+        "summary": {
+            "auto_block_enabled": bool(auto_block_enabled),
+            "auto_block_threshold": threshold,
+            "blocked_count": len(blocked),
+            "dpi_enabled": cfg.get("dpi_enabled", "unknown"),
+        },
+        "findings": findings,
+        "findings_count": len(findings),
+    }
+
+
+def _audit_network() -> dict:
+    """Network-state audit: anomalies, hot IPs, traffic patterns."""
+    findings: list[dict] = []
+    state_resp = _ws_send_sync({"cmd": "get_state"}, timeout=3.0)
+    if not state_resp.get("ok"):
+        return {"ok": False, "error": state_resp.get("error", "netguard_unreachable"), "findings": []}
+    state = state_resp.get("data", {})
+    if not isinstance(state, dict):
+        return {"ok": False, "error": "bad_state_shape", "findings": []}
+
+    counts = state.get("counts", {}) if isinstance(state.get("counts"), dict) else {}
+    threats = state.get("threats", []) or []
+    top_ips = state.get("top_ips", []) or []
+    blocked_set = set(state.get("blocked_ips", []) or [])
+
+    # Hot IPs not yet blocked
+    for ip_entry in top_ips[:8]:
+        ip = ip_entry.get("ip") if isinstance(ip_entry, dict) else None
+        if not ip or ip in blocked_set:
+            continue
+        pkts = ip_entry.get("packets", 0) if isinstance(ip_entry, dict) else 0
+        threat_score = ip_entry.get("threat_score", 0) if isinstance(ip_entry, dict) else 0
+        if pkts > 1000 or threat_score >= 50:
+            findings.append({
+                "id": f"hot_ip_{ip}",
+                "severity": "high" if threat_score >= 70 else "medium",
+                "category": "anomaly",
+                "title": f"IP suspecte non-bloquée : {ip}",
+                "detail": f"{pkts} paquets, score menace {threat_score}. Volume hors-norme.",
+                "suggested_fix": {
+                    "tool": "block_ip",
+                    "input": {"ip": ip, "reason": f"Audit: {pkts} packets, threat score {threat_score}"},
+                },
+            })
+
+    # Critical threats unhandled
+    critical = [t for t in threats if isinstance(t, dict) and t.get("severity", "").lower() in ("critical", "high")]
+    if critical:
+        findings.append({
+            "id": "unhandled_critical_threats",
+            "severity": "high",
+            "category": "threats",
+            "title": f"{len(critical)} menaces critiques/élevées non traitées",
+            "detail": "Liste partielle: " + ", ".join(t.get("type", "?") for t in critical[:5]),
+            "suggested_fix": None,
+        })
+
+    # Traffic baselines
+    pps = counts.get("pkt_per_sec", counts.get("pps", 0))
+    if isinstance(pps, (int, float)) and pps > 5000:
+        findings.append({
+            "id": "high_pps",
+            "severity": "medium",
+            "category": "anomaly",
+            "title": f"Trafic élevé : {int(pps)} pkts/s",
+            "detail": "Au-dessus du baseline typique. Vérifie s'il s'agit d'une utilisation légitime ou d'une attaque DDoS.",
+            "suggested_fix": None,
+        })
+
+    return {
+        "ok": True,
+        "summary": {
+            "packets_per_sec": pps,
+            "threats_total": len(threats),
+            "threats_critical": len(critical),
+            "top_ips_seen": len(top_ips),
+            "currently_blocked": len(blocked_set),
+        },
+        "findings": findings,
+        "findings_count": len(findings),
+    }
 
 
 def _log_action(event: str, payload: dict) -> None:
