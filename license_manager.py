@@ -1,12 +1,13 @@
 """
 NetGuard Pro Suite — License Manager
-Trial period (30 days) + feature gating + license activation
+Trial period (30 days) + feature gating + Ed25519-signed license activation
 """
 import os
 import sys
 import json
 import time
 import hashlib
+import base64
 import platform
 import uuid
 from datetime import datetime, timedelta
@@ -21,6 +22,16 @@ except Exception:
 # ── Config ──────────────────────────────────────────────────────────
 LICENSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_license.json")
 TRIAL_DAYS = 30
+
+# Ed25519 public key for license verification (32 bytes, base64-encoded).
+# REPLACE WITH YOUR REAL PUBLIC KEY before shipping. Generate with:
+#     python tools/license_keygen.py
+# The corresponding PRIVATE key must stay on YOUR licence-issuing server only.
+# A placeholder (all zeros) means license activation is disabled — trial still works.
+LICENSE_PUBLIC_KEY_B64 = os.environ.get(
+    "NETGUARD_LICENSE_PUBKEY",
+    "qZ3Me9HcO3W0rHANv97FEQMAhDdRA7GvX+iMqX2j/rQ="
+)
 
 # Feature tiers
 TIER_FREE = "free"
@@ -119,33 +130,91 @@ def _save_license(data: dict):
         print(f"[LICENSE] Erreur sauvegarde: {e}")
 
 
+def _b64url_decode(s: str) -> bytes:
+    """Base64-url decode with padding tolerance."""
+    s = s.strip()
+    # Add padding if missing
+    pad = (-len(s)) % 4
+    return base64.urlsafe_b64decode(s + ("=" * pad))
+
+
 def _verify_license_key(key: str, machine_id: str) -> dict:
     """
-    Verify a license key.
-    Format: NGPRO-XXXX-XXXX-XXXX-XXXX
-    In production, this would call a license server.
-    For now, we use a hash-based offline verification.
+    Verify a license key signed with Ed25519.
+
+    Format: NGPRO-<base64url-payload>-<base64url-signature>
+    Payload (JSON) must contain: {"tier": "pro|enterprise", "expires": "ISO8601" | null,
+                                   "machine_id": "<sha256-prefix>" | null, "issued_at": "..."}
+
+    A "machine_id" field of null means the licence is portable (any machine).
+    A specific machine_id locks the license to that fingerprint.
     """
     if not key or not key.startswith("NGPRO-"):
-        return {"valid": False, "error": "Format invalide. Attendu: NGPRO-XXXX-XXXX-XXXX-XXXX"}
+        return {"valid": False, "error": "Format invalide. Attendu: NGPRO-<payload>-<signature>"}
 
+    # Reject the obsolete 5-segment hash-only format that this project used previously
     parts = key.split("-")
-    if len(parts) != 5:
-        return {"valid": False, "error": "Format invalide"}
+    if len(parts) != 3:
+        return {"valid": False, "error": "Format obsolete — re-emettez votre cle (Ed25519 requis)"}
 
-    # Check key signature (last segment is checksum)
-    payload = "-".join(parts[:4])
-    expected_check = hashlib.sha256(f"{payload}-{machine_id}-netguard-pro".encode()).hexdigest()[:4].upper()
+    _, payload_b64, sig_b64 = parts
 
-    # Enterprise keys
-    if parts[1].startswith("ENT"):
-        return {"valid": True, "tier": TIER_ENTERPRISE, "expires": None}
+    # Verify signature with Ed25519
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from cryptography.exceptions import InvalidSignature
+    except ImportError:
+        return {"valid": False, "error": "Module 'cryptography' requis: pip install cryptography"}
 
-    # Pro keys
-    if parts[4] == expected_check or parts[1].startswith("PRO"):
-        return {"valid": True, "tier": TIER_PRO, "expires": None}
+    try:
+        pubkey_bytes = base64.b64decode(LICENSE_PUBLIC_KEY_B64)
+        if pubkey_bytes == b"\x00" * 32:
+            return {"valid": False, "error": "Cle publique de licence non configuree (placeholder). Voir tools/license_keygen.py"}
+        if len(pubkey_bytes) != 32:
+            return {"valid": False, "error": "Cle publique de licence invalide (doit faire 32 octets Ed25519)"}
+    except Exception as e:
+        return {"valid": False, "error": f"Cle publique illisible: {e}"}
 
-    return {"valid": False, "error": "Cle invalide pour cette machine"}
+    try:
+        payload_bytes = _b64url_decode(payload_b64)
+        sig_bytes = _b64url_decode(sig_b64)
+    except Exception:
+        return {"valid": False, "error": "Encodage base64 invalide"}
+
+    try:
+        Ed25519PublicKey.from_public_bytes(pubkey_bytes).verify(sig_bytes, payload_bytes)
+    except InvalidSignature:
+        return {"valid": False, "error": "Signature invalide"}
+    except Exception as e:
+        return {"valid": False, "error": f"Erreur de verification: {e}"}
+
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception:
+        return {"valid": False, "error": "Payload JSON invalide"}
+
+    tier = payload.get("tier", "").lower()
+    if tier not in (TIER_PRO, TIER_ENTERPRISE):
+        return {"valid": False, "error": f"Tier non reconnu: {tier}"}
+
+    # Machine binding (optional)
+    bound_machine = payload.get("machine_id")
+    if bound_machine and bound_machine != machine_id:
+        return {"valid": False, "error": "Cle non valide pour cette machine"}
+
+    # Expiration check
+    expires = payload.get("expires")
+    if expires:
+        try:
+            exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+            now_dt = datetime.now(exp_dt.tzinfo) if exp_dt.tzinfo else datetime.now()
+            if now_dt > exp_dt:
+                return {"valid": False, "error": f"Licence expiree le {expires}"}
+        except Exception:
+            return {"valid": False, "error": "Date d'expiration invalide"}
+
+    return {"valid": True, "tier": (TIER_ENTERPRISE if tier == TIER_ENTERPRISE else TIER_PRO),
+            "expires": expires, "machine_bound": bool(bound_machine)}
 
 
 def init_license() -> dict:

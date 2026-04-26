@@ -2464,6 +2464,14 @@ tr:hover td{background:var(--bg4)22}
 
 <script>
 const WS_URL = 'ws://localhost:8765';
+
+// XSS guard — always escape attacker-controllable values before innerHTML interpolation.
+// Use anywhere a packet field (IP, source, hostname, payload, MAC, etc.) is dropped into a template.
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 let ws, lastState = null, paused = false, currentFilter = 'all', currentLang = localStorage.getItem('ng_lang') || 'fr';
 let inHistory = [], outHistory = [], blockHistory = [], selectedGeoCountries = new Set();
 let nativeMode = false;
@@ -2483,14 +2491,27 @@ function initConnection() {
   }
 }
 
+function getNgToken() {
+  let t = localStorage.getItem('ng_ws_token') || '';
+  if (!t || t.length < 32) {
+    t = (prompt('NetGuard auth token required.\nOpen .netguard_token in the install dir and paste its content:') || '').trim();
+    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
+    else { localStorage.removeItem('ng_ws_token'); return ''; }
+  }
+  return t;
+}
+let ngAuthed = false;
+
 function connectWS() {
   ws = new WebSocket(WS_URL);
+  ngAuthed = false;
   ws.onopen = () => {
     document.getElementById('dot').classList.remove('offline');
     document.getElementById('conn-status').textContent = t('status_connected');
     document.getElementById('conn-status').style.color = 'var(--green)';
-    sendCmd({cmd:'get_state'});
-    sendCmd({cmd:'get_alert_config'});
+    const tok = getNgToken();
+    if (!tok) { ws.close(); return; }
+    ws.send(JSON.stringify({cmd:'auth', token: tok}));
   };
   ws.onclose = () => {
     document.getElementById('dot').classList.add('offline');
@@ -2499,7 +2520,25 @@ function connectWS() {
     setTimeout(connectWS, 3000);
   };
   ws.onerror = () => {};
-  ws.onmessage = e => { try { handleMsg(JSON.parse(e.data)); } catch(err){ console.error('[NetGuard] render error:', err); } };
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'auth_ok') {
+        ngAuthed = true;
+        sendCmd({cmd:'get_state'});
+        sendCmd({cmd:'get_alert_config'});
+        return;
+      }
+      if (msg && msg.type === 'auth_failed') {
+        localStorage.removeItem('ng_ws_token');
+        alert('NetGuard auth failed. Token cleared — you will be prompted on next connect.');
+        ws.close();
+        return;
+      }
+      if (!ngAuthed) return;
+      handleMsg(msg);
+    } catch(err) { console.error('[NetGuard] render error:', err); }
+  };
 }
 
 function sendCmd(obj) {
@@ -2714,9 +2753,9 @@ function handleMsg(msg) {
     const el = document.getElementById('ioc-lookup-result');
     if (el) {
       if (msg.matches && msg.matches.length) {
-        el.innerHTML = msg.matches.map(m => `<div style="padding:4px 0"><span class="badge badge-red">${m.source}</span> ${m.detail}</div>`).join('');
+        el.innerHTML = msg.matches.map(m => `<div style="padding:4px 0"><span class="badge badge-red">${esc(m.source)}</span> ${esc(m.detail)}</div>`).join('');
       } else {
-        el.innerHTML = '<div style="color:var(--green);padding:4px">✅ No IOC matches found for ' + msg.value + '</div>';
+        el.innerHTML = '<div style="color:var(--green);padding:4px">✅ No IOC matches found for ' + esc(msg.value) + '</div>';
       }
     }
   }
@@ -2873,7 +2912,7 @@ function render(s) {
     renderLanDevices(s.lan_devices);
     const dlEl = document.getElementById('dash-lan');
     if(dlEl) dlEl.innerHTML = s.lan_devices.slice(0,6).map(d =>
-      '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span style="color:var(--text)">'+d.ip+'</span><span style="color:var(--text3);font-size:10px">'+(d.mac||'')+'</span></div>'
+      '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span style="color:var(--text)">'+esc(d.ip)+'</span><span style="color:var(--text3);font-size:10px">'+esc(d.mac||'')+'</span></div>'
     ).join('');
   }
   if (s.suricata_rules !== undefined) {
@@ -2904,13 +2943,13 @@ function render(s) {
   if(s.anomaly_alerts) {
     const el = document.getElementById('dash-anomaly-list');
     if(el) el.innerHTML = s.anomaly_alerts.slice(0,5).map(a =>
-      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--amber)">'+a.ip+'</span><span style="color:var(--text3)">'+a.metric+' z='+Number(a.zscore).toFixed(1)+'</span></div>'
+      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--amber)">'+esc(a.ip)+'</span><span style="color:var(--text3)">'+esc(a.metric)+' z='+Number(a.zscore).toFixed(1)+'</span></div>'
     ).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucune anomalie</div>';
   }
   if(s.threat_intel_hits) {
     const el = document.getElementById('dash-intel-list');
     if(el) el.innerHTML = s.threat_intel_hits.slice(0,5).map(h =>
-      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--red)">'+h.ip+'</span><span style="color:var(--text3)">'+h.source+'</span></div>'
+      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--red)">'+esc(h.ip)+'</span><span style="color:var(--text3)">'+esc(h.source)+'</span></div>'
     ).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucun hit</div>';
   }
   if(s.attack_chains) {
@@ -2919,7 +2958,7 @@ function render(s) {
       const chains = Object.entries(s.attack_chains || {});
       el.innerHTML = chains.slice(0,5).map(([ip,steps]) => {
         const phases = Array.isArray(steps) ? steps.map(s => s.phase || s).join(' → ') : '';
-        return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;font-size:11px"><span style="color:var(--purple)">'+ip+'</span> <span style="color:var(--text3)">'+phases+'</span></div>';
+        return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;font-size:11px"><span style="color:var(--purple)">'+esc(ip)+'</span> <span style="color:var(--text3)">'+esc(phases)+'</span></div>';
       }).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucune chaîne</div>';
     }
   }
@@ -2929,7 +2968,7 @@ function render(s) {
     if(el) {
       const colors = ['#4d9fff','#3dffb4','#ffb347','#b47dff','#ff4d6a','#00d4ff'];
       el.innerHTML = s.proto_stats.slice(0,6).map((p, i) =>
-        '<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px"><span style="width:45px;color:var(--text2)">'+p.name+'</span><div style="flex:1;height:14px;background:var(--bg4);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+p.pct+'%;background:'+colors[i%6]+';border-radius:3px;transition:width .5s"></div></div><span style="width:35px;text-align:right;color:var(--text3)">'+p.pct+'%</span></div>'
+        '<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px"><span style="width:45px;color:var(--text2)">'+esc(p.name)+'</span><div style="flex:1;height:14px;background:var(--bg4);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+Number(p.pct||0)+'%;background:'+colors[i%6]+';border-radius:3px;transition:width .5s"></div></div><span style="width:35px;text-align:right;color:var(--text3)">'+Number(p.pct||0)+'%</span></div>'
       ).join('');
     }
   }

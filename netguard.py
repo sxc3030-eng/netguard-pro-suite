@@ -24,6 +24,8 @@ from typing import Optional
 import os
 import sys
 import hashlib
+import secrets as _ng_secrets
+import tempfile
 import base64
 
 # License manager
@@ -97,7 +99,9 @@ class Config:
     syn_flood_window:       int   = 5
     dns_tunnel_threshold:   int   = 50
     whitelist: list = field(default_factory=lambda: [
-        "127.0.0.1", "::1", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"
+        "127.0.0.1", "::1", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12",
+        "160.79.104.0/21", "2607:6bc0::/32",
+        "2607:fa48::/32", "2607:fa49::/32",
     ])
     sensitive_ports:    list = field(default_factory=lambda: [22, 3389, 5900, 23])
     always_block_ports: list = field(default_factory=lambda: [135, 137, 138, 139, 445, 1433, 3306])
@@ -1037,6 +1041,64 @@ def vuln_system_check() -> dict:
 BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
 BACKUP_SCHEDULE = {"enabled": False, "interval_hours": 24, "last_backup": ""}
 
+
+def _secure_json_write(path: str, data, mode: int = 0o600, indent: int = 2):
+    """Atomic JSON write + chmod (default 0600). Writes to temp file in same dir then os.replace().
+    Hardening: combines Phase 2.2 (perms) and Phase 5.1 (atomicity) from the security audit."""
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent, ensure_ascii=False, default=str)
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ── Backup encryption (Phase 5.2) ───────────────────────────────────────────
+_BACKUP_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".netguard_backup_key")
+_BACKUP_FERNET = None  # lazy cache
+
+
+def _get_backup_fernet():
+    """Return a Fernet instance using a key persisted at .netguard_backup_key (0600).
+    Generate the key on first call if missing. Returns None if cryptography lib is not available."""
+    global _BACKUP_FERNET
+    if _BACKUP_FERNET is not None:
+        return _BACKUP_FERNET
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        log.warning("[BACKUP] cryptography not installed; backups will be plaintext (pip install cryptography)")
+        return None
+    try:
+        if os.path.exists(_BACKUP_KEY_FILE):
+            with open(_BACKUP_KEY_FILE, "rb") as f:
+                key = f.read().strip()
+        else:
+            key = Fernet.generate_key()
+            with open(_BACKUP_KEY_FILE, "wb") as f:
+                f.write(key)
+            try:
+                os.chmod(_BACKUP_KEY_FILE, 0o600)
+            except OSError:
+                pass
+            log.info(f"[BACKUP] Encryption key generated -> {_BACKUP_KEY_FILE}")
+        _BACKUP_FERNET = Fernet(key)
+        return _BACKUP_FERNET
+    except Exception as e:
+        log.error(f"[BACKUP] Cannot init backup encryption: {e}")
+        return None
+
 def backup_create(name: str = "", include: list = None) -> dict:
     """Create a backup of NetGuard Pro configuration"""
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -1074,27 +1136,54 @@ def backup_create(name: str = "", include: list = None) -> dict:
         backup_data["suricata_disabled_sids"] = list(SURICATA_DISABLED_SIDS)
 
     try:
-        with open(backup_path, "w", encoding="utf-8") as f:
-            json.dump(backup_data, f, indent=2, ensure_ascii=False)
+        fer = _get_backup_fernet()
+        if fer:
+            plaintext = json.dumps(backup_data, ensure_ascii=False, default=str).encode("utf-8")
+            ciphertext = fer.encrypt(plaintext)
+            envelope = {"_format": "fernet-v1", "ciphertext": ciphertext.decode("ascii")}
+            _secure_json_write(backup_path, envelope)
+            encrypted = True
+        else:
+            _secure_json_write(backup_path, backup_data)
+            encrypted = False
         size = os.path.getsize(backup_path)
         BACKUP_SCHEDULE["last_backup"] = datetime.now().isoformat()
-        log.info(f"[BACKUP] Created: {backup_path} ({size} bytes)")
-        return {"ok": True, "path": backup_path, "size": size, "name": backup_name}
+        log.info(f"[BACKUP] Created: {backup_path} ({size} bytes, encrypted={encrypted})")
+        return {"ok": True, "path": backup_path, "size": size, "name": backup_name, "encrypted": encrypted}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+_BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}\.json$")
+
+
 def backup_restore(filename: str) -> dict:
-    """Restore from a backup file"""
-    path = os.path.join(BACKUP_DIR, filename)
+    """Restore from a backup file (path-traversal hardened)"""
+    if not isinstance(filename, str) or not _BACKUP_NAME_RE.match(filename):
+        return {"ok": False, "error": "Nom de backup invalide (lettres/chiffres/_/.- only, .json)"}
+    base_real = os.path.realpath(BACKUP_DIR)
+    path = os.path.realpath(os.path.join(BACKUP_DIR, filename))
+    if not (path == base_real or path.startswith(base_real + os.sep)):
+        return {"ok": False, "error": "Chemin hors du dossier de backups"}
     if not os.path.exists(path):
         return {"ok": False, "error": "Backup file not found"}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw = json.load(f)
+
+        if isinstance(raw, dict) and raw.get("_format") == "fernet-v1":
+            fer = _get_backup_fernet()
+            if not fer:
+                return {"ok": False, "error": "Backup chiffre mais cle absente. Restaure .netguard_backup_key d'abord"}
+            try:
+                plaintext = fer.decrypt(raw["ciphertext"].encode("ascii"))
+                data = json.loads(plaintext.decode("utf-8"))
+            except Exception as e:
+                return {"ok": False, "error": f"Dechiffrement echoue: {e}"}
+        else:
+            data = raw  # legacy plaintext backup
 
         if "settings" in data:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data["settings"], f, indent=2, ensure_ascii=False)
+            _secure_json_write(SETTINGS_FILE, data["settings"])
 
         if "blocked_ips" in data:
             BLOCKED_IPS.clear()
@@ -1342,6 +1431,57 @@ IAM_ROLES = {
     "viewer":  {"permissions": ["read"]},
 }
 
+def _hash_password(password: str) -> str:
+    """Hash password with scrypt (OWASP n=16384, r=8, p=1). Format: 'scrypt$<salt-hex>$<hash-hex>'."""
+    salt = _ng_secrets.token_bytes(16)
+    h = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return f"scrypt${salt.hex()}${h.hex()}"
+
+
+def iam_verify_password(password: str, stored: str) -> bool:
+    """Verify password against stored hash. Supports scrypt (new) + sha256 + salt:hash legacy formats."""
+    if not stored or not password:
+        return False
+    try:
+        if stored.startswith("scrypt$"):
+            _, salt_hex, hash_hex = stored.split("$", 2)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+            return _ng_secrets.compare_digest(actual, expected)
+        # Legacy bare SHA256 hex (64 chars)
+        if len(stored) == 64 and all(c in "0123456789abcdef" for c in stored.lower()):
+            return _ng_secrets.compare_digest(
+                hashlib.sha256(password.encode()).hexdigest(),
+                stored.lower(),
+            )
+        # Legacy salt:hash format from netguard_users.json (salt-hex : base64-of-sha256(salt+password))
+        if ":" in stored:
+            import base64 as _b64
+            salt_part, hash_part = stored.split(":", 1)
+            try:
+                expected = _b64.b64decode(hash_part)
+            except Exception:
+                return False
+            # Try sha256(salt+password)
+            try:
+                actual = hashlib.sha256((salt_part + password).encode()).digest()
+                if _ng_secrets.compare_digest(actual, expected):
+                    return True
+            except Exception:
+                pass
+            # Try PBKDF2-HMAC-SHA256 with hex salt
+            try:
+                actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_part), 100000)
+                if _ng_secrets.compare_digest(actual, expected):
+                    return True
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        return False
+    return False
+
+
 def iam_create_user(username: str, password: str, role: str = "viewer", email: str = "") -> dict:
     if not username or not password:
         return {"ok": False, "error": "Username and password required"}
@@ -1349,7 +1489,7 @@ def iam_create_user(username: str, password: str, role: str = "viewer", email: s
         return {"ok": False, "error": "User already exists"}
     if role not in IAM_ROLES:
         return {"ok": False, "error": f"Invalid role. Valid: {list(IAM_ROLES.keys())}"}
-    pw_hash = hashlib.sha256(password.encode()).hexdigest()
+    pw_hash = _hash_password(password)
     IAM_USERS[username] = {
         "password_hash": pw_hash,
         "role": role,
@@ -1360,11 +1500,19 @@ def iam_create_user(username: str, password: str, role: str = "viewer", email: s
         "last_login": "",
     }
     log.info(f"[IAM] User created: {username} (role: {role})")
+    try:
+        save_settings()
+    except Exception:
+        pass
     return {"ok": True, "username": username, "role": role}
 
 def iam_delete_user(username: str) -> dict:
     if username in IAM_USERS:
         del IAM_USERS[username]
+        try:
+            save_settings()
+        except Exception:
+            pass
         return {"ok": True}
     return {"ok": False, "error": "User not found"}
 
@@ -1382,6 +1530,10 @@ def iam_update_role(username: str, role: str) -> dict:
     if role not in IAM_ROLES:
         return {"ok": False, "error": "Invalid role"}
     IAM_USERS[username]["role"] = role
+    try:
+        save_settings()
+    except Exception:
+        pass
     return {"ok": True, "username": username, "role": role}
 
 def iam_toggle_mfa(username: str) -> dict:
@@ -1389,8 +1541,11 @@ def iam_toggle_mfa(username: str) -> dict:
         return {"ok": False, "error": "User not found"}
     IAM_USERS[username]["mfa_enabled"] = not IAM_USERS[username]["mfa_enabled"]
     if IAM_USERS[username]["mfa_enabled"]:
-        import secrets
-        IAM_USERS[username]["mfa_secret"] = secrets.token_hex(16)
+        IAM_USERS[username]["mfa_secret"] = _ng_secrets.token_hex(16)
+    try:
+        save_settings()
+    except Exception:
+        pass
     return {"ok": True, "mfa_enabled": IAM_USERS[username]["mfa_enabled"]}
 
 
@@ -2422,6 +2577,10 @@ def _wg_init_server():
         try:
             with open(keyfile, "w") as f:
                 json.dump({"privkey": WG_SERVER_PRIVKEY, "pubkey": WG_SERVER_PUBKEY}, f)
+            try:
+                os.chmod(keyfile, 0o600)
+            except OSError:
+                pass
             log.info(f"[WG] Nouvelles clés serveur générées. PubKey: {WG_SERVER_PUBKEY[:20]}...")
         except Exception as e:
             log.error(f"[WG] Erreur sauvegarde clés: {e}")
@@ -4053,15 +4212,105 @@ async def broadcast_state():
                     dead.add(ws)
             CLIENTS -= dead
 
+# ── WebSocket authentication (Phase 1 hardening) ────────────────────────
+_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".netguard_token")
+WS_TOKEN: str = ""
+
+def _load_or_create_token() -> str:
+    """Load WS auth token from disk, or generate a new 32-byte URL-safe token. File chmod 0600."""
+    global WS_TOKEN
+    try:
+        if os.path.exists(_TOKEN_FILE):
+            with open(_TOKEN_FILE, "r", encoding="utf-8") as f:
+                existing = f.read().strip()
+            if len(existing) >= 32:
+                WS_TOKEN = existing
+                return WS_TOKEN
+    except OSError as e:
+        log.warning(f"[AUTH] Cannot read token file: {e}")
+    WS_TOKEN = _ng_secrets.token_urlsafe(32)
+    try:
+        with open(_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(WS_TOKEN)
+        try:
+            os.chmod(_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+        log.info(f"[AUTH] WS token generated -> {_TOKEN_FILE}")
+    except OSError as e:
+        log.error(f"[AUTH] Cannot write token file: {e}")
+    return WS_TOKEN
+
+# CSRF protection: only browsers with these origins (or no origin) may connect
+_ALLOWED_ORIGIN_PREFIXES = (
+    "http://localhost", "https://localhost",
+    "http://127.0.0.1", "https://127.0.0.1",
+    "http://[::1]", "https://[::1]",
+    "file://",
+)
+
+async def _check_origin(connection, request):
+    """websockets process_request callback: reject non-local Origin (CSRF defence)."""
+    try:
+        origin = request.headers.get("Origin")
+    except Exception:
+        origin = None
+    if origin is None or origin == "null":
+        return None  # file:// or pywebview — allow
+    for prefix in _ALLOWED_ORIGIN_PREFIXES:
+        if origin == prefix or origin.startswith(prefix + ":") or origin.startswith(prefix + "/"):
+            return None
+    log.warning(f"[AUTH] Rejected WS connection from origin: {origin}")
+    try:
+        from http import HTTPStatus
+        return connection.respond(HTTPStatus.FORBIDDEN, b"Origin not allowed\n")
+    except Exception:
+        return None
+
 async def ws_handler(websocket):
     global CLIENTS
+    log.info(f"[WS] Client connecting: {websocket.remote_address}")
+    # Auth gate — require {"cmd":"auth","token":WS_TOKEN} as the very first message
+    try:
+        first_raw = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+        try:
+            first_msg = json.loads(first_raw)
+        except json.JSONDecodeError:
+            first_msg = {}
+        if (not isinstance(first_msg, dict)
+                or first_msg.get("cmd") != "auth"
+                or not WS_TOKEN
+                or not _ng_secrets.compare_digest(str(first_msg.get("token", "")), WS_TOKEN)):
+            log.warning(f"[AUTH] WS auth failed from {websocket.remote_address}")
+            try:
+                await websocket.send(json.dumps({"type": "auth_failed"}))
+            except Exception:
+                pass
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+    except asyncio.TimeoutError:
+        try:
+            await websocket.close(code=4408, reason="Auth timeout")
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        log.debug(f"[AUTH] WS handshake error: {e}")
+        return
+    # Authenticated
+    try:
+        await websocket.send(json.dumps({"type": "auth_ok"}))
+    except Exception:
+        return
     CLIENTS.add(websocket)
-    log.info(f"[WS] Client connecté: {websocket.remote_address}")
+    log.info(f"[WS] Client authenticated: {websocket.remote_address}")
     try:
         await websocket.send(json.dumps(build_state_message()))
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
+                if isinstance(msg, dict) and msg.get("cmd") == "auth":
+                    continue  # already authenticated; ignore late auth attempts
                 await handle_ws_command(websocket, msg)
             except json.JSONDecodeError:
                 pass
@@ -4159,12 +4408,16 @@ async def main_async(interface: str):
 
         if ver >= (14, 0):
             # websockets 14+ : serve() est un context manager async
-            async with websockets.serve(ws_handler, "localhost", CFG.ws_port):
+            async with websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                        process_request=_check_origin,
+                                        max_size=1_048_576):
                 log.info("[WS] Serveur démarré (websockets 14+)")
                 await broadcast_state()
         else:
             # websockets < 14 : serve() retourne un objet awaitable
-            server = await websockets.serve(ws_handler, "localhost", CFG.ws_port)
+            server = await websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                            process_request=_check_origin,
+                                            max_size=1_048_576)
             log.info("[WS] Serveur démarré (websockets legacy)")
             await broadcast_state()
     else:
@@ -4227,8 +4480,8 @@ def save_settings():
             "nac_denied": NAC_DENIED,
             "nac_policy": NAC_POLICY,
             "backup_schedule": BACKUP_SCHEDULE,
-            "iam_users": {u: {k: v for k, v in d.items() if k != "password_hash"}
-                         for u, d in IAM_USERS.items()},
+            # password_hash is now persisted (settings.json is 0600 — Phase 2.2 hardening)
+            "iam_users": dict(IAM_USERS),
             "incidents": INCIDENTS[:50],
             "training_scores": TRAINING_SCORES,
             "detection_params": {
@@ -4236,8 +4489,7 @@ def save_settings():
                 for k in DETECTION_PARAMS
             } if 'DETECTION_PARAMS' in globals() else {},
         }
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
+        _secure_json_write(SETTINGS_FILE, settings)
         log.info(f"[SETTINGS] Sauvegardé → {SETTINGS_FILE}")
     except Exception as e:
         log.error(f"[SETTINGS] Erreur sauvegarde: {e}")
@@ -4357,6 +4609,7 @@ def _common_init():
     os.makedirs(CFG.record_dir, exist_ok=True)
     os.makedirs("reports", exist_ok=True)
     load_settings()
+    _load_or_create_token()
 
     return interface, args
 
@@ -4406,11 +4659,15 @@ def main_webview():
                     ver = (0, 0)
                 try:
                     if ver >= (14, 0):
-                        async with websockets.serve(ws_handler, "localhost", CFG.ws_port):
+                        async with websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                                    process_request=_check_origin,
+                                                    max_size=1_048_576):
                             log.info(f"[WS] Serveur WebSocket demarre sur ws://localhost:{CFG.ws_port} (pywebview+WS)")
                             await broadcast_state()
                     else:
-                        server = await websockets.serve(ws_handler, "localhost", CFG.ws_port)
+                        server = await websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                                        process_request=_check_origin,
+                                                        max_size=1_048_576)
                         log.info(f"[WS] Serveur WebSocket demarre sur ws://localhost:{CFG.ws_port} (pywebview+WS)")
                         await broadcast_state()
                 except OSError as e:

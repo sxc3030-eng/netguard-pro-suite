@@ -313,12 +313,25 @@ function renderTopIps(ips, blocked) {
 }
 
 // WebSocket
+function getNgToken() {
+  let t = localStorage.getItem('ng_ws_token') || '';
+  if (!t || t.length < 32) {
+    t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
+    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
+    else { localStorage.removeItem('ng_ws_token'); return ''; }
+  }
+  return t;
+}
+let ngAuthed = false;
+
 function connect() {
   ws = new WebSocket(WS_URL);
+  ngAuthed = false;
   ws.onopen = () => {
     document.getElementById('dot').classList.remove('off');
     document.getElementById('conn-status').textContent = 'Connecté';
-    ws.send(JSON.stringify({cmd:'get_state'}));
+    const tok = getNgToken(); if (!tok) { ws.close(); return; }
+    ws.send(JSON.stringify({cmd:'auth', token: tok}));
   };
   ws.onclose = () => {
     document.getElementById('dot').classList.add('off');
@@ -328,6 +341,9 @@ function connect() {
   ws.onmessage = e => {
     try {
       const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'auth_ok') { ngAuthed = true; ws.send(JSON.stringify({cmd:'get_state'})); return; }
+      if (msg && msg.type === 'auth_failed') { localStorage.removeItem('ng_ws_token'); alert('Auth NetGuard échouée. Token effacé.'); ws.close(); return; }
+      if (!ngAuthed) return;
       if (msg.type !== 'state') return;
       if (panel === 'packets') renderPackets(msg.recent_packets);
       else if (panel === 'threats') renderThreats(msg.threats);

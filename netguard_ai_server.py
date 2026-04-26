@@ -189,17 +189,50 @@ def _tools_openai() -> list[dict]:
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in TOOLS]
 
 
+_TOKEN_FILE = ROOT / ".netguard_token"
+
+
+def _read_ws_token() -> str:
+    """Read the WS auth token written by netguard.py at startup."""
+    try:
+        return _TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, FileNotFoundError):
+        return ""
+
+
 def _ws_send_sync(payload: dict, timeout: float = 5.0) -> dict:
-    """One-shot WebSocket exchange with the running NetGuard process."""
+    """One-shot authenticated WebSocket exchange with the running NetGuard process."""
     try:
         import asyncio
         import websockets  # type: ignore
     except ImportError as e:
         return {"ok": False, "error": f"websockets_lib_missing: {e}"}
 
+    token = _read_ws_token()
+    if not token:
+        return {"ok": False, "error": "ws_token_missing: .netguard_token not found — start netguard.py first"}
+
     async def _go() -> dict:
         try:
             async with websockets.connect(NETGUARD_WS_URL, open_timeout=2) as ws:
+                # 1) Authenticate
+                await ws.send(json.dumps({"cmd": "auth", "token": token}))
+                try:
+                    ack_raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    return {"ok": False, "error": "auth_no_response"}
+                try:
+                    ack = json.loads(ack_raw)
+                except json.JSONDecodeError:
+                    return {"ok": False, "error": "auth_bad_response"}
+                if ack.get("type") != "auth_ok":
+                    return {"ok": False, "error": f"auth_failed: {ack.get('type', 'unknown')}"}
+                # 2) Drain the unsolicited initial state push (NetGuard sends it after auth_ok)
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    pass  # No initial push — fine
+                # 3) Send the actual command
                 await ws.send(json.dumps(payload))
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=timeout)

@@ -60,3 +60,16 @@ mailshield/*.spec
 wireguard/peers.json
 wireguard/server_keys.json
 wireguard/*.conf
+vpnguard/configs/server_keys.json
+vpnguard/configs/peers.json
+vpnguard/configs/*.conf
+vpnguard/configs/*.key
+
+# NetGuard runtime secrets (generated at startup)
+.netguard_token
+.netguard_backup_key
+fim/data/.fim_hmac_key
+
+# License signing keys (NEVER commit the private key)
+tools/keys/
+*.priv
