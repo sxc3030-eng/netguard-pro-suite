@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>NetGuard Suite — Session Recorder</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f13;--bg2:#16161d;--bg3:#1c1c26;--bg4:#22222f;
+  --border:#ffffff0f;--border2:#ffffff1a;
+  --text:#e8e8f0;--text2:#9090a8;--text3:#5a5a72;
+  --blue:#4d9fff;--red:#ff4d6a;--green:#3dffb4;--amber:#ffb347;--purple:#b47dff;
+}
+body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;height:100vh;display:flex;flex-direction:column}
+.titlebar{background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.brand{display:flex;align-items:center;gap:10px}
+.brand-name{font-size:14px;font-weight:600}
+.brand-name span{background:linear-gradient(90deg,#ff4d6a,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.brand-sub{font-size:12px;color:var(--text3)}
+.status{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text3)}
+.dot.live{background:var(--red);animation:pulse 1.4s infinite}
+.dot.idle{background:var(--amber)}
+.dot.off{background:var(--text3);animation:none}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 8px var(--red)}50%{opacity:.5;box-shadow:none}}
+
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;padding:14px 18px;flex-shrink:0}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.kpi-lbl{font-size:10px;font-weight:500;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.kpi-val{font-size:22px;font-weight:700;font-family:'Geist Mono',monospace}
+.kpi-sub{font-size:10px;color:var(--text2);margin-top:2px;font-family:'Geist Mono',monospace}
+.kpi.danger .kpi-val{color:var(--red)}
+.kpi.warn .kpi-val{color:var(--amber)}
+.kpi.ok .kpi-val{color:var(--green)}
+.kpi.info .kpi-val{color:var(--blue)}
+
+.bar{height:5px;background:var(--bg4);border-radius:3px;overflow:hidden;margin-top:6px}
+.bar-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--amber),var(--red));transition:width .3s}
+
+.controls{display:flex;gap:8px;padding:0 18px 14px;flex-shrink:0}
+.btn{background:var(--bg4);border:1px solid var(--border2);color:var(--text);padding:9px 16px;border-radius:8px;font-family:inherit;font-size:12px;font-weight:500;cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--blue);color:var(--blue)}
+.btn.danger{background:linear-gradient(135deg,#ff4d6a,#b32540);color:#fff;border-color:transparent}
+.btn.danger:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(255,77,106,.4);color:#fff}
+.btn.success{background:linear-gradient(135deg,var(--green),#2ec78f);color:#06180f;border-color:transparent;font-weight:600}
+.btn.success:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(61,255,180,.4)}
+.btn:disabled{opacity:.4;cursor:not-allowed;transform:none;box-shadow:none}
+
+.split{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 18px 14px;min-height:0;overflow:hidden}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:10px;display:flex;flex-direction:column;min-height:0}
+.panel-h{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.panel-t{font-size:12px;font-weight:600}
+.panel-c{font-size:10px;color:var(--text3);font-family:'Geist Mono',monospace}
+.panel-body{flex:1;overflow-y:auto;padding:6px 0}
+.panel-body::-webkit-scrollbar{width:6px}.panel-body::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+
+.event{padding:6px 14px;border-bottom:1px solid #ffffff05;font-size:11px;display:flex;gap:10px;align-items:flex-start}
+.event:hover{background:#ffffff05}
+.ev-time{color:var(--text3);font-family:'Geist Mono',monospace;font-size:10px;flex-shrink:0;width:62px}
+.ev-type{font-size:9px;font-weight:700;padding:1px 6px;border-radius:3px;text-transform:uppercase;flex-shrink:0;letter-spacing:.05em;height:fit-content;margin-top:1px}
+.ev-type.session{background:#1a3a6e;color:var(--blue)}
+.ev-type.process{background:#3d2800;color:var(--amber)}
+.ev-type.file{background:#0e2e22;color:var(--green)}
+.ev-type.network{background:#3d1220;color:var(--red)}
+.ev-type.alert{background:#3d1220;color:var(--red)}
+.ev-type.other{background:var(--bg4);color:var(--text2)}
+.ev-msg{flex:1;color:var(--text);word-break:break-all;line-height:1.45}
+.ev-extra{color:var(--text3);font-family:'Geist Mono',monospace;font-size:10px}
+
+.empty{text-align:center;color:var(--text3);font-size:11px;padding:20px;font-style:italic}
+</style>
+</head>
+<body>
+
+<div class="titlebar">
+  <div class="brand">
+    <svg viewBox="0 0 200 200" width="24" height="24"><defs><linearGradient id="rg" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#ff4d6a"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#rg)" stroke-width="3"/><circle cx="100" cy="100" r="22" fill="#ff4d6a"/></svg>
+    <span class="brand-name"><span>Session</span> Recorder</span>
+    <span class="brand-sub">— Forensic Capture Live</span>
+  </div>
+  <div class="status">
+    <div class="dot off" id="conn-dot"></div>
+    <span id="conn-text">Connexion…</span>
+    <span id="meta" style="margin-left:12px;font-family:'Geist Mono',monospace;font-size:10px;color:var(--text3)"></span>
+  </div>
+</div>
+
+<div class="kpi-row">
+  <div class="kpi info" id="kpi-recording">
+    <div class="kpi-lbl">État</div>
+    <div class="kpi-val" id="kpi-rec-val">—</div>
+    <div class="kpi-sub" id="kpi-rec-sub">—</div>
+  </div>
+  <div class="kpi info">
+    <div class="kpi-lbl">Événements totaux</div>
+    <div class="kpi-val" id="kpi-events">—</div>
+    <div class="kpi-sub" id="kpi-events-sub">timeline</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Sessions actives</div>
+    <div class="kpi-val" id="kpi-sessions">—</div>
+    <div class="kpi-sub" id="kpi-sessions-sub">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Processus suivis</div>
+    <div class="kpi-val" id="kpi-procs">—</div>
+    <div class="kpi-sub" id="kpi-procs-sub">—</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-lbl">Changements fichiers</div>
+    <div class="kpi-val" id="kpi-files">—</div>
+    <div class="kpi-sub" id="kpi-files-sub">—</div>
+  </div>
+  <div class="kpi" id="kpi-storage">
+    <div class="kpi-lbl">Stockage</div>
+    <div class="kpi-val" id="kpi-storage-val">— MB</div>
+    <div class="bar"><div class="bar-fill" id="kpi-storage-bar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="controls">
+  <button class="btn danger" id="btn-incident-start">▶ Démarrer un incident</button>
+  <button class="btn" id="btn-incident-stop" disabled>■ Arrêter l'incident</button>
+  <button class="btn" id="btn-snapshot">📸 Snapshot état</button>
+  <button class="btn" id="btn-clear">↻ Réinitialiser timeline</button>
+</div>
+
+<div class="split">
+  <div class="panel">
+    <div class="panel-h">
+      <div class="panel-t">Timeline en direct</div>
+      <div class="panel-c" id="ev-count">0 événements</div>
+    </div>
+    <div class="panel-body" id="timeline-body">
+      <div class="empty">En attente d'événements…</div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="panel-h">
+      <div class="panel-t">Rapports forensiques</div>
+      <div class="panel-c" id="rep-count">0 rapports</div>
+    </div>
+    <div class="panel-body" id="reports-body">
+      <div class="empty">Aucun incident enregistré.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+const WS_URL = 'ws://localhost:8860';
+let ws = null;
+let lastState = null;
+
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => typeof n === 'number' ? n.toLocaleString('fr-CA') : '—';
+const fmtMB = (mb) => typeof mb === 'number' ? mb.toFixed(1) + ' MB' : '— MB';
+const fmtTime = (ts) => {
+  if (!ts) return '—';
+  const d = typeof ts === 'number' ? new Date(ts * 1000) : new Date(ts);
+  return d.toLocaleTimeString('fr-CA', {hour12: false});
+};
+
+function connect(){
+  $('conn-dot').className = 'dot off';
+  $('conn-text').textContent = 'Connexion…';
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    $('conn-dot').className = 'dot live';
+    $('conn-text').textContent = 'Connecté';
+    ws.send(JSON.stringify({cmd: 'get_state'}));
+  };
+  ws.onclose = () => {
+    $('conn-dot').className = 'dot off';
+    $('conn-text').textContent = 'Déconnecté — reconnexion 3s';
+    setTimeout(connect, 3000);
+  };
+  ws.onerror = () => {
+    $('conn-dot').className = 'dot off';
+    $('conn-text').textContent = 'Erreur connexion';
+  };
+  ws.onmessage = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'state') render(msg);
+  };
+}
+
+function send(cmd, params = {}){
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({cmd, ...params}));
+}
+
+function render(s){
+  lastState = s;
+  $('meta').textContent = 'v' + (s.version || '?') + ' · ' + (s.mode || '?');
+
+  const rec = s.recording || {};
+  const inc = s.current_incident;
+  if (inc) {
+    $('kpi-rec-val').textContent = '● INCIDENT';
+    $('kpi-rec-val').style.color = 'var(--red)';
+    $('kpi-rec-sub').textContent = inc.type || 'incident en cours';
+    $('btn-incident-start').disabled = true;
+    $('btn-incident-stop').disabled = false;
+  } else {
+    $('kpi-rec-val').textContent = rec.active ? 'IDLE' : 'OFF';
+    $('kpi-rec-val').style.color = rec.active ? 'var(--blue)' : 'var(--text3)';
+    $('kpi-rec-sub').textContent = rec.active ? 'monitors actifs' : 'service arrêté';
+    $('btn-incident-start').disabled = !rec.active;
+    $('btn-incident-stop').disabled = true;
+  }
+
+  $('kpi-events').textContent = fmt(rec.events_recorded);
+
+  const monS = s.monitors?.sessions || {};
+  $('kpi-sessions').textContent = fmt(monS.active_sessions ?? monS.total ?? 0);
+  $('kpi-sessions-sub').textContent = (monS.total != null) ? `total ${monS.total}` : '';
+
+  const monP = s.monitors?.processes || {};
+  $('kpi-procs').textContent = fmt(monP.tracked ?? monP.total ?? 0);
+  $('kpi-procs-sub').textContent = (monP.created != null) ? `+${monP.created} créés` : '';
+
+  const monF = s.monitors?.files || {};
+  $('kpi-files').textContent = fmt(monF.changes ?? monF.total ?? 0);
+  $('kpi-files-sub').textContent = (monF.watched_dirs != null) ? `${monF.watched_dirs} dossiers` : '';
+
+  $('kpi-storage-val').textContent = fmtMB(rec.storage_used_mb);
+  const pct = rec.storage_max_mb ? Math.min(100, (rec.storage_used_mb / rec.storage_max_mb) * 100) : 0;
+  $('kpi-storage-bar').style.width = pct + '%';
+
+  // Timeline
+  const tl = s.recent_events || s.timeline || [];
+  $('ev-count').textContent = `${tl.length} événements (max ${rec.events_recorded || tl.length})`;
+  const tlBody = $('timeline-body');
+  if (!tl.length) {
+    tlBody.innerHTML = '<div class="empty">En attente d\'événements…</div>';
+  } else {
+    tlBody.innerHTML = tl.slice(-200).reverse().map(ev => {
+      const t = ev.type || 'other';
+      const tag = t.includes('session') ? 'session'
+                : t.includes('process') ? 'process'
+                : t.includes('file') ? 'file'
+                : t.includes('network') ? 'network'
+                : t.includes('alert') ? 'alert' : 'other';
+      const msg = ev.message || ev.summary || ev.description || (ev.path ? ev.path : '') || '';
+      const extra = [ev.process, ev.dst, ev.action].filter(Boolean).join(' · ');
+      return `<div class="event">
+        <div class="ev-time">${fmtTime(ev.ts || ev.timestamp)}</div>
+        <div class="ev-type ${tag}">${(t || 'evt').slice(0,8)}</div>
+        <div class="ev-msg">${escapeHtml(msg)} ${extra ? `<span class="ev-extra">${escapeHtml(extra)}</span>` : ''}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // Reports
+  const reps = s.reports || [];
+  $('rep-count').textContent = `${reps.length} rapport${reps.length > 1 ? 's' : ''}`;
+  const repBody = $('reports-body');
+  if (!reps.length) {
+    repBody.innerHTML = '<div class="empty">Aucun incident enregistré.</div>';
+  } else {
+    repBody.innerHTML = reps.map(r => `<div class="event">
+      <div class="ev-time">${fmtTime(r.created || r.ts)}</div>
+      <div class="ev-type alert">RPT</div>
+      <div class="ev-msg">${escapeHtml(r.title || r.id || 'rapport')} <span class="ev-extra">${escapeHtml(r.events ? r.events + ' ev' : '')}</span></div>
+    </div>`).join('');
+  }
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+$('btn-incident-start').onclick = () => send('start_incident', {type: 'manual'});
+$('btn-incident-stop').onclick = () => send('stop_incident');
+$('btn-snapshot').onclick = () => send('snapshot');
+$('btn-clear').onclick = () => { if (confirm('Réinitialiser la timeline en mémoire ?')) send('clear_timeline'); };
+
+connect();
+</script>
+</body>
+</html>
