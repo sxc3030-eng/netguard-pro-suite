@@ -26,7 +26,10 @@ ROOT = Path(__file__).resolve().parent
 SETTINGS_FILE = ROOT / "netguard_ai_settings.json"
 AUDIT_DIR = ROOT / "reports"
 AUDIT_LOG = AUDIT_DIR / "ai_audit.log"
+ACTIONS_LOG = AUDIT_DIR / "ai_actions.log"
 CAPTURES_DIR = ROOT / "captures"
+
+NETGUARD_WS_URL = os.environ.get("NETGUARD_WS_URL", "ws://localhost:8765")
 
 DEFAULT_PORT = 8770
 DEFAULT_MAX_TOKENS = 2048
@@ -94,6 +97,149 @@ def _cap_prompt(name: str, lang: str | None, ctx: str) -> str:
     bundle = CAP_PROMPTS.get(name, {})
     template = bundle.get((lang or "fr").lower(), bundle.get("fr", ""))
     return template.format(ctx=ctx) if "{ctx}" in template else template
+
+
+# ── Tools (agent mode — block IPs / clear threats / etc. via NetGuard WS) ──
+
+# Anthropic-format tool schemas. Mirrored to OpenAI/Google in `_tools_for_provider`.
+TOOLS = [
+    {
+        "name": "get_state",
+        "description": "Read the current NetGuard Pro state — counters, recent threats, blocked IPs, suspicious sources. Read-only, no side effects. Always safe to call.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": False,
+    },
+    {
+        "name": "list_blocked_ips",
+        "description": "Return the list of currently-blocked IPs. Read-only.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": False,
+    },
+    {
+        "name": "block_ip",
+        "description": "Add an IP to NetGuard's block list. Requires explicit user approval. Use a clear, specific reason — it is logged.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ip": {"type": "string", "description": "IPv4 or IPv6 address."},
+                "reason": {"type": "string", "description": "Why this IP should be blocked (Z-score, attack signature, etc.)."},
+            },
+            "required": ["ip", "reason"],
+        },
+        "needs_approval": True,
+    },
+    {
+        "name": "unblock_ip",
+        "description": "Remove an IP from NetGuard's block list. Requires explicit user approval.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"ip": {"type": "string"}},
+            "required": ["ip"],
+        },
+        "needs_approval": True,
+    },
+    {
+        "name": "clear_threats",
+        "description": "Clear NetGuard's current threats list (does not unblock IPs). Requires explicit user approval.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": True,
+    },
+    {
+        "name": "toggle_auto_block",
+        "description": "Toggle NetGuard's automatic IP-blocking feature. Requires explicit user approval.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": True,
+    },
+    {
+        "name": "set_auto_block_hits",
+        "description": "Set the threshold (number of hits) that triggers an automatic block. Requires explicit user approval.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"value": {"type": "integer", "minimum": 1, "maximum": 50}},
+            "required": ["value"],
+        },
+        "needs_approval": True,
+    },
+]
+
+_TOOL_BY_NAME = {t["name"]: t for t in TOOLS}
+
+
+def _tool_needs_approval(name: str) -> bool:
+    return _TOOL_BY_NAME.get(name, {}).get("needs_approval", True)
+
+
+def _tools_anthropic() -> list[dict]:
+    return [{"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]} for t in TOOLS]
+
+
+def _tools_openai() -> list[dict]:
+    return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in TOOLS]
+
+
+def _ws_send_sync(payload: dict, timeout: float = 5.0) -> dict:
+    """One-shot WebSocket exchange with the running NetGuard process."""
+    try:
+        import asyncio
+        import websockets  # type: ignore
+    except ImportError as e:
+        return {"ok": False, "error": f"websockets_lib_missing: {e}"}
+
+    async def _go() -> dict:
+        try:
+            async with websockets.connect(NETGUARD_WS_URL, open_timeout=2) as ws:
+                await ws.send(json.dumps(payload))
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    return {"ok": True, "note": "command sent, no response in time"}
+                try:
+                    return {"ok": True, "data": json.loads(raw)}
+                except json.JSONDecodeError:
+                    return {"ok": True, "data": raw}
+        except OSError as e:
+            return {"ok": False, "error": f"netguard_unreachable: {e}"}
+        except Exception as e:
+            return {"ok": False, "error": f"ws_error: {type(e).__name__}: {e}"}
+
+    return asyncio.run(_go())
+
+
+def _execute_tool(name: str, args: dict) -> dict:
+    """Translate a tool call to a NetGuard cmd via WebSocket."""
+    args = args or {}
+    if name == "get_state":
+        return _ws_send_sync({"cmd": "get_state"}, timeout=3.0)
+    if name == "list_blocked_ips":
+        return _ws_send_sync({"cmd": "get_blocked_ips"})
+    if name == "block_ip":
+        ip = args.get("ip", "").strip()
+        reason = args.get("reason", "AI-suggested block").strip()
+        if not ip:
+            return {"ok": False, "error": "missing_ip"}
+        return _ws_send_sync({"cmd": "block_ip", "ip": ip, "reason": reason})
+    if name == "unblock_ip":
+        ip = args.get("ip", "").strip()
+        if not ip:
+            return {"ok": False, "error": "missing_ip"}
+        return _ws_send_sync({"cmd": "unblock_ip", "ip": ip})
+    if name == "clear_threats":
+        return _ws_send_sync({"cmd": "clear_threats"})
+    if name == "toggle_auto_block":
+        return _ws_send_sync({"cmd": "toggle_auto_block"})
+    if name == "set_auto_block_hits":
+        v = args.get("value")
+        if not isinstance(v, int):
+            return {"ok": False, "error": "invalid_value"}
+        return _ws_send_sync({"cmd": "set_auto_block_hits", "value": v})
+    return {"ok": False, "error": f"unknown_tool:{name}"}
+
+
+def _log_action(event: str, payload: dict) -> None:
+    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+    record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
+    with ACTIONS_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 # ── Settings ────────────────────────────────────────────────────────────────
@@ -185,7 +331,7 @@ class AnthropicProvider(Provider):
     endpoint = "https://api.anthropic.com/v1/messages"
     api_version = "2023-06-01"
 
-    def call(self, messages, system, model, api_key):
+    def call(self, messages, system, model, api_key, tools=None):
         body: dict = {
             "model": model,
             "max_tokens": DEFAULT_MAX_TOKENS,
@@ -193,6 +339,8 @@ class AnthropicProvider(Provider):
         }
         if system:
             body["system"] = system
+        if tools:
+            body["tools"] = tools
         headers = {
             "x-api-key": api_key,
             "anthropic-version": self.api_version,
@@ -205,11 +353,27 @@ class AnthropicProvider(Provider):
             parsed = json.loads(raw)
         except json.JSONDecodeError:
             return {"ok": False, "error": "bad_json", "reply": raw}
-        text_parts = [b.get("text", "") for b in parsed.get("content", []) if b.get("type") == "text"]
+        content_blocks = parsed.get("content", [])
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        for b in content_blocks:
+            t = b.get("type")
+            if t == "text":
+                text_parts.append(b.get("text", ""))
+            elif t == "tool_use":
+                tool_calls.append({
+                    "id": b.get("id"),
+                    "name": b.get("name"),
+                    "input": b.get("input", {}),
+                    "needs_approval": _tool_needs_approval(b.get("name", "")),
+                })
         usage = parsed.get("usage", {})
         return {
             "ok": True,
             "reply": "\n".join(t for t in text_parts if t),
+            "tool_calls": tool_calls,
+            "assistant_blocks": content_blocks,
+            "stop_reason": parsed.get("stop_reason"),
             "tokens_in": usage.get("input_tokens", 0),
             "tokens_out": usage.get("output_tokens", 0),
             "model": parsed.get("model", model),
@@ -229,7 +393,7 @@ class OpenAIProvider(Provider):
     env_keys = ["OPENAI_API_KEY"]
     endpoint = "https://api.openai.com/v1/chat/completions"
 
-    def call(self, messages, system, model, api_key):
+    def call(self, messages, system, model, api_key, tools=None):
         msgs = []
         if system:
             msgs.append({"role": "system", "content": system})
@@ -274,7 +438,7 @@ class GoogleProvider(Provider):
     ]
     env_keys = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
 
-    def call(self, messages, system, model, api_key):
+    def call(self, messages, system, model, api_key, tools=None):
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={urllib.parse.quote(api_key)}"
         contents = []
         for m in messages:
@@ -362,14 +526,25 @@ def _read_recent_reports(limit: int = 5) -> list[dict]:
     return out
 
 
-def _call_active(messages: list[dict], system: str | None) -> dict:
+def _call_active(messages: list[dict], system: str | None, *, tools: bool = False) -> dict:
     settings = _load_settings()
     provider = _active_provider(settings)
     api_key = provider.get_api_key(settings)
     if not api_key:
         return {"ok": False, "error": "missing_api_key", "reply": "", "provider": provider.name}
     model = provider.get_model(settings)
+
+    tool_arg = None
+    if tools:
+        if provider.name == "anthropic":
+            tool_arg = _tools_anthropic()
+        elif provider.name == "openai":
+            tool_arg = _tools_openai()
+
     try:
+        result = provider.call(messages, system or "", model, api_key, tools=tool_arg)
+    except TypeError:
+        # Older providers may not yet accept the tools= kwarg.
         result = provider.call(messages, system or "", model, api_key)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         return {"ok": False, "error": "network", "reply": str(e), "provider": provider.name}
@@ -507,6 +682,15 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                     for n, c in CAPABILITIES.items()
                 ]
             })
+        if self.path == "/api/tools":
+            return self._json(200, {
+                "tools": [
+                    {"name": t["name"], "description": t["description"],
+                     "needs_approval": t["needs_approval"],
+                     "input_schema": t["input_schema"]}
+                    for t in TOOLS
+                ],
+            })
         return super().do_GET()
 
     def do_POST(self) -> None:
@@ -561,20 +745,55 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             messages = payload.get("messages") or []
             user_msg = payload.get("message")
             lang = payload.get("lang", "fr")
-            if user_msg:
+            agent_mode = bool(payload.get("agent_mode", False))
+            if user_msg is not None and user_msg != "":
                 messages.append({"role": "user", "content": user_msg})
             if not messages:
                 return self._json(400, {"ok": False, "error": "empty_messages"})
-            result = _call_active(messages, _system_prompt(lang))
+            result = _call_active(messages, _system_prompt(lang), tools=agent_mode)
             _audit("chat", {
                 "lang": lang,
                 "provider": result.get("provider"),
                 "messages": len(messages),
+                "agent_mode": agent_mode,
+                "tool_calls": len(result.get("tool_calls", []) or []),
                 "ok": result.get("ok"),
                 "tokens_in": result.get("tokens_in"),
                 "tokens_out": result.get("tokens_out"),
             })
             return self._json(200, result)
+
+        if self.path == "/api/tool-execute":
+            payload = self._read_json()
+            name = (payload.get("name") or "").strip()
+            args = payload.get("input") or {}
+            decision = (payload.get("decision") or "approve").lower()
+            tool_use_id = payload.get("tool_use_id") or ""
+            if name not in _TOOL_BY_NAME:
+                return self._json(404, {"ok": False, "error": "unknown_tool"})
+
+            if decision != "approve":
+                _log_action("tool_rejected", {"name": name, "input": args, "tool_use_id": tool_use_id})
+                return self._json(200, {
+                    "ok": True,
+                    "decision": "rejected",
+                    "tool_use_id": tool_use_id,
+                    "tool_result": "User rejected this action.",
+                })
+
+            result = _execute_tool(name, args)
+            _log_action("tool_executed", {
+                "name": name, "input": args, "tool_use_id": tool_use_id,
+                "result_ok": result.get("ok"), "result_error": result.get("error"),
+            })
+            payload_text = json.dumps(result, ensure_ascii=False)
+            return self._json(200, {
+                "ok": True,
+                "decision": "approved",
+                "tool_use_id": tool_use_id,
+                "tool_result": payload_text,
+                "raw": result,
+            })
 
         if self.path.startswith("/api/capability/"):
             name = self.path[len("/api/capability/"):]

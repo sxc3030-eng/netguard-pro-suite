@@ -296,6 +296,37 @@ tr:hover td{background:var(--bg4)22}
 .ai-d-keyhint{padding:8px 14px;font-size:10px;color:var(--text3);text-align:center;border-top:1px solid var(--border);background:#3d2800;color:#ffb347;display:none}
 .ai-d-keyhint.show{display:block}
 .ai-d-keyhint a{color:#ffb347;text-decoration:underline;cursor:pointer}
+
+/* Agent-mode toggle pill in header */
+.ai-d-agent{background:var(--bg4);border:1px solid var(--border2);color:var(--text3);font-family:inherit;font-size:10px;font-weight:600;padding:3px 8px 3px 6px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:5px;letter-spacing:.04em;transition:.15s;text-transform:uppercase}
+.ai-d-agent:hover{color:var(--text2);border-color:var(--border2)}
+.ai-d-agent.on{background:linear-gradient(135deg,#4d9fff22,#b47dff22);border-color:var(--blue);color:var(--blue)}
+.ai-d-agent .agent-dot{width:6px;height:6px;border-radius:50%;background:var(--text3)}
+.ai-d-agent.on .agent-dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+
+/* Tool-call approval card */
+.ai-tool-card{align-self:flex-start;max-width:92%;background:linear-gradient(180deg,#1a1f2e,#16161d);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;display:flex;flex-direction:column;gap:8px}
+.ai-tool-card.danger{border-color:#ff4d6a44}
+.ai-tool-card .tc-head{display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text)}
+.ai-tool-card .tc-pill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:3px;text-transform:uppercase;letter-spacing:.05em;background:var(--bg4);color:var(--text2)}
+.ai-tool-card .tc-pill.danger{background:#3d1220;color:#ff4d6a}
+.ai-tool-card .tc-pill.safe{background:#0e2e22;color:#3dffb4}
+.ai-tool-card .tc-name{font-family:'Geist Mono',monospace;font-size:11px;color:var(--blue)}
+.ai-tool-card .tc-input{font-family:'Geist Mono',monospace;font-size:10px;color:var(--text2);background:#0a0a10;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;word-break:break-all;user-select:text}
+.ai-tool-card .tc-buttons{display:flex;gap:6px;justify-content:flex-end}
+.ai-tool-card .tc-buttons button{font-family:inherit;font-size:11px;padding:5px 12px;border-radius:6px;cursor:pointer;border:1px solid var(--border2);background:transparent;color:var(--text2);transition:.15s}
+.ai-tool-card .tc-buttons button:hover{border-color:var(--text2);color:var(--text)}
+.ai-tool-card .tc-buttons .tc-approve{background:linear-gradient(135deg,var(--green),#2ec78f);color:#06180f;border-color:var(--green);font-weight:600}
+.ai-tool-card .tc-buttons .tc-approve:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(61,255,180,.3)}
+.ai-tool-card .tc-buttons .tc-reject{color:var(--red);border-color:#ff4d6a40}
+.ai-tool-card .tc-buttons .tc-reject:hover{background:#3d1220;border-color:var(--red)}
+.ai-tool-card.executed{opacity:.85}
+.ai-tool-card.executed .tc-buttons{display:none}
+.ai-tool-card .tc-result{font-family:'Geist Mono',monospace;font-size:10px;color:var(--text2);background:#0a0a10;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;word-break:break-all;user-select:text;display:none;max-height:160px;overflow:auto}
+.ai-tool-card .tc-result.show{display:block}
+.ai-tool-card .tc-status{font-size:11px;color:var(--text3);font-style:italic}
+.ai-tool-card .tc-status.ok{color:var(--green);font-style:normal}
+.ai-tool-card .tc-status.err{color:var(--red);font-style:normal}
 </style>
 </head>
 <body>
@@ -6385,6 +6416,10 @@ const AI_T = {
     offline: 'Démarrage du serveur IA…', no_key: 'Aucune clé API.',
     no_key_link: 'Configurer la clé', popout: 'Plein écran',
     err_net: 'Erreur réseau : ', copy: 'Copier', copied: 'Copié !', export: 'Exporter la conversation',
+    agent_label: 'AGENT', agent_off: 'Mode conseiller (lecture seule)', agent_on: 'Mode agent (peut exécuter avec approbation)',
+    tc_proposes: 'L\'IA propose d\'exécuter une action', tc_safe: 'Lecture seule', tc_danger: 'Action sensible',
+    tc_approve: 'Approuver', tc_reject: 'Refuser', tc_executing: 'Exécution…', tc_executed: 'Exécuté', tc_rejected: 'Refusé',
+    tc_failed: 'Échec', netguard_offline: 'NetGuard ne tourne pas — démarre-le pour utiliser le mode agent.',
   },
   en: {
     open: 'Ask the AI', title: 'AI Assistant', placeholder: 'Ask a question…',
@@ -6394,6 +6429,10 @@ const AI_T = {
     offline: 'Booting the AI server…', no_key: 'No API key set.',
     no_key_link: 'Configure the key', popout: 'Open fullscreen',
     err_net: 'Network error: ', copy: 'Copy', copied: 'Copied!', export: 'Export conversation',
+    agent_label: 'AGENT', agent_off: 'Advisor mode (read-only)', agent_on: 'Agent mode (can act with your approval)',
+    tc_proposes: 'AI proposes to execute an action', tc_safe: 'Read-only', tc_danger: 'Modifies state',
+    tc_approve: 'Approve', tc_reject: 'Reject', tc_executing: 'Executing…', tc_executed: 'Done', tc_rejected: 'Rejected',
+    tc_failed: 'Failed', netguard_offline: 'NetGuard not running — start it to use agent mode.',
   },
   es: {
     open: 'Preguntar a la IA', title: 'Asistente IA', placeholder: 'Haz una pregunta…',
@@ -6403,6 +6442,10 @@ const AI_T = {
     offline: 'Iniciando el servidor IA…', no_key: 'Sin clave API.',
     no_key_link: 'Configurar la clave', popout: 'Pantalla completa',
     err_net: 'Error de red: ', copy: 'Copiar', copied: '¡Copiado!', export: 'Exportar conversación',
+    agent_label: 'AGENTE', agent_off: 'Modo asesor (solo lectura)', agent_on: 'Modo agente (puede actuar con tu aprobación)',
+    tc_proposes: 'La IA propone ejecutar una acción', tc_safe: 'Solo lectura', tc_danger: 'Modifica estado',
+    tc_approve: 'Aprobar', tc_reject: 'Rechazar', tc_executing: 'Ejecutando…', tc_executed: 'Ejecutado', tc_rejected: 'Rechazado',
+    tc_failed: 'Fallo', netguard_offline: 'NetGuard no está activo — inícialo para usar el modo agente.',
   },
   de: {
     open: 'KI fragen', title: 'KI-Assistent', placeholder: 'Stelle eine Frage…',
@@ -6412,12 +6455,19 @@ const AI_T = {
     offline: 'KI-Server wird gestartet…', no_key: 'Kein API-Schlüssel.',
     no_key_link: 'Schlüssel konfigurieren', popout: 'Vollbild',
     err_net: 'Netzwerkfehler: ', copy: 'Kopieren', copied: 'Kopiert!', export: 'Konversation exportieren',
+    agent_label: 'AGENT', agent_off: 'Berater-Modus (nur lesen)', agent_on: 'Agent-Modus (kann handeln mit Genehmigung)',
+    tc_proposes: 'Die KI schlägt eine Aktion vor', tc_safe: 'Nur lesen', tc_danger: 'Ändert Zustand',
+    tc_approve: 'Genehmigen', tc_reject: 'Ablehnen', tc_executing: 'Ausführen…', tc_executed: 'Erledigt', tc_rejected: 'Abgelehnt',
+    tc_failed: 'Fehlgeschlagen', netguard_offline: 'NetGuard läuft nicht — starte es, um den Agent-Modus zu verwenden.',
   },
 };
 function aiT(k){ return (AI_T[currentLang] && AI_T[currentLang][k]) || AI_T.fr[k] || k; }
 
 const aiHistory = [];
 let aiBooted = false;
+let aiAgentMode = (localStorage.getItem('ng_ai_agent_mode') === '1');
+let aiPendingTools = [];   // tool_calls awaiting user decision
+let aiToolDecisions = {};  // tool_use_id -> 'approved'|'rejected' + result
 
 function buildDashboardContext(){
   const s = lastState || {};
@@ -6552,15 +6602,18 @@ async function aiSend(prompt, withState){
   }
 
   aiHistory.push({role: 'user', content: userContent});
+  await aiCallChat();
+}
+
+async function aiCallChat(){
   const t = aiAddThinking();
   const sendBtn = document.getElementById('ai-d-send');
   sendBtn.disabled = true;
-
   try {
     const r = await fetch(AI_API + '/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({messages: aiHistory.slice(0, -1), message: userContent, lang: currentLang}),
+      body: JSON.stringify({messages: aiHistory, lang: currentLang, agent_mode: aiAgentMode}),
     });
     const j = await r.json();
     t.remove();
@@ -6571,9 +6624,18 @@ async function aiSend(prompt, withState){
       } else {
         aiAddMsg('err', (j.error || '') + (j.reply ? '\n' + j.reply.slice(0, 500) : ''));
       }
-    } else {
-      aiHistory.push({role: 'assistant', content: j.reply || ''});
-      aiAddMsg('ai', j.reply || '…');
+      return;
+    }
+    if (j.reply) aiAddMsg('ai', j.reply);
+    if (j.assistant_blocks && j.assistant_blocks.length) {
+      aiHistory.push({role: 'assistant', content: j.assistant_blocks});
+    } else if (j.reply) {
+      aiHistory.push({role: 'assistant', content: j.reply});
+    }
+    if (j.tool_calls && j.tool_calls.length) {
+      aiPendingTools = j.tool_calls.slice();
+      aiToolDecisions = {};
+      for (const c of j.tool_calls) aiRenderToolCard(c);
     }
   } catch (e) {
     t.remove();
@@ -6581,6 +6643,109 @@ async function aiSend(prompt, withState){
   } finally {
     sendBtn.disabled = false;
   }
+}
+
+function aiRenderToolCard(call){
+  const chat = document.getElementById('ai-d-chat');
+  const card = document.createElement('div');
+  card.className = 'ai-tool-card' + (call.needs_approval ? ' danger' : '');
+  card.dataset.toolUseId = call.id || '';
+  const head = document.createElement('div');
+  head.className = 'tc-head';
+  head.innerHTML = `<span>${aiT('tc_proposes')}</span> <span class="tc-pill ${call.needs_approval ? 'danger' : 'safe'}">${call.needs_approval ? aiT('tc_danger') : aiT('tc_safe')}</span>`;
+  card.appendChild(head);
+  const name = document.createElement('div');
+  name.className = 'tc-name';
+  name.textContent = call.name + '(' + (Object.keys(call.input || {}).join(', ')) + ')';
+  card.appendChild(name);
+  const inp = document.createElement('div');
+  inp.className = 'tc-input';
+  inp.textContent = JSON.stringify(call.input || {}, null, 2);
+  card.appendChild(inp);
+  const status = document.createElement('div');
+  status.className = 'tc-status';
+  card.appendChild(status);
+  const result = document.createElement('div');
+  result.className = 'tc-result';
+  card.appendChild(result);
+  const btns = document.createElement('div');
+  btns.className = 'tc-buttons';
+  const yes = document.createElement('button');
+  yes.className = 'tc-approve';
+  yes.textContent = aiT('tc_approve');
+  yes.onclick = () => aiToolDecide(call, true, card);
+  const no = document.createElement('button');
+  no.className = 'tc-reject';
+  no.textContent = aiT('tc_reject');
+  no.onclick = () => aiToolDecide(call, false, card);
+  btns.appendChild(no);
+  btns.appendChild(yes);
+  card.appendChild(btns);
+  chat.appendChild(card);
+  chat.scrollTop = chat.scrollHeight;
+  if (!call.needs_approval) {
+    // auto-approve safe read-only tools
+    yes.click();
+  }
+}
+
+async function aiToolDecide(call, approve, card){
+  const status = card.querySelector('.tc-status');
+  const result = card.querySelector('.tc-result');
+  status.className = 'tc-status';
+  status.textContent = approve ? aiT('tc_executing') : aiT('tc_rejected');
+  card.classList.add('executed');
+  let payloadResult = approve ? null : 'User rejected this action.';
+  try {
+    if (approve) {
+      const r = await fetch(AI_API + '/api/tool-execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name: call.name, input: call.input, tool_use_id: call.id, decision: 'approve'}),
+      });
+      const j = await r.json();
+      payloadResult = j.tool_result || JSON.stringify(j.raw || {});
+      const okFlag = j.raw && (j.raw.ok !== false);
+      status.classList.add(okFlag ? 'ok' : 'err');
+      status.textContent = okFlag ? aiT('tc_executed') : aiT('tc_failed');
+      result.textContent = payloadResult;
+      result.classList.add('show');
+    } else {
+      status.classList.add('err');
+      result.textContent = payloadResult;
+      result.classList.add('show');
+    }
+  } catch (e) {
+    status.classList.add('err');
+    status.textContent = aiT('tc_failed') + ': ' + e;
+    payloadResult = 'Execution error: ' + e;
+  }
+  aiToolDecisions[call.id] = {approved: approve, result: payloadResult};
+  // When all decided, continue chat with tool_result blocks
+  if (Object.keys(aiToolDecisions).length === aiPendingTools.length) {
+    const toolResults = aiPendingTools.map(c => ({
+      type: 'tool_result',
+      tool_use_id: c.id,
+      content: aiToolDecisions[c.id]?.result ?? 'No result.',
+    }));
+    aiHistory.push({role: 'user', content: toolResults});
+    aiPendingTools = []; aiToolDecisions = {};
+    await aiCallChat();
+  }
+}
+
+function aiToggleAgent(){
+  aiAgentMode = !aiAgentMode;
+  localStorage.setItem('ng_ai_agent_mode', aiAgentMode ? '1' : '0');
+  aiSyncAgentBtn();
+}
+function aiSyncAgentBtn(){
+  const btn = document.getElementById('ai-d-agent-btn');
+  if (!btn) return;
+  btn.classList.toggle('on', aiAgentMode);
+  btn.title = aiAgentMode ? aiT('agent_on') : aiT('agent_off');
+  const lbl = document.getElementById('ai-d-agent-label');
+  if (lbl) lbl.textContent = aiT('agent_label');
 }
 
 async function aiOpenDrawer(){
@@ -6625,6 +6790,7 @@ function aiApplyTranslations(){
   const exp = document.getElementById('ai-d-export');
   if (exp) exp.title = aiT('export');
   for (const b of document.querySelectorAll('.ai-msg .ai-copy')) b.title = aiT('copy');
+  aiSyncAgentBtn();
 }
 
 // Hook into existing setLang to re-translate the drawer when lang changes.
@@ -6665,6 +6831,7 @@ document.addEventListener('DOMContentLoaded', () => {
       <span class="grad" id="ai-d-title-text">AI Assistant</span>
     </div>
     <span class="ai-d-status" id="ai-d-status">—</span>
+    <button class="ai-d-agent" id="ai-d-agent-btn" onclick="aiToggleAgent()" title="Agent mode"><span class="agent-dot"></span><span id="ai-d-agent-label">AGENT</span></button>
     <button onclick="aiExportConversation()" id="ai-d-export" title="Export">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5v9M5 7.5L8 10.5L11 7.5M2.5 12v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </button>
