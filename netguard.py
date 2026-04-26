@@ -2,7 +2,7 @@
 NetGuard Pro - Moteur de surveillance réseau
 Capture, analyse et bloque les paquets en temps réel
 Auteur: NetGuard Pro
-Version: 4.0.0
+Version: 4.1.0
 Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
 
@@ -182,8 +182,8 @@ GEO_IP_RANGES = {
            "178.140.0.0/14","185.71.76.0/22","193.232.0.0/14","194.8.0.0/15","195.2.0.0/16"],
     "CN": ["1.0.1.0/24","1.0.2.0/23","27.0.0.0/13","36.0.0.0/11","39.0.0.0/8",
            "42.0.0.0/8","49.0.0.0/8","58.0.0.0/7","60.0.0.0/8","61.0.0.0/8",
-           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.0.0.0/8",
-           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.0.0.0/7","163.0.0.0/8",
+           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.1.0.0/8",
+           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.1.0.0/7","163.0.0.0/8",
            "171.0.0.0/8","175.0.0.0/8","180.0.0.0/6","182.0.0.0/7","183.0.0.0/8"],
     "KP": ["175.45.176.0/22","210.52.109.0/24"],
     "IR": ["2.144.0.0/13","5.22.0.0/15","5.52.0.0/14","31.2.128.0/17","37.98.128.0/17",
@@ -191,7 +191,7 @@ GEO_IP_RANGES = {
            "82.99.192.0/18","85.133.0.0/16","87.107.0.0/16","89.32.0.0/14","91.98.0.0/15",
            "94.182.0.0/15","95.38.0.0/15","109.120.128.0/17","176.65.192.0/18",
            "188.136.0.0/13","194.225.0.0/16","195.146.32.0/19"],
-    "KR": ["1.16.0.0/12","1.176.0.0/12","14.0.0.0/11","27.96.0.0/14","49.142.0.0/17",
+    "KR": ["1.16.0.0/12","1.176.0.0/12","14.1.0.0/11","27.96.0.0/14","49.142.0.0/17",
            "58.120.0.0/13","59.0.0.0/11","61.32.0.0/13","61.40.0.0/13","112.144.0.0/12",
            "119.64.0.0/11","121.128.0.0/11","122.32.0.0/11","125.128.0.0/11",
            "175.192.0.0/11","203.226.0.0/15","210.94.0.0/15","211.36.0.0/14"],
@@ -200,10 +200,10 @@ GEO_IP_RANGES = {
     "IN": ["1.6.0.0/15","14.96.0.0/11","27.4.0.0/14","43.224.0.0/11","45.112.0.0/12",
            "49.32.0.0/12","59.88.0.0/13","103.0.0.0/8","106.64.0.0/10","115.240.0.0/13",
            "117.192.0.0/11","119.224.0.0/11","122.160.0.0/11","180.64.0.0/12","182.64.0.0/10"],
-    "US": ["3.0.0.0/8","4.0.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
-           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.0.0.0/8",
-           "34.0.0.0/8","35.0.0.0/8","44.0.0.0/8","45.0.0.0/8","52.0.0.0/8",
-           "54.0.0.0/8","64.0.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
+    "US": ["3.0.0.0/8","4.1.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
+           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.1.0.0/8",
+           "34.1.0.0/8","35.0.0.0/8","44.1.0.0/8","45.0.0.0/8","52.0.0.0/8",
+           "54.1.0.0/8","64.1.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
     "DE": ["5.1.0.0/17","46.4.0.0/14","78.42.0.0/15","80.154.0.0/15","81.169.0.0/16",
            "82.113.0.0/16","84.44.0.0/14","85.14.0.0/15","87.77.0.0/16","89.0.0.0/16",
            "91.65.0.0/16","94.130.0.0/15","213.160.0.0/14"],
@@ -1045,7 +1045,7 @@ def backup_create(name: str = "", include: list = None) -> dict:
     backup_path = os.path.join(BACKUP_DIR, f"{backup_name}.json")
 
     backup_data = {
-        "version": "4.0.0",
+        "version": "4.1.0",
         "timestamp": datetime.now().isoformat(),
         "name": backup_name,
     }
@@ -3962,6 +3962,46 @@ class NetGuardAPI:
             return {}
         return get_all_startup_states()
 
+    def open_ai_window(self, lang="fr"):
+        """Open the AI Assistant window. Boots netguard_ai_server.py if not already running."""
+        import socket as _socket
+        import subprocess as _sp
+        import time as _time
+        import webbrowser as _wb
+
+        port = 8770
+        here = os.path.dirname(os.path.abspath(__file__))
+
+        def _is_up() -> bool:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                return s.connect_ex(("127.0.0.1", port)) == 0
+            finally:
+                s.close()
+
+        if not _is_up():
+            script = os.path.join(here, "netguard_ai_server.py")
+            if not os.path.isfile(script):
+                return {"success": False, "error": "ai_server_missing"}
+            flags = _sp.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+            try:
+                _sp.Popen([sys.executable, script, "--no-browser"],
+                          cwd=here, creationflags=flags)
+            except Exception as e:
+                return {"success": False, "error": f"spawn_failed: {e}"}
+            for _ in range(25):
+                if _is_up():
+                    break
+                _time.sleep(0.2)
+            else:
+                return {"success": False, "error": "server_not_responding"}
+
+        if lang not in ("fr", "en", "es"):
+            lang = "fr"
+        _wb.open(f"http://127.0.0.1:{port}/?lang={lang}")
+        return {"success": True, "url": f"http://127.0.0.1:{port}/?lang={lang}"}
+
 
 def _pywebview_state_broadcast(api):
     """Background thread: push state to pywebview window periodically"""
@@ -4317,7 +4357,7 @@ def main_webview():
     try:
         print("""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.0.0 -- Fenetre native (pywebview)      |
+|       NetGuard Pro v4.1.0 -- Fenetre native (pywebview)      |
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -4326,7 +4366,7 @@ def main_webview():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.0.0] Demarrage (pywebview)...")
+        print("[NetGuard Pro v4.1.0] Demarrage (pywebview)...")
 
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
 
@@ -4378,7 +4418,7 @@ def main_webview():
     dashboard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_dashboard.html")
 
     window = webview.create_window(
-        "NetGuard Pro v4.0.0",
+        "NetGuard Pro v4.1.0",
         dashboard_path,
         js_api=api,
         width=1360,
@@ -4421,7 +4461,7 @@ def main():
     try:
         print(f"""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.0.0 -- Mode {mode_label:<24}|
+|       NetGuard Pro v4.1.0 -- Mode {mode_label:<24}|
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -4430,7 +4470,7 @@ def main():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.0.0] Demarrage...")
+        print("[NetGuard Pro v4.1.0] Demarrage...")
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
     try:
         asyncio.run(main_async(interface))

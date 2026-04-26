@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
-title NetGuard Pro v4.0.0
+title NetGuard Pro v4.1.0
 
 echo.
 echo  +============================================+
-echo  !      NetGuard Pro v4.0.0                   !
+echo  !      NetGuard Pro v4.1.0                   !
 echo  !      Surveillance Reseau                   !
 echo  +============================================+
 echo.

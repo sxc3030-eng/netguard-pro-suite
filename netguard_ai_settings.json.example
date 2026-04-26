@@ -1,5 +1,18 @@
 {
-  "_comment": "Copie ce fichier vers netguard_ai_settings.json puis remplis ta cle. La variable d'environnement ANTHROPIC_API_KEY a la priorite si elle est definie.",
-  "anthropic_api_key": "sk-ant-REMPLACE-MOI",
-  "model": "claude-sonnet-4-6"
+  "_comment": "Copy to netguard_ai_settings.json and fill the API key for at least one provider. Env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY) take priority. The UI Settings modal can edit this file directly.",
+  "provider": "anthropic",
+  "providers": {
+    "anthropic": {
+      "api_key": "sk-ant-REPLACE-ME",
+      "model": "claude-sonnet-4-6"
+    },
+    "openai": {
+      "api_key": "sk-REPLACE-ME",
+      "model": "gpt-4o"
+    },
+    "google": {
+      "api_key": "AIza-REPLACE-ME",
+      "model": "gemini-2.0-flash"
+    }
+  }
 }

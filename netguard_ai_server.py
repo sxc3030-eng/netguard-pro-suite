@@ -1,9 +1,10 @@
 """NetGuard Pro — AI window backend.
 
-Local HTTP server that bridges the AI window (netguard_ai.html) to the
-Anthropic Claude API. Built around a pluggable capability registry so
-future Mythos workloads (analyse / fix / certify) can be added by
-registering a new entry instead of rewriting the server.
+Local HTTP server that bridges the AI window (netguard_ai.html) to one of
+several LLM providers (Anthropic, OpenAI, Google). Built around a pluggable
+provider registry + a pluggable capability registry so future Mythos workloads
+(analyse / fix / certify) can be added by registering an entry instead of
+rewriting the server.
 """
 from __future__ import annotations
 
@@ -14,8 +15,10 @@ import os
 import socketserver
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,43 +28,301 @@ AUDIT_DIR = ROOT / "reports"
 AUDIT_LOG = AUDIT_DIR / "ai_audit.log"
 CAPTURES_DIR = ROOT / "captures"
 
-ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
-ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_TOKENS = 2048
 DEFAULT_PORT = 8770
+DEFAULT_MAX_TOKENS = 2048
 
-SYSTEM_PROMPT = (
-    "Tu es l'assistant IA de NetGuard Pro, une suite de cybersécurité réseau. "
-    "Tu aides l'utilisateur à comprendre l'état de son réseau, identifier les menaces, "
-    "et recommander des actions concrètes. "
-    "Réponds en français, sois direct et opérationnel. "
-    "Quand tu reçois des données de scan ou de capture, analyse-les comme un analyste SOC senior. "
-    "Mets en évidence les anomalies, classe-les par sévérité (critique / élevée / moyenne / faible), "
-    "et termine toujours par 1-3 actions recommandées."
-)
+SYSTEM_PROMPTS = {
+    "fr": (
+        "Tu es l'assistant IA de NetGuard Pro, une suite de cybersécurité réseau. "
+        "Tu aides l'utilisateur à comprendre l'état de son réseau, identifier les menaces, "
+        "et recommander des actions concrètes. "
+        "Réponds en français, sois direct et opérationnel. "
+        "Quand tu reçois des données de scan ou de capture, analyse-les comme un analyste SOC senior. "
+        "Mets en évidence les anomalies, classe-les par sévérité (critique / élevée / moyenne / faible), "
+        "et termine toujours par 1-3 actions recommandées."
+    ),
+    "en": (
+        "You are the AI assistant for NetGuard Pro, a network cybersecurity suite. "
+        "You help the user understand the state of their network, identify threats, "
+        "and recommend concrete actions. "
+        "Answer in English, be direct and operational. "
+        "When you receive scan or capture data, analyze it like a senior SOC analyst. "
+        "Highlight anomalies, classify them by severity (critical / high / medium / low), "
+        "and always end with 1-3 recommended actions."
+    ),
+    "es": (
+        "Eres el asistente IA de NetGuard Pro, una suite de ciberseguridad de red. "
+        "Ayudas al usuario a comprender el estado de su red, identificar amenazas "
+        "y recomendar acciones concretas. "
+        "Responde en español, sé directo y operacional. "
+        "Cuando recibas datos de escaneo o captura, analízalos como un analista SOC senior. "
+        "Destaca las anomalías, clasifícalas por gravedad (crítica / alta / media / baja) "
+        "y termina siempre con 1-3 acciones recomendadas."
+    ),
+}
 
+
+def _system_prompt(lang: str | None) -> str:
+    return SYSTEM_PROMPTS.get((lang or "fr").lower(), SYSTEM_PROMPTS["fr"])
+
+
+CAP_PROMPTS = {
+    "analyze_network": {
+        "fr": "Analyse l'état de mon réseau à partir des données ci-dessous. Identifie les anomalies, classe par sévérité, et propose 3 actions concrètes.\n\nDONNÉES:\n{ctx}",
+        "en": "Analyze the state of my network from the data below. Identify anomalies, classify by severity, and propose 3 concrete actions.\n\nDATA:\n{ctx}",
+        "es": "Analiza el estado de mi red a partir de los datos a continuación. Identifica las anomalías, clasifica por gravedad y propone 3 acciones concretas.\n\nDATOS:\n{ctx}",
+    },
+    "no_data": {
+        "fr": "Aucune capture ni rapport récent disponible dans `captures/` ou `reports/`.",
+        "en": "No recent capture or report available in `captures/` or `reports/`.",
+        "es": "No hay captura ni informe reciente disponible en `captures/` o `reports/`.",
+    },
+    "explain_threats": {
+        "fr": "Explique en langage clair les menaces suivantes à un utilisateur non-expert. Pour chaque menace : ce que c'est, le risque réel, l'urgence.\n\nMENACES:\n{ctx}",
+        "en": "Explain the following threats in plain language for a non-expert user. For each threat: what it is, the real risk, the urgency.\n\nTHREATS:\n{ctx}",
+        "es": "Explica en lenguaje claro las siguientes amenazas a un usuario no experto. Para cada amenaza: qué es, el riesgo real, la urgencia.\n\nAMENAZAS:\n{ctx}",
+    },
+    "recommend_actions": {
+        "fr": "À partir de l'état réseau ci-dessous, donne-moi un plan d'action priorisé (P0 immédiat / P1 cette semaine / P2 ce mois). Sois concret : commandes, configs, pas de blabla.\n\nÉTAT:\n{ctx}",
+        "en": "From the network state below, give me a prioritized action plan (P0 immediate / P1 this week / P2 this month). Be concrete: commands, configs, no fluff.\n\nSTATE:\n{ctx}",
+        "es": "A partir del estado de la red a continuación, dame un plan de acción priorizado (P0 inmediato / P1 esta semana / P2 este mes). Sé concreto: comandos, configs, sin relleno.\n\nESTADO:\n{ctx}",
+    },
+}
+
+
+def _cap_prompt(name: str, lang: str | None, ctx: str) -> str:
+    bundle = CAP_PROMPTS.get(name, {})
+    template = bundle.get((lang or "fr").lower(), bundle.get("fr", ""))
+    return template.format(ctx=ctx) if "{ctx}" in template else template
+
+
+# ── Settings ────────────────────────────────────────────────────────────────
 
 def _load_settings() -> dict:
     if SETTINGS_FILE.exists():
         try:
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            return _migrate_legacy_settings(data) if isinstance(data, dict) else {}
         except json.JSONDecodeError:
             pass
     return {}
 
 
-def _api_key() -> str | None:
-    env = os.environ.get("ANTHROPIC_API_KEY")
-    if env:
-        return env.strip()
-    s = _load_settings()
-    k = s.get("anthropic_api_key")
-    return k.strip() if isinstance(k, str) and k.strip() else None
+def _migrate_legacy_settings(data: dict) -> dict:
+    """Old settings shape: {anthropic_api_key, model}. Promote to provider-scoped."""
+    legacy_key = data.pop("anthropic_api_key", None) if "anthropic_api_key" in data else None
+    legacy_model = data.get("model")
+    if legacy_key or (legacy_model and "providers" not in data and "provider" not in data):
+        providers = data.setdefault("providers", {})
+        anth = providers.setdefault("anthropic", {})
+        if legacy_key and not anth.get("api_key"):
+            anth["api_key"] = legacy_key
+        if legacy_model and not anth.get("model"):
+            anth["model"] = legacy_model
+        data.setdefault("provider", "anthropic")
+    if "provider" not in data:
+        data["provider"] = "anthropic"
+    if "providers" not in data:
+        data["providers"] = {}
+    return data
 
 
-def _model() -> str:
-    return _load_settings().get("model", DEFAULT_MODEL)
+def _save_settings(data: dict) -> None:
+    SETTINGS_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# ── Provider abstraction ────────────────────────────────────────────────────
+
+class Provider(ABC):
+    name: str
+    label: str
+    default_model: str
+    models: list[str]
+    env_keys: list[str]
+
+    @abstractmethod
+    def call(self, messages: list[dict], system: str, model: str, api_key: str) -> dict:
+        ...
+
+    def get_api_key(self, settings: dict) -> str | None:
+        for env in self.env_keys:
+            v = os.environ.get(env)
+            if v:
+                return v.strip()
+        prov = settings.get("providers", {}).get(self.name, {})
+        k = prov.get("api_key")
+        return k.strip() if isinstance(k, str) and k.strip() else None
+
+    def get_model(self, settings: dict) -> str:
+        prov = settings.get("providers", {}).get(self.name, {})
+        m = prov.get("model")
+        return m if isinstance(m, str) and m.strip() else self.default_model
+
+
+def _http_post(url: str, headers: dict, body: dict, timeout: int = 120) -> tuple[int, str]:
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", errors="replace")
+
+
+class AnthropicProvider(Provider):
+    name = "anthropic"
+    label = "Anthropic Claude"
+    default_model = "claude-sonnet-4-6"
+    models = [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5-20251001",
+    ]
+    env_keys = ["ANTHROPIC_API_KEY"]
+    endpoint = "https://api.anthropic.com/v1/messages"
+    api_version = "2023-06-01"
+
+    def call(self, messages, system, model, api_key):
+        body: dict = {
+            "model": model,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+            "messages": messages,
+        }
+        if system:
+            body["system"] = system
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": self.api_version,
+            "content-type": "application/json",
+        }
+        status, raw = _http_post(self.endpoint, headers, body)
+        if status >= 400:
+            return {"ok": False, "error": f"http_{status}", "reply": raw}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "bad_json", "reply": raw}
+        text_parts = [b.get("text", "") for b in parsed.get("content", []) if b.get("type") == "text"]
+        usage = parsed.get("usage", {})
+        return {
+            "ok": True,
+            "reply": "\n".join(t for t in text_parts if t),
+            "tokens_in": usage.get("input_tokens", 0),
+            "tokens_out": usage.get("output_tokens", 0),
+            "model": parsed.get("model", model),
+        }
+
+
+class OpenAIProvider(Provider):
+    name = "openai"
+    label = "OpenAI"
+    default_model = "gpt-4o"
+    models = [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-4-turbo",
+        "o1-preview",
+    ]
+    env_keys = ["OPENAI_API_KEY"]
+    endpoint = "https://api.openai.com/v1/chat/completions"
+
+    def call(self, messages, system, model, api_key):
+        msgs = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        msgs.extend(messages)
+        body = {
+            "model": model,
+            "messages": msgs,
+            "max_tokens": DEFAULT_MAX_TOKENS,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        status, raw = _http_post(self.endpoint, headers, body)
+        if status >= 400:
+            return {"ok": False, "error": f"http_{status}", "reply": raw}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "bad_json", "reply": raw}
+        choices = parsed.get("choices", [])
+        text = choices[0].get("message", {}).get("content", "") if choices else ""
+        usage = parsed.get("usage", {})
+        return {
+            "ok": True,
+            "reply": text,
+            "tokens_in": usage.get("prompt_tokens", 0),
+            "tokens_out": usage.get("completion_tokens", 0),
+            "model": parsed.get("model", model),
+        }
+
+
+class GoogleProvider(Provider):
+    name = "google"
+    label = "Google Gemini"
+    default_model = "gemini-2.0-flash"
+    models = [
+        "gemini-2.0-flash",
+        "gemini-2.0-pro",
+        "gemini-1.5-pro",
+        "gemini-1.5-flash",
+    ]
+    env_keys = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
+
+    def call(self, messages, system, model, api_key):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={urllib.parse.quote(api_key)}"
+        contents = []
+        for m in messages:
+            role = m.get("role", "user")
+            contents.append({
+                "role": "user" if role == "user" else "model",
+                "parts": [{"text": m.get("content", "")}],
+            })
+        body: dict = {
+            "contents": contents,
+            "generationConfig": {"maxOutputTokens": DEFAULT_MAX_TOKENS},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        headers = {"Content-Type": "application/json"}
+        status, raw = _http_post(url, headers, body)
+        if status >= 400:
+            return {"ok": False, "error": f"http_{status}", "reply": raw}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "bad_json", "reply": raw}
+        cands = parsed.get("candidates", [])
+        text = ""
+        if cands:
+            parts = cands[0].get("content", {}).get("parts", [])
+            text = "".join(p.get("text", "") for p in parts)
+        usage = parsed.get("usageMetadata", {})
+        return {
+            "ok": True,
+            "reply": text,
+            "tokens_in": usage.get("promptTokenCount", 0),
+            "tokens_out": usage.get("candidatesTokenCount", 0),
+            "model": model,
+        }
+
+
+PROVIDERS: dict[str, Provider] = {
+    "anthropic": AnthropicProvider(),
+    "openai": OpenAIProvider(),
+    "google": GoogleProvider(),
+}
+
+
+def _active_provider(settings: dict | None = None) -> Provider:
+    s = settings if settings is not None else _load_settings()
+    name = s.get("provider", "anthropic")
+    return PROVIDERS.get(name, PROVIDERS["anthropic"])
 
 
 def _audit(event: str, payload: dict) -> None:
@@ -101,93 +362,58 @@ def _read_recent_reports(limit: int = 5) -> list[dict]:
     return out
 
 
-def _call_claude(messages: list[dict], system: str | None = None) -> dict:
-    key = _api_key()
-    if not key:
-        return {"ok": False, "error": "missing_api_key", "reply": ""}
-    body = {
-        "model": _model(),
-        "max_tokens": DEFAULT_MAX_TOKENS,
-        "messages": messages,
-    }
-    if system:
-        body["system"] = system
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        ANTHROPIC_ENDPOINT,
-        data=data,
-        method="POST",
-        headers={
-            "x-api-key": key,
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        },
-    )
+def _call_active(messages: list[dict], system: str | None) -> dict:
+    settings = _load_settings()
+    provider = _active_provider(settings)
+    api_key = provider.get_api_key(settings)
+    if not api_key:
+        return {"ok": False, "error": "missing_api_key", "reply": "", "provider": provider.name}
+    model = provider.get_model(settings)
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            raw = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        return {"ok": False, "error": f"http_{e.code}", "reply": e.read().decode("utf-8", errors="replace")}
+        result = provider.call(messages, system or "", model, api_key)
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        return {"ok": False, "error": "network", "reply": str(e)}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {"ok": False, "error": "bad_json", "reply": raw}
-    text_parts = [b.get("text", "") for b in parsed.get("content", []) if b.get("type") == "text"]
-    usage = parsed.get("usage", {})
-    return {
-        "ok": True,
-        "reply": "\n".join(t for t in text_parts if t),
-        "tokens_in": usage.get("input_tokens", 0),
-        "tokens_out": usage.get("output_tokens", 0),
-        "model": parsed.get("model", _model()),
-    }
+        return {"ok": False, "error": "network", "reply": str(e), "provider": provider.name}
+    result["provider"] = provider.name
+    return result
 
 
-def cap_analyze_network(_: dict) -> dict:
+# ── Capabilities ────────────────────────────────────────────────────────────
+
+def cap_analyze_network(args: dict) -> dict:
+    lang = args.get("lang", "fr")
     captures = _read_recent_captures()
     reports = _read_recent_reports()
     if not captures and not reports:
-        ctx = "Aucune capture ni rapport récent disponible dans `captures/` ou `reports/`."
+        ctx = _cap_prompt("no_data", lang, "")
     else:
         ctx = json.dumps(
-            {"captures_recents": captures, "rapports_recents": reports},
+            {"captures": captures, "reports": reports},
             ensure_ascii=False,
             indent=2,
         )[:30000]
-    user = (
-        "Analyse l'état de mon réseau à partir des données ci-dessous. "
-        "Identifie les anomalies, classe par sévérité, et propose 3 actions concrètes.\n\n"
-        f"DONNÉES:\n{ctx}"
-    )
-    return _call_claude([{"role": "user", "content": user}], system=SYSTEM_PROMPT)
+    user = _cap_prompt("analyze_network", lang, ctx)
+    return _call_active([{"role": "user", "content": user}], _system_prompt(lang))
 
 
 def cap_explain_threats(args: dict) -> dict:
+    lang = args.get("lang", "fr")
     threats = args.get("threats")
     if not threats:
         threats = _read_recent_reports()
-    user = (
-        "Explique en langage clair les menaces suivantes à un utilisateur non-expert. "
-        "Pour chaque menace : ce que c'est, le risque réel, l'urgence.\n\n"
-        f"MENACES:\n{json.dumps(threats, ensure_ascii=False, indent=2)[:25000]}"
-    )
-    return _call_claude([{"role": "user", "content": user}], system=SYSTEM_PROMPT)
+    ctx = json.dumps(threats, ensure_ascii=False, indent=2)[:25000]
+    user = _cap_prompt("explain_threats", lang, ctx)
+    return _call_active([{"role": "user", "content": user}], _system_prompt(lang))
 
 
 def cap_recommend_actions(args: dict) -> dict:
+    lang = args.get("lang", "fr")
     context = args.get("context") or {
         "captures": _read_recent_captures(3),
         "reports": _read_recent_reports(3),
     }
-    user = (
-        "À partir de l'état réseau ci-dessous, donne-moi un plan d'action priorisé "
-        "(P0 immédiat / P1 cette semaine / P2 ce mois). "
-        "Sois concret : commandes, configs, pas de blabla.\n\n"
-        f"ÉTAT:\n{json.dumps(context, ensure_ascii=False, indent=2)[:25000]}"
-    )
-    return _call_claude([{"role": "user", "content": user}], system=SYSTEM_PROMPT)
+    ctx = json.dumps(context, ensure_ascii=False, indent=2)[:25000]
+    user = _cap_prompt("recommend_actions", lang, ctx)
+    return _call_active([{"role": "user", "content": user}], _system_prompt(lang))
 
 
 CAPABILITIES: dict[str, dict[str, Any]] = {
@@ -213,8 +439,10 @@ def register_capability(name: str, label: str, description: str, handler: Callab
     CAPABILITIES[name] = {"label": label, "description": description, "handler": handler}
 
 
+# ── HTTP layer ──────────────────────────────────────────────────────────────
+
 class _Handler(http.server.SimpleHTTPRequestHandler):
-    def log_message(self, fmt: str, *args: Any) -> None:  # silence default logging
+    def log_message(self, fmt: str, *args: Any) -> None:
         return
 
     def _json(self, status: int, body: dict) -> None:
@@ -248,7 +476,30 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             self.path = "/netguard_ai.html"
             return super().do_GET()
         if self.path == "/api/health":
-            return self._json(200, {"ok": True, "has_key": bool(_api_key()), "model": _model()})
+            settings = _load_settings()
+            provider = _active_provider(settings)
+            return self._json(200, {
+                "ok": True,
+                "provider": provider.name,
+                "has_key": bool(provider.get_api_key(settings)),
+                "model": provider.get_model(settings),
+            })
+        if self.path == "/api/providers":
+            settings = _load_settings()
+            return self._json(200, {
+                "active": settings.get("provider", "anthropic"),
+                "providers": [
+                    {
+                        "name": p.name,
+                        "label": p.label,
+                        "models": p.models,
+                        "default_model": p.default_model,
+                        "has_key": bool(p.get_api_key(settings)),
+                        "current_model": p.get_model(settings),
+                    }
+                    for p in PROVIDERS.values()
+                ],
+            })
         if self.path == "/api/capabilities":
             return self._json(200, {
                 "capabilities": [
@@ -259,17 +510,72 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
+        if self.path == "/api/settings":
+            payload = self._read_json()
+            settings = _load_settings()
+            providers = settings.setdefault("providers", {})
+
+            new_active = payload.get("provider")
+            if isinstance(new_active, str) and new_active in PROVIDERS:
+                settings["provider"] = new_active
+
+            target_name = (payload.get("target") or settings.get("provider") or "anthropic").lower()
+            if target_name not in PROVIDERS:
+                return self._json(400, {"ok": False, "error": "unknown_provider"})
+            target = PROVIDERS[target_name]
+            scope = providers.setdefault(target_name, {})
+
+            new_key = (payload.get("api_key") or "").strip()
+            if new_key:
+                if target_name == "anthropic" and not new_key.startswith("sk-ant-"):
+                    return self._json(400, {"ok": False, "error": "invalid_key_format"})
+                if target_name == "openai" and not new_key.startswith("sk-"):
+                    return self._json(400, {"ok": False, "error": "invalid_key_format"})
+                scope["api_key"] = new_key
+
+            new_model = (payload.get("model") or "").strip()
+            if new_model:
+                scope["model"] = new_model
+
+            try:
+                _save_settings(settings)
+            except OSError as e:
+                return self._json(500, {"ok": False, "error": f"write_failed: {e}"})
+
+            _audit("settings_update", {
+                "provider": settings.get("provider"),
+                "target": target_name,
+                "key_set": bool(new_key),
+                "model": scope.get("model"),
+            })
+            active = _active_provider(settings)
+            return self._json(200, {
+                "ok": True,
+                "provider": active.name,
+                "has_key": bool(active.get_api_key(settings)),
+                "model": active.get_model(settings),
+            })
+
         if self.path == "/api/chat":
             payload = self._read_json()
             messages = payload.get("messages") or []
             user_msg = payload.get("message")
+            lang = payload.get("lang", "fr")
             if user_msg:
                 messages.append({"role": "user", "content": user_msg})
             if not messages:
                 return self._json(400, {"ok": False, "error": "empty_messages"})
-            result = _call_claude(messages, system=SYSTEM_PROMPT)
-            _audit("chat", {"messages": len(messages), "ok": result.get("ok"), "tokens_in": result.get("tokens_in"), "tokens_out": result.get("tokens_out")})
+            result = _call_active(messages, _system_prompt(lang))
+            _audit("chat", {
+                "lang": lang,
+                "provider": result.get("provider"),
+                "messages": len(messages),
+                "ok": result.get("ok"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+            })
             return self._json(200, result)
+
         if self.path.startswith("/api/capability/"):
             name = self.path[len("/api/capability/"):]
             cap = CAPABILITIES.get(name)
@@ -277,7 +583,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                 return self._json(404, {"ok": False, "error": "unknown_capability", "available": list(CAPABILITIES)})
             args = self._read_json()
             result = cap["handler"](args)
-            _audit("capability", {"name": name, "ok": result.get("ok"), "tokens_in": result.get("tokens_in"), "tokens_out": result.get("tokens_out")})
+            _audit("capability", {
+                "name": name,
+                "provider": result.get("provider"),
+                "ok": result.get("ok"),
+                "tokens_in": result.get("tokens_in"),
+                "tokens_out": result.get("tokens_out"),
+            })
             return self._json(200, result)
         return self._json(404, {"ok": False, "error": "not_found"})
 
@@ -292,8 +604,11 @@ def run(port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
     server = _ThreadedServer(("127.0.0.1", port), _Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"[NetGuard AI] Server ready on {url}")
-    if not _api_key():
-        print("[NetGuard AI] WARNING: no ANTHROPIC_API_KEY set (env var or netguard_ai_settings.json).")
+    settings = _load_settings()
+    provider = _active_provider(settings)
+    print(f"[NetGuard AI] Active provider: {provider.label} ({provider.get_model(settings)})")
+    if not provider.get_api_key(settings):
+        print(f"[NetGuard AI] WARNING: no API key for {provider.label} (env vars or settings.json).")
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:

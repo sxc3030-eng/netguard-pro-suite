@@ -31,6 +31,7 @@ blocked_ips.txt
 whitelist_custom.txt
 netguard_users.json
 netguard_service.vbs
+netguard_ai_settings.json
 
 # Fichiers générés
 *.exe
