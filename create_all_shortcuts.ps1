@@ -6,10 +6,15 @@ $desktop   = [Environment]::GetFolderPath("Desktop")
 $iconPath  = Join-Path $scriptDir "netguard_icon.ico"
 $WshShell  = New-Object -ComObject WScript.Shell
 
-# Generate icon if missing
+# Generate icons if missing (uses unified brand generator)
 if (-not (Test-Path $iconPath)) {
-    Write-Host "[..] Generation de l'icone..." -ForegroundColor Yellow
-    python (Join-Path $scriptDir "create_icon.py")
+    Write-Host "[..] Generation des icones de la suite..." -ForegroundColor Yellow
+    $brand = Join-Path $scriptDir "create_brand_icons.py"
+    if (Test-Path $brand) {
+        python $brand
+    } else {
+        python (Join-Path $scriptDir "create_icon.py")
+    }
 }
 
 $shortcuts = @(
