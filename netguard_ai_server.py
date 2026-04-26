@@ -27,7 +27,7 @@ CAPTURES_DIR = ROOT / "captures"
 
 ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_MODEL = "claude-sonnet-4-6-20251022"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_MAX_TOKENS = 2048
 DEFAULT_PORT = 8770
 

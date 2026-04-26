@@ -1,5 +1,5 @@
 {
   "_comment": "Copie ce fichier vers netguard_ai_settings.json puis remplis ta cle. La variable d'environnement ANTHROPIC_API_KEY a la priorite si elle est definie.",
   "anthropic_api_key": "sk-ant-REMPLACE-MOI",
-  "model": "claude-sonnet-4-6-20251022"
+  "model": "claude-sonnet-4-6"
 }
