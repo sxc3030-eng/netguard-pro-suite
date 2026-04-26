@@ -56,6 +56,9 @@ mailshield/dist/
 mailshield/build/
 mailshield/*.spec
 
+# CleanGuard - runtime data
+cleanguard/quarantine/
+
 # WireGuard - Données sensibles
 wireguard/peers.json
 wireguard/server_keys.json
