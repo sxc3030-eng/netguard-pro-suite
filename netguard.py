@@ -3962,12 +3962,11 @@ class NetGuardAPI:
             return {}
         return get_all_startup_states()
 
-    def open_ai_window(self, lang="fr"):
-        """Open the AI Assistant window. Boots netguard_ai_server.py if not already running."""
+    def _ensure_ai_server(self) -> dict:
+        """Boot netguard_ai_server.py on port 8770 if not already running. Idempotent."""
         import socket as _socket
         import subprocess as _sp
         import time as _time
-        import webbrowser as _wb
 
         port = 8770
         here = os.path.dirname(os.path.abspath(__file__))
@@ -3980,25 +3979,37 @@ class NetGuardAPI:
             finally:
                 s.close()
 
-        if not _is_up():
-            script = os.path.join(here, "netguard_ai_server.py")
-            if not os.path.isfile(script):
-                return {"success": False, "error": "ai_server_missing"}
-            flags = _sp.CREATE_NEW_CONSOLE if os.name == "nt" else 0
-            try:
-                _sp.Popen([sys.executable, script, "--no-browser"],
-                          cwd=here, creationflags=flags)
-            except Exception as e:
-                return {"success": False, "error": f"spawn_failed: {e}"}
-            for _ in range(25):
-                if _is_up():
-                    break
-                _time.sleep(0.2)
-            else:
-                return {"success": False, "error": "server_not_responding"}
+        if _is_up():
+            return {"success": True, "already_running": True, "port": port}
 
+        script = os.path.join(here, "netguard_ai_server.py")
+        if not os.path.isfile(script):
+            return {"success": False, "error": "ai_server_missing"}
+        flags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            _sp.Popen([sys.executable, script, "--no-browser"],
+                      cwd=here, creationflags=flags)
+        except Exception as e:
+            return {"success": False, "error": f"spawn_failed: {e}"}
+        for _ in range(25):
+            if _is_up():
+                return {"success": True, "spawned": True, "port": port}
+            _time.sleep(0.2)
+        return {"success": False, "error": "server_not_responding"}
+
+    def start_ai_server(self):
+        """Spawn the AI server quietly (no browser). Used by the inline dashboard chat drawer."""
+        return self._ensure_ai_server()
+
+    def open_ai_window(self, lang="fr"):
+        """Boot the AI server and open the standalone window in the default browser."""
+        import webbrowser as _wb
+        boot = self._ensure_ai_server()
+        if not boot.get("success"):
+            return boot
         if lang not in ("fr", "en", "es"):
             lang = "fr"
+        port = boot.get("port", 8770)
         _wb.open(f"http://127.0.0.1:{port}/?lang={lang}")
         return {"success": True, "url": f"http://127.0.0.1:{port}/?lang={lang}"}
 

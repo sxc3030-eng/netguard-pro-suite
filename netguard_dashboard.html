@@ -248,6 +248,49 @@ tr:hover td{background:var(--bg4)22}
 .recording-stats .rs{text-align:center}
 .recording-stats .rs-val{font-size:14px;font-weight:600;font-family:'Geist Mono',monospace}
 .recording-stats .rs-lbl{font-size:9px;color:var(--text3);text-transform:uppercase}
+
+/* ── AI Chat Drawer (inline) ─────────────────────────────────────────── */
+.ai-fab{position:fixed;bottom:20px;right:20px;z-index:90;background:linear-gradient(135deg,#4d9fff,#b47dff);color:#fff;border:none;border-radius:30px;padding:12px 20px;cursor:pointer;display:flex;align-items:center;gap:10px;font-family:'Outfit',sans-serif;font-size:14px;font-weight:500;box-shadow:0 6px 22px rgba(77,159,255,.45);transition:.2s}
+.ai-fab:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(180,125,255,.55)}
+.ai-fab svg{flex-shrink:0}
+.ai-fab .ai-fab-dot{width:7px;height:7px;border-radius:50%;background:#3dffb4;box-shadow:0 0 8px #3dffb4}
+
+.ai-drawer{position:fixed;top:0;right:0;height:100vh;width:420px;max-width:96vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:95;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column;box-shadow:-12px 0 40px #0008}
+.ai-drawer.open{transform:translateX(0)}
+.ai-d-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:linear-gradient(180deg,#1c1c26,#16161d)}
+.ai-d-head .ai-d-title{font-size:14px;font-weight:600;flex:1;display:flex;align-items:center;gap:8px}
+.ai-d-head .ai-d-title .grad{background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.ai-d-head .ai-d-status{font-size:10px;color:var(--text3);font-family:'Geist Mono',monospace}
+.ai-d-head button{background:transparent;border:none;color:var(--text2);cursor:pointer;width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:.15s}
+.ai-d-head button:hover{background:var(--bg4);color:var(--blue)}
+
+.ai-d-quick{padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2)}
+.ai-d-quick button{background:var(--bg4);border:1px solid var(--border2);color:var(--text2);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:14px;cursor:pointer;transition:.15s}
+.ai-d-quick button:hover{border-color:var(--blue);color:var(--blue)}
+
+.ai-d-chat{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.ai-d-chat::-webkit-scrollbar{width:6px}
+.ai-d-chat::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.ai-msg{max-width:90%;padding:9px 13px;border-radius:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.ai-msg.user{align-self:flex-end;background:linear-gradient(135deg,#4d9fff,#7b5fff);color:#fff;border-bottom-right-radius:3px}
+.ai-msg.ai{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:3px}
+.ai-msg.sys{align-self:center;font-size:10px;color:var(--text3);font-style:italic;padding:4px 10px}
+.ai-msg.err{align-self:flex-start;background:#3d1220;color:#ff4d6a;border:1px solid #ff4d6a40;font-size:11px}
+.ai-thinking{align-self:flex-start;display:flex;gap:3px;background:var(--bg3);border:1px solid var(--border);padding:9px 13px;border-radius:10px;border-bottom-left-radius:3px}
+.ai-thinking span{width:5px;height:5px;border-radius:50%;background:var(--text2);animation:aiBounce 1.4s infinite}
+.ai-thinking span:nth-child(2){animation-delay:.2s}.ai-thinking span:nth-child(3){animation-delay:.4s}
+@keyframes aiBounce{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}
+
+.ai-d-comp{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--bg2)}
+.ai-d-comp textarea{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:inherit;font-size:12px;padding:8px 10px;border-radius:8px;resize:none;min-height:36px;max-height:120px;line-height:1.4;outline:none;transition:.15s}
+.ai-d-comp textarea:focus{border-color:var(--blue)}
+.ai-d-comp .ai-send{background:linear-gradient(135deg,#4d9fff,#b47dff);color:#fff;border:none;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;height:36px;transition:.15s}
+.ai-d-comp .ai-send:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(77,159,255,.3)}
+.ai-d-comp .ai-send:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+
+.ai-d-keyhint{padding:8px 14px;font-size:10px;color:var(--text3);text-align:center;border-top:1px solid var(--border);background:#3d2800;color:#ffb347;display:none}
+.ai-d-keyhint.show{display:block}
+.ai-d-keyhint a{color:#ffb347;text-decoration:underline;cursor:pointer}
 </style>
 </head>
 <body>
@@ -6326,7 +6369,254 @@ function dcRenderAnalysis() {
     </tr>`).join('') + '</table>';
 }
 
+// ═══ AI Chat Drawer (inline) ══════════════════════════════════════════════
+const AI_API = 'http://127.0.0.1:8770';
+const AI_T = {
+  fr: {
+    open: 'Demander à l\'IA', title: 'Assistant IA', placeholder: 'Pose une question…',
+    send: '↑', welcome: 'Demande-moi n\'importe quoi sur l\'état de ton réseau.',
+    q_explain: 'Que signifient ces données ?', q_weak: 'Analyse mes faiblesses',
+    q_summary: 'Résume la situation', q_threat: 'Quelles menaces sont prioritaires ?',
+    offline: 'Démarrage du serveur IA…', no_key: 'Aucune clé API.',
+    no_key_link: 'Configurer la clé', popout: 'Plein écran',
+    err_net: 'Erreur réseau : ',
+  },
+  en: {
+    open: 'Ask the AI', title: 'AI Assistant', placeholder: 'Ask a question…',
+    send: '↑', welcome: 'Ask me anything about the state of your network.',
+    q_explain: 'What does this data mean?', q_weak: 'Analyze my weaknesses',
+    q_summary: 'Summarize the situation', q_threat: 'Which threats are priority?',
+    offline: 'Booting the AI server…', no_key: 'No API key set.',
+    no_key_link: 'Configure the key', popout: 'Open fullscreen',
+    err_net: 'Network error: ',
+  },
+  es: {
+    open: 'Preguntar a la IA', title: 'Asistente IA', placeholder: 'Haz una pregunta…',
+    send: '↑', welcome: 'Pregúntame lo que sea sobre el estado de tu red.',
+    q_explain: '¿Qué significan estos datos?', q_weak: 'Analiza mis debilidades',
+    q_summary: 'Resume la situación', q_threat: '¿Qué amenazas son prioritarias?',
+    offline: 'Iniciando el servidor IA…', no_key: 'Sin clave API.',
+    no_key_link: 'Configurar la clave', popout: 'Pantalla completa',
+    err_net: 'Error de red: ',
+  },
+  de: {
+    open: 'KI fragen', title: 'KI-Assistent', placeholder: 'Stelle eine Frage…',
+    send: '↑', welcome: 'Frag mich alles über den Zustand deines Netzwerks.',
+    q_explain: 'Was bedeuten diese Daten?', q_weak: 'Analysiere meine Schwächen',
+    q_summary: 'Fasse die Lage zusammen', q_threat: 'Welche Bedrohungen sind priorität?',
+    offline: 'KI-Server wird gestartet…', no_key: 'Kein API-Schlüssel.',
+    no_key_link: 'Schlüssel konfigurieren', popout: 'Vollbild',
+    err_net: 'Netzwerkfehler: ',
+  },
+};
+function aiT(k){ return (AI_T[currentLang] && AI_T[currentLang][k]) || AI_T.fr[k] || k; }
+
+const aiHistory = [];
+let aiBooted = false;
+
+function buildDashboardContext(){
+  const s = lastState || {};
+  const counts = s.counts || {};
+  return {
+    locale: currentLang,
+    timestamp: new Date().toISOString(),
+    metrics: {
+      packets_per_sec: counts.pkt_per_sec || counts.pps || 0,
+      total_packets: counts.total || 0,
+      blocked: counts.blocked || 0,
+      threats: counts.threats || 0,
+      active_connections: counts.connections || 0,
+    },
+    recent_threats: (s.threats || []).slice(-10),
+    top_suspicious_ips: (s.top_ips || []).slice(0, 8),
+    blocked_countries: s.blocked_countries || [],
+    paused: !!s.paused,
+  };
+}
+
+async function aiEnsureServer(){
+  try {
+    const r = await fetch(AI_API + '/api/health', {cache:'no-store'});
+    if (r.ok) return await r.json();
+  } catch {}
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.start_ai_server) {
+    try { await window.pywebview.api.start_ai_server(); } catch {}
+  }
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 250));
+    try {
+      const r = await fetch(AI_API + '/api/health', {cache:'no-store'});
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  return null;
+}
+
+function aiAddMsg(role, text){
+  const chat = document.getElementById('ai-d-chat');
+  const div = document.createElement('div');
+  div.className = 'ai-msg ' + role;
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+function aiAddThinking(){
+  const chat = document.getElementById('ai-d-chat');
+  const div = document.createElement('div');
+  div.className = 'ai-thinking';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+async function aiSend(prompt, withState){
+  if (!prompt || !prompt.trim()) return;
+  const text = prompt.trim();
+  aiAddMsg('user', text);
+
+  let userContent = text;
+  if (withState) {
+    const ctx = buildDashboardContext();
+    userContent = text + "\n\n[Dashboard live state]\n" + JSON.stringify(ctx, null, 2).slice(0, 18000);
+  }
+
+  aiHistory.push({role: 'user', content: userContent});
+  const t = aiAddThinking();
+  const sendBtn = document.getElementById('ai-d-send');
+  sendBtn.disabled = true;
+
+  try {
+    const r = await fetch(AI_API + '/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({messages: aiHistory.slice(0, -1), message: userContent, lang: currentLang}),
+    });
+    const j = await r.json();
+    t.remove();
+    if (!j.ok) {
+      if (j.error === 'missing_api_key') {
+        document.getElementById('ai-d-keyhint').classList.add('show');
+        aiAddMsg('err', aiT('no_key'));
+      } else {
+        aiAddMsg('err', (j.error || '') + (j.reply ? '\n' + j.reply.slice(0, 500) : ''));
+      }
+    } else {
+      aiHistory.push({role: 'assistant', content: j.reply || ''});
+      aiAddMsg('ai', j.reply || '…');
+    }
+  } catch (e) {
+    t.remove();
+    aiAddMsg('err', aiT('err_net') + e);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+async function aiOpenDrawer(){
+  document.getElementById('ai-drawer').classList.add('open');
+  if (aiBooted) return;
+  aiBooted = true;
+  const status = document.getElementById('ai-d-status');
+  status.textContent = aiT('offline');
+  const h = await aiEnsureServer();
+  if (!h) { status.textContent = '—'; return; }
+  status.textContent = (h.provider || 'anthropic') + ' · ' + (h.model || '');
+  if (!h.has_key) document.getElementById('ai-d-keyhint').classList.add('show');
+}
+
+function aiCloseDrawer(){ document.getElementById('ai-drawer').classList.remove('open'); }
+
+function aiPopout(){
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_ai_window) {
+    window.pywebview.api.open_ai_window(currentLang);
+  } else {
+    window.open(AI_API + '/?lang=' + currentLang, '_blank');
+  }
+}
+
+function aiApplyTranslations(){
+  const fab = document.getElementById('ai-fab-label');
+  if (fab) fab.textContent = aiT('open');
+  const title = document.getElementById('ai-d-title-text');
+  if (title) title.textContent = aiT('title');
+  const ph = document.getElementById('ai-d-input');
+  if (ph) ph.placeholder = aiT('placeholder');
+  const send = document.getElementById('ai-d-send');
+  if (send) send.textContent = aiT('send');
+  const wel = document.getElementById('ai-d-welcome');
+  if (wel) wel.textContent = aiT('welcome');
+  for (const [id, k] of [['aiq-explain','q_explain'],['aiq-weak','q_weak'],['aiq-summary','q_summary'],['aiq-threat','q_threat']]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = aiT(k);
+  }
+  const link = document.getElementById('ai-d-key-link');
+  if (link) link.textContent = aiT('no_key_link');
+}
+
+// Hook into existing setLang to re-translate the drawer when lang changes.
+(function(){
+  const orig = window.setLang;
+  if (typeof orig === 'function') {
+    window.setLang = function(l){ orig(l); aiApplyTranslations(); };
+  }
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+  aiApplyTranslations();
+  const input = document.getElementById('ai-d-input');
+  if (input) input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const v = input.value;
+      input.value = '';
+      aiSend(v, true);
+    }
+  });
+});
+
 // ═══ FIN ══════════════════════════════════════════════════════════════════
 </script>
+
+<!-- AI Chat Drawer -->
+<button class="ai-fab" onclick="aiOpenDrawer()" title="AI Assistant">
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 1.5L13.5 4v4.5c0 3-2 5.2-5.5 6.5C4.5 13.7 2.5 11.5 2.5 8.5V4z" stroke="white" stroke-width="1.4"/><path d="M8 5v6M5 8h6" stroke="white" stroke-width="1.3" stroke-linecap="round"/></svg>
+  <span id="ai-fab-label">Ask the AI</span>
+  <span class="ai-fab-dot"></span>
+</button>
+
+<div class="ai-drawer" id="ai-drawer">
+  <div class="ai-d-head">
+    <div class="ai-d-title">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5L13.5 4v4.5c0 3-2 5.2-5.5 6.5C4.5 13.7 2.5 11.5 2.5 8.5V4z" stroke="url(#dgrad)" stroke-width="1.4"/><defs><linearGradient id="dgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4d9fff"/><stop offset="1" stop-color="#b47dff"/></linearGradient></defs></svg>
+      <span class="grad" id="ai-d-title-text">AI Assistant</span>
+    </div>
+    <span class="ai-d-status" id="ai-d-status">—</span>
+    <button onclick="aiPopout()" title="Pop out">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M9 2h5v5M14 2L8 8M6 4H3v9h9v-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </button>
+    <button onclick="aiCloseDrawer()" title="Close">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="ai-d-quick">
+    <button id="aiq-explain" onclick="aiSend(aiT('q_explain'), true)"></button>
+    <button id="aiq-weak" onclick="aiSend(aiT('q_weak'), true)"></button>
+    <button id="aiq-summary" onclick="aiSend(aiT('q_summary'), true)"></button>
+    <button id="aiq-threat" onclick="aiSend(aiT('q_threat'), true)"></button>
+  </div>
+  <div class="ai-d-chat" id="ai-d-chat">
+    <div class="ai-msg sys" id="ai-d-welcome"></div>
+  </div>
+  <div class="ai-d-keyhint" id="ai-d-keyhint">
+    <span id="ai-d-key-msg"></span> <a onclick="aiPopout()" id="ai-d-key-link"></a>
+  </div>
+  <div class="ai-d-comp">
+    <textarea id="ai-d-input" rows="1"></textarea>
+    <button class="ai-send" id="ai-d-send" onclick="(function(){const i=document.getElementById('ai-d-input');const v=i.value;i.value='';aiSend(v,true);})()">↑</button>
+  </div>
+</div>
+
 </body>
 </html>
