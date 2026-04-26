@@ -50,7 +50,7 @@ foreach ($s in $shortcuts) {
     $shortcut.WorkingDirectory = $scriptDir
     $shortcut.IconLocation     = "$iconPath,0"
     $shortcut.Description      = $s.Desc
-    $shortcut.WindowStyle      = 7  # Minimized
+    $shortcut.WindowStyle      = 1  # Normal — services console must stay visible
     $shortcut.Save()
     Write-Host ("[OK]   {0,-28} -> {1}" -f $s.Name, [IO.Path]::GetFileName($iconPath)) -ForegroundColor Green
     $created++
