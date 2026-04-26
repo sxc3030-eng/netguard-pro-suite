@@ -27,9 +27,9 @@ $rules = @(
     @{ Match = "(?i)honey.?pot.*agent|\bhoneypot\b"     ; Icon = (Join-Path $sentinelIcons "honeypot.ico") },
     @{ Match = "(?i)file.?integrity|\bFIM\b"            ; Icon = (Join-Path $sentinelIcons "fim.ico") },
     @{ Match = "(?i)strike.?back|red.?team.?toolkit"    ; Icon = (Join-Path $sentinelIcons "strikeback.ico") },
-    @{ Match = "(?i)sandbox.?analyzer"                  ; Icon = (Join-Path $sentinelIcons "cleanguard.ico") },
+    @{ Match = "(?i)sandbox.?analyzer"                  ; Icon = (Join-Path $sentinelIcons "sandbox.ico") },
     @{ Match = "(?i)clean.?guard"                       ; Icon = (Join-Path $sentinelIcons "cleanguard.ico") },
-    @{ Match = "(?i)siem.?monitor"                      ; Icon = (Join-Path $sentinelIcons "sentinel.ico") },
+    @{ Match = "(?i)siem.?monitor"                      ; Icon = (Join-Path $sentinelIcons "siem.ico") },
     @{ Match = "(?i)sentinel.?os|sentinelos"            ; Icon = (Join-Path $sentinelRoot  "SentinelOS.ico") },
     @{ Match = "(?i)vpn.?guard"                         ; Icon = (Join-Path $sentinelIcons "vpnguard.ico") },
     @{ Match = "(?i)\bnet.?guard\b"                     ; Icon = (Join-Path $root          "netguard_icon.ico") }
