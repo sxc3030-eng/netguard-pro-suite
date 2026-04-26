@@ -41,12 +41,17 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
 .cap-btn:disabled{opacity:.5;cursor:wait}
 
 .chat{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px;min-height:0}
-.msg{max-width:85%;padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word}
+.msg{max-width:85%;padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;user-select:text;-webkit-user-select:text;cursor:text;position:relative}
 .msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--blue),#7b5fff);color:#fff;border-bottom-right-radius:4px}
 .msg.ai{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);border-bottom-left-radius:4px}
-.msg.sys{align-self:center;background:transparent;color:var(--text3);font-size:11px;font-style:italic;border:1px dashed var(--border2);padding:6px 12px}
+.msg.sys{align-self:center;background:transparent;color:var(--text3);font-size:11px;font-style:italic;border:1px dashed var(--border2);padding:6px 12px;cursor:default;user-select:none}
 .msg.err{align-self:flex-start;background:#3d1220;color:#ff4d6a;border:1px solid #ff4d6a40}
-.msg-meta{font-size:10px;color:var(--text3);margin-top:6px;font-family:'Geist Mono',monospace}
+.msg-meta{font-size:10px;color:var(--text3);margin-top:6px;font-family:'Geist Mono',monospace;user-select:none}
+.msg ::selection{background:rgba(180,125,255,.45);color:#fff}
+.msg .copy-btn{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.45);border:1px solid var(--border2);color:var(--text2);width:26px;height:24px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:.15s;padding:0;font-family:inherit}
+.msg:hover .copy-btn{opacity:1}
+.msg .copy-btn:hover{color:var(--blue);border-color:var(--blue)}
+.msg .copy-btn.copied{color:var(--green);border-color:var(--green);opacity:1}
 
 .thinking{display:flex;gap:4px;align-self:flex-start;background:var(--bg3);border:1px solid var(--border);padding:14px 18px;border-radius:12px;border-bottom-left-radius:4px}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--text2);animation:bounce 1.4s infinite}
@@ -106,6 +111,9 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <span id="status-text">…</span>
       <span id="model-tag" style="margin-left:6px;font-family:'Geist Mono',monospace;font-size:10px;color:var(--text3)"></span>
     </div>
+    <button class="icon-btn" id="export-btn" title="Export" onclick="exportConversation()">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5v9M5 7.5L8 10.5L11 7.5M2.5 12v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <button class="icon-btn" id="settings-btn" title="Settings">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><circle cx="8" cy="8" r="2.4" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
     </button>
@@ -187,6 +195,7 @@ const I18N = {
     saved: 'Enregistré.',
     save_failed: 'Échec : ',
     invalid_key: 'Clé invalide (doit commencer par sk-ant-).',
+    copy: 'Copier', export: 'Exporter la conversation',
   },
   en: {
     sub: '— AI Assistant',
@@ -221,6 +230,7 @@ const I18N = {
     saved: 'Saved.',
     save_failed: 'Failed: ',
     invalid_key: 'Invalid key (must start with sk-ant-).',
+    copy: 'Copy', export: 'Export conversation',
   },
   es: {
     sub: '— Asistente IA',
@@ -255,6 +265,7 @@ const I18N = {
     saved: 'Guardado.',
     save_failed: 'Error: ',
     invalid_key: 'Clave inválida (debe empezar con sk-ant-).',
+    copy: 'Copiar', export: 'Exportar conversación',
   },
 };
 
@@ -313,6 +324,8 @@ function applyLang(){
   document.getElementById('hint-provider').textContent = t('hint_provider');
   document.getElementById('btn-cancel').textContent = t('btn_cancel');
   document.getElementById('btn-save').textContent = t('btn_save');
+  const exp = document.getElementById('export-btn'); if (exp) exp.title = t('export');
+  for (const b of document.querySelectorAll('.msg .copy-btn')) b.title = t('copy');
   refreshKeyHint();
 }
 
@@ -465,16 +478,76 @@ for (const b of document.querySelectorAll('.lang-btn')){
 function addMsg(role, text, meta){
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.textContent = text;
+  const span = document.createElement('span');
+  span.textContent = text;
+  span.dataset.raw = text;
+  div.appendChild(span);
   if(meta){
     const m = document.createElement('div');
     m.className = 'msg-meta';
     m.textContent = meta;
     div.appendChild(m);
   }
+  if (role === 'ai' || role === 'user' || role === 'err') {
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.title = t('copy') || 'Copy';
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    btn.onclick = (e) => { e.stopPropagation(); copyMsgText(btn, span.dataset.raw); };
+    div.appendChild(btn);
+  }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   return div;
+}
+
+async function copyMsgText(btn, text){
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    }, 1500);
+  } catch (e) {
+    console.warn('clipboard write failed', e);
+  }
+}
+
+function exportConversation(){
+  const lines = [];
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  lines.push('# NetGuard AI — Conversation');
+  lines.push('');
+  lines.push('Exported: ' + new Date().toLocaleString());
+  lines.push('Lang: ' + lang);
+  lines.push('');
+  for (const m of chat.children) {
+    if (m.classList.contains('thinking')) continue;
+    const span = m.querySelector('span');
+    const txt = span ? (span.dataset.raw || span.textContent) : m.textContent;
+    if (m.classList.contains('user')) {
+      lines.push('## You'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('ai')) {
+      lines.push('## AI'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('err')) {
+      lines.push('### Error'); lines.push(''); lines.push(txt); lines.push('');
+    }
+  }
+  const blob = new Blob([lines.join('\n')], {type: 'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'netguard-ai-conversation_' + stamp + '.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 function addThinking(){

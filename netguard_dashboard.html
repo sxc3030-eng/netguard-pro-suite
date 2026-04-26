@@ -271,11 +271,16 @@ tr:hover td{background:var(--bg4)22}
 .ai-d-chat{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0}
 .ai-d-chat::-webkit-scrollbar{width:6px}
 .ai-d-chat::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
-.ai-msg{max-width:90%;padding:9px 13px;border-radius:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word}
+.ai-msg{max-width:90%;padding:9px 13px;border-radius:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;user-select:text;-webkit-user-select:text;cursor:text;position:relative}
 .ai-msg.user{align-self:flex-end;background:linear-gradient(135deg,#4d9fff,#7b5fff);color:#fff;border-bottom-right-radius:3px}
 .ai-msg.ai{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:3px}
-.ai-msg.sys{align-self:center;font-size:10px;color:var(--text3);font-style:italic;padding:4px 10px}
+.ai-msg.sys{align-self:center;font-size:10px;color:var(--text3);font-style:italic;padding:4px 10px;cursor:default;user-select:none}
 .ai-msg.err{align-self:flex-start;background:#3d1220;color:#ff4d6a;border:1px solid #ff4d6a40;font-size:11px}
+.ai-msg ::selection{background:rgba(180,125,255,.45);color:#fff}
+.ai-msg .ai-copy{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.45);border:1px solid var(--border2);color:var(--text2);width:24px;height:22px;border-radius:5px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:.15s;padding:0;font-family:inherit}
+.ai-msg:hover .ai-copy{opacity:1}
+.ai-msg .ai-copy:hover{color:var(--blue);border-color:var(--blue)}
+.ai-msg .ai-copy.copied{color:var(--green);border-color:var(--green);opacity:1}
 .ai-thinking{align-self:flex-start;display:flex;gap:3px;background:var(--bg3);border:1px solid var(--border);padding:9px 13px;border-radius:10px;border-bottom-left-radius:3px}
 .ai-thinking span{width:5px;height:5px;border-radius:50%;background:var(--text2);animation:aiBounce 1.4s infinite}
 .ai-thinking span:nth-child(2){animation-delay:.2s}.ai-thinking span:nth-child(3){animation-delay:.4s}
@@ -6379,7 +6384,7 @@ const AI_T = {
     q_summary: 'Résume la situation', q_threat: 'Quelles menaces sont prioritaires ?',
     offline: 'Démarrage du serveur IA…', no_key: 'Aucune clé API.',
     no_key_link: 'Configurer la clé', popout: 'Plein écran',
-    err_net: 'Erreur réseau : ',
+    err_net: 'Erreur réseau : ', copy: 'Copier', copied: 'Copié !', export: 'Exporter la conversation',
   },
   en: {
     open: 'Ask the AI', title: 'AI Assistant', placeholder: 'Ask a question…',
@@ -6388,7 +6393,7 @@ const AI_T = {
     q_summary: 'Summarize the situation', q_threat: 'Which threats are priority?',
     offline: 'Booting the AI server…', no_key: 'No API key set.',
     no_key_link: 'Configure the key', popout: 'Open fullscreen',
-    err_net: 'Network error: ',
+    err_net: 'Network error: ', copy: 'Copy', copied: 'Copied!', export: 'Export conversation',
   },
   es: {
     open: 'Preguntar a la IA', title: 'Asistente IA', placeholder: 'Haz una pregunta…',
@@ -6397,7 +6402,7 @@ const AI_T = {
     q_summary: 'Resume la situación', q_threat: '¿Qué amenazas son prioritarias?',
     offline: 'Iniciando el servidor IA…', no_key: 'Sin clave API.',
     no_key_link: 'Configurar la clave', popout: 'Pantalla completa',
-    err_net: 'Error de red: ',
+    err_net: 'Error de red: ', copy: 'Copiar', copied: '¡Copiado!', export: 'Exportar conversación',
   },
   de: {
     open: 'KI fragen', title: 'KI-Assistent', placeholder: 'Stelle eine Frage…',
@@ -6406,7 +6411,7 @@ const AI_T = {
     q_summary: 'Fasse die Lage zusammen', q_threat: 'Welche Bedrohungen sind priorität?',
     offline: 'KI-Server wird gestartet…', no_key: 'Kein API-Schlüssel.',
     no_key_link: 'Schlüssel konfigurieren', popout: 'Vollbild',
-    err_net: 'Netzwerkfehler: ',
+    err_net: 'Netzwerkfehler: ', copy: 'Kopieren', copied: 'Kopiert!', export: 'Konversation exportieren',
   },
 };
 function aiT(k){ return (AI_T[currentLang] && AI_T[currentLang][k]) || AI_T.fr[k] || k; }
@@ -6456,10 +6461,74 @@ function aiAddMsg(role, text){
   const chat = document.getElementById('ai-d-chat');
   const div = document.createElement('div');
   div.className = 'ai-msg ' + role;
-  div.textContent = text;
+  // Use a span for the text so the copy button stays out of the selection.
+  const span = document.createElement('span');
+  span.textContent = text;
+  span.dataset.raw = text;
+  div.appendChild(span);
+  if (role === 'ai' || role === 'user' || role === 'err') {
+    const btn = document.createElement('button');
+    btn.className = 'ai-copy';
+    btn.title = aiT('copy') || 'Copier';
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    btn.onclick = (e) => { e.stopPropagation(); aiCopyMessage(btn, span.dataset.raw); };
+    div.appendChild(btn);
+  }
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   return div;
+}
+
+async function aiCopyMessage(btn, text){
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    }, 1500);
+  } catch (e) {
+    console.warn('clipboard write failed', e);
+  }
+}
+
+function aiExportConversation(){
+  const chat = document.getElementById('ai-d-chat');
+  const lines = [];
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  lines.push('# NetGuard AI — Conversation');
+  lines.push('');
+  lines.push('Exported: ' + new Date().toLocaleString());
+  lines.push('Provider: ' + (document.getElementById('ai-d-status')?.textContent || '—'));
+  lines.push('');
+  for (const m of chat.children) {
+    if (m.classList.contains('ai-thinking')) continue;
+    const span = m.querySelector('span');
+    const txt = span ? (span.dataset.raw || span.textContent) : m.textContent;
+    if (m.classList.contains('user')) {
+      lines.push('## You'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('ai')) {
+      lines.push('## AI'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('err')) {
+      lines.push('### Error'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('sys')) {
+      lines.push('_' + txt + '_'); lines.push('');
+    }
+  }
+  const blob = new Blob([lines.join('\n')], {type: 'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'netguard-ai-conversation_' + stamp + '.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 function aiAddThinking(){
   const chat = document.getElementById('ai-d-chat');
@@ -6553,6 +6622,9 @@ function aiApplyTranslations(){
   }
   const link = document.getElementById('ai-d-key-link');
   if (link) link.textContent = aiT('no_key_link');
+  const exp = document.getElementById('ai-d-export');
+  if (exp) exp.title = aiT('export');
+  for (const b of document.querySelectorAll('.ai-msg .ai-copy')) b.title = aiT('copy');
 }
 
 // Hook into existing setLang to re-translate the drawer when lang changes.
@@ -6593,6 +6665,9 @@ document.addEventListener('DOMContentLoaded', () => {
       <span class="grad" id="ai-d-title-text">AI Assistant</span>
     </div>
     <span class="ai-d-status" id="ai-d-status">—</span>
+    <button onclick="aiExportConversation()" id="ai-d-export" title="Export">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5v9M5 7.5L8 10.5L11 7.5M2.5 12v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
     <button onclick="aiPopout()" title="Pop out">
       <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M9 2h5v5M14 2L8 8M6 4H3v9h9v-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
     </button>
