@@ -133,6 +133,28 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
   position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);
   font-size:10px;color:var(--text2);font-family:'Geist Mono',monospace;font-weight:700
 }
+
+/* Map filters — compact panel below the noise meter */
+#map-filters{
+  position:absolute;right:14px;top:310px;width:170px;
+  background:rgba(10,18,28,.75);border:1px solid var(--border2);border-radius:6px;
+  z-index:50;padding:8px 10px;font-family:'Geist',sans-serif;
+  box-shadow:0 4px 12px rgba(0,0,0,.4)
+}
+#map-filters .mf-title{
+  font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;
+  font-weight:700;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border)
+}
+#map-filters .mf-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;color:var(--text2)}
+#map-filters .mf-row:last-child{margin-bottom:0}
+#map-filters .mf-row label{flex:1;cursor:pointer;user-select:none}
+#map-filters input[type=range]{flex:1;accent-color:var(--blue);height:14px}
+#map-filters .mf-val{font-family:'Geist Mono',monospace;font-size:10px;color:var(--blue);min-width:18px;text-align:right;font-weight:600}
+#map-filters select{
+  flex:1;background:var(--bg4);border:1px solid var(--border2);color:var(--text2);
+  font-family:inherit;font-size:11px;padding:2px 4px;border-radius:3px;cursor:pointer
+}
+#map-filters input[type=checkbox]{accent-color:var(--blue);cursor:pointer}
 </style>
 </head>
 <body>
@@ -141,6 +163,29 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
   <span id="noise-meter-label">NOISE</span>
   <div id="noise-meter-fill"></div>
   <span id="noise-meter-readout">0</span>
+</div>
+
+<div id="map-filters">
+  <div class="mf-title">Filtres carte</div>
+  <div class="mf-row">
+    <label for="mf-noise">Bruit min</label>
+    <input type="range" id="mf-noise" min="0" max="20" step="1" value="0">
+    <span class="mf-val" id="mf-noise-val">0</span>
+  </div>
+  <div class="mf-row">
+    <input type="checkbox" id="mf-trusted">
+    <label for="mf-trusted" title="Anthropic, Cloudflare, Vidéotron, mDNS, link-local">Cacher légitimes</label>
+  </div>
+  <div class="mf-row">
+    <label for="mf-window" style="flex:0">Fenêtre</label>
+    <select id="mf-window">
+      <option value="0">Tout</option>
+      <option value="5">5 min</option>
+      <option value="15">15 min</option>
+      <option value="30">30 min</option>
+      <option value="60">1 h</option>
+    </select>
+  </div>
 </div>
 
 <div id="tooltip">
@@ -785,11 +830,85 @@ function closeIPPanel() {
 // Keep track of dot order for max 50 rule
 let dotOrder = []; // ordered list of IPs with dots
 
-// ── Noise / pulse intensity tracking ─────────────────────────────────
+// ── Noise / pulse intensity tracking + filters ───────────────────────
 const NOISE_WINDOW_MS = 30000;     // sliding window
 const NOISE_PER_IP_MAX = 30;       // 30 hits in 30s -> per-dot full intensity (energy=1)
 const NOISE_GLOBAL_MAX = 200;      // 200 hits in 30s across all IPs -> global meter full
 const haloElements = {};           // ip -> d3 selection (sustained glow ring)
+
+// Filters — state restored from localStorage, persisted on every change
+const mapFilters = {
+  noiseMin:      parseInt(localStorage.getItem('ng_mf_noise') || '0', 10),
+  hideTrusted:   localStorage.getItem('ng_mf_trusted') === '1',
+  windowMinutes: parseInt(localStorage.getItem('ng_mf_window') || '0', 10),
+};
+
+// Trusted-IP detection (matches the server's CFG.whitelist patterns)
+const TRUSTED_V4_PREFIXES = [
+  '127.','10.','192.168.',
+  '172.16.','172.17.','172.18.','172.19.','172.20.','172.21.','172.22.','172.23.',
+  '172.24.','172.25.','172.26.','172.27.','172.28.','172.29.','172.30.','172.31.',
+  '224.','225.','226.','227.','228.','229.','230.','231.','232.','233.','234.','235.','236.','237.','238.','239.', // multicast
+  '160.79.104.','160.79.105.','160.79.106.','160.79.107.','160.79.108.','160.79.109.','160.79.110.','160.79.111.', // Anthropic /21
+  '8.8.8.','8.8.4.', // Google DNS
+  '208.95.112.', // ip-api.com
+];
+const TRUSTED_V6_PREFIXES = [
+  '::1','fe80','ff',                 // loopback / link-local / multicast
+  '2607:6bc0',                        // Anthropic v6
+  '2607:fa48','2607:fa49',            // Vidéotron
+  '2606:4700',                        // Cloudflare
+  '2001:4860:4860',                   // Google DNS v6
+];
+const TRUSTED_ORG_SUBSTRINGS = [
+  'cloudflare','anthropic','videotron','vidéotron','google llc','google public dns','akamai','fastly'
+];
+
+function isTrustedIP(ip, data) {
+  if (!ip) return false;
+  const lower = ip.toLowerCase();
+  if (lower.indexOf(':') === -1) {
+    for (const p of TRUSTED_V4_PREFIXES) if (lower.startsWith(p)) return true;
+  } else {
+    for (const p of TRUSTED_V6_PREFIXES) if (lower.startsWith(p)) return true;
+  }
+  const org = ((data && data.org) || '').toLowerCase();
+  if (org) {
+    for (const s of TRUSTED_ORG_SUBSTRINGS) if (org.indexOf(s) !== -1) return true;
+  }
+  return false;
+}
+
+// Wire the UI controls — restore values + bind handlers
+(function initMapFilters(){
+  const noise = document.getElementById('mf-noise');
+  const noiseVal = document.getElementById('mf-noise-val');
+  const trusted = document.getElementById('mf-trusted');
+  const win = document.getElementById('mf-window');
+  if (noise && noiseVal) {
+    noise.value = mapFilters.noiseMin;
+    noiseVal.textContent = mapFilters.noiseMin;
+    noise.addEventListener('input', () => {
+      mapFilters.noiseMin = parseInt(noise.value, 10) || 0;
+      noiseVal.textContent = mapFilters.noiseMin;
+      localStorage.setItem('ng_mf_noise', String(mapFilters.noiseMin));
+    });
+  }
+  if (trusted) {
+    trusted.checked = mapFilters.hideTrusted;
+    trusted.addEventListener('change', () => {
+      mapFilters.hideTrusted = trusted.checked;
+      localStorage.setItem('ng_mf_trusted', mapFilters.hideTrusted ? '1' : '0');
+    });
+  }
+  if (win) {
+    win.value = String(mapFilters.windowMinutes);
+    win.addEventListener('change', () => {
+      mapFilters.windowMinutes = parseInt(win.value, 10) || 0;
+      localStorage.setItem('ng_mf_window', String(mapFilters.windowMinutes));
+    });
+  }
+})();
 
 function pushNoise(ip) {
   const d = ipData[ip];
@@ -806,37 +925,65 @@ function getEnergy(d) {
   return Math.min(1, d.recentTs.length / NOISE_PER_IP_MAX);
 }
 
-// Decay tick — every 600ms, reshape every dot + global meter according to current energy
+// Decay tick — every 600ms, reshape every dot + global meter + apply user filters
 setInterval(function noiseTick() {
   if (!mapReady) return;
+  const now = Date.now();
+  const winCutoff = mapFilters.windowMinutes > 0 ? now - mapFilters.windowMinutes * 60000 : 0;
   let totalRecent = 0;
+  let visibleCount = 0;
   Object.entries(ipData).forEach(([ip, d]) => {
     const e = getEnergy(d);
-    totalRecent += (d.recentTs ? d.recentTs.length : 0);
+    const recentCount = d.recentTs ? d.recentTs.length : 0;
+    totalRecent += recentCount;
     const dot = dotElements[ip];
     if (!dot) return;
+
+    // ── Filter decisions ─────────────────────────────────────────────
+    let visible = true;
+    if (recentCount < mapFilters.noiseMin) visible = false;
+    if (visible && mapFilters.hideTrusted && isTrustedIP(ip, d)) visible = false;
+    if (visible && winCutoff > 0) {
+      const last = (d.recentTs && d.recentTs.length) ? d.recentTs[d.recentTs.length - 1] : 0;
+      if (last < winCutoff) visible = false;
+    }
+    if (visible) visibleCount++;
+
     const baseR = parseFloat(dot.attr('data-r') || 3);
-    dot.transition().duration(450).attr('r', baseR + 6 * e);
-    if (e > 0.04) {
-      if (!haloElements[ip]) {
-        haloElements[ip] = g.insert('circle', () => dot.node())
+    if (visible) {
+      dot.transition().duration(450)
+         .attr('r', baseR + 6 * e)
+         .attr('opacity', 0.9);
+      dot.style('pointer-events', 'auto');
+      if (e > 0.04) {
+        if (!haloElements[ip]) {
+          haloElements[ip] = g.insert('circle', () => dot.node())
+            .attr('cx', dot.attr('cx')).attr('cy', dot.attr('cy'))
+            .attr('r', baseR + 4)
+            .attr('fill', 'none')
+            .attr('stroke', dot.attr('fill'))
+            .attr('stroke-width', 1.5)
+            .attr('opacity', 0)
+            .style('pointer-events', 'none');
+        }
+        haloElements[ip]
           .attr('cx', dot.attr('cx')).attr('cy', dot.attr('cy'))
-          .attr('r', baseR + 4)
-          .attr('fill', 'none')
           .attr('stroke', dot.attr('fill'))
-          .attr('stroke-width', 1.5)
-          .attr('opacity', 0)
-          .style('pointer-events', 'none');
+          .transition().duration(450)
+          .attr('r', baseR + 4 + 14 * e)
+          .attr('opacity', 0.55 * e);
+      } else if (haloElements[ip]) {
+        haloElements[ip].transition().duration(500).attr('opacity', 0).remove();
+        delete haloElements[ip];
       }
-      haloElements[ip]
-        .attr('cx', dot.attr('cx')).attr('cy', dot.attr('cy'))
-        .attr('stroke', dot.attr('fill'))
-        .transition().duration(450)
-        .attr('r', baseR + 4 + 14 * e)
-        .attr('opacity', 0.55 * e);
-    } else if (haloElements[ip]) {
-      haloElements[ip].transition().duration(500).attr('opacity', 0).remove();
-      delete haloElements[ip];
+    } else {
+      // Hidden by filter — fade out + disable interaction
+      dot.transition().duration(300).attr('opacity', 0);
+      dot.style('pointer-events', 'none');
+      if (haloElements[ip]) {
+        haloElements[ip].transition().duration(300).attr('opacity', 0).remove();
+        delete haloElements[ip];
+      }
     }
   });
   const fill = document.getElementById('noise-meter-fill');

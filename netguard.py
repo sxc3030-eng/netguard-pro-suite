@@ -99,9 +99,22 @@ class Config:
     syn_flood_window:       int   = 5
     dns_tunnel_threshold:   int   = 50
     whitelist: list = field(default_factory=lambda: [
+        # Loopback + RFC1918
         "127.0.0.1", "::1", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12",
+        # IPv4 multicast (mDNS Bonjour, IGMP, etc.)
+        "224.0.0.0/4",
+        # IPv6 multicast (FF00::/8) + link-local (FE80::/10)
+        "ff00::/8", "fe80::/10",
+        # Anthropic API (Claude.ai / Claude Code / Claude Desktop)
         "160.79.104.0/21", "2607:6bc0::/32",
+        # Vidéotron infrastructure (DNS + user LAN /64)
         "2607:fa48::/32", "2607:fa49::/32",
+        # Cloudflare CDN (104.16-31.x.x) — required for ipapi.co + tons of websites
+        "104.16.0.0/12", "172.64.0.0/13", "2606:4700::/32",
+        # Google public DNS + GCP edge
+        "8.8.8.0/24", "8.8.4.0/24", "2001:4860:4860::/48",
+        # ip-api.com (208.95.112.0/24 ~)
+        "208.95.112.0/24",
     ])
     sensitive_ports:    list = field(default_factory=lambda: [22, 3389, 5900, 23])
     always_block_ports: list = field(default_factory=lambda: [135, 137, 138, 139, 445, 1433, 3306])
