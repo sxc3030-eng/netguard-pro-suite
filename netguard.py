@@ -318,6 +318,77 @@ def _traceroute(target_ip: str, max_hops: int = 30) -> dict:
         return {"ok": False, "error": f"traceroute_error: {type(e).__name__}: {e}"}
 
 
+# ── MaxMind GeoLite2 (local DB, no rate limit, no internet) ──────────────────
+_MAXMIND_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geoip", "GeoLite2-City.mmdb")
+_MAXMIND_ASN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geoip", "GeoLite2-ASN.mmdb")
+_MAXMIND_READER = None
+_MAXMIND_ASN_READER = None
+_MAXMIND_INIT_TRIED = False
+
+
+def _get_maxmind_reader():
+    """Lazy-init the geoip2 City reader. Returns the reader or None if unavailable."""
+    global _MAXMIND_READER, _MAXMIND_ASN_READER, _MAXMIND_INIT_TRIED
+    if _MAXMIND_READER is not None:
+        return _MAXMIND_READER
+    if _MAXMIND_INIT_TRIED:
+        return None
+    _MAXMIND_INIT_TRIED = True
+    try:
+        import geoip2.database  # type: ignore
+    except ImportError:
+        log.info("[GEO] geoip2 not installed (pip install geoip2). Skipping MaxMind, using online providers.")
+        return None
+    if not os.path.exists(_MAXMIND_DB_PATH):
+        log.info(f"[GEO] MaxMind GeoLite2-City.mmdb not found at {_MAXMIND_DB_PATH}; using online providers.")
+        return None
+    try:
+        _MAXMIND_READER = geoip2.database.Reader(_MAXMIND_DB_PATH)
+        log.info(f"[GEO] MaxMind GeoLite2 City loaded -> {_MAXMIND_DB_PATH}")
+        # ASN DB is optional; if present, gives us org+asn locally too
+        if os.path.exists(_MAXMIND_ASN_PATH):
+            try:
+                _MAXMIND_ASN_READER = geoip2.database.Reader(_MAXMIND_ASN_PATH)
+                log.info(f"[GEO] MaxMind GeoLite2 ASN loaded -> {_MAXMIND_ASN_PATH}")
+            except Exception as e:
+                log.debug(f"[GEO] MaxMind ASN load failed: {e}")
+        return _MAXMIND_READER
+    except Exception as e:
+        log.warning(f"[GEO] MaxMind init failed: {e}")
+        return None
+
+
+def _fetch_geo_maxmind(ip: str):
+    """Provider 0 — MaxMind GeoLite2 local DB. <1ms, no rate limit, no internet, no key per call."""
+    reader = _get_maxmind_reader()
+    if not reader:
+        return None
+    try:
+        r = reader.city(ip)
+        org = ""
+        asn = ""
+        if _MAXMIND_ASN_READER:
+            try:
+                a = _MAXMIND_ASN_READER.asn(ip)
+                org = a.autonomous_system_organization or ""
+                asn = f"AS{a.autonomous_system_number}" if a.autonomous_system_number else ""
+            except Exception:
+                pass
+        return {
+            "country_code": (r.country.iso_code or "") if r.country else "",
+            "country_name": (r.country.name or "") if r.country else "",
+            "city":         (r.city.name or "") if r.city else "",
+            "latitude":     r.location.latitude if r.location else None,
+            "longitude":    r.location.longitude if r.location else None,
+            "org":          org,
+            "asn":          asn,
+            "_provider":    "maxmind",
+        }
+    except Exception:
+        # Common case: IP not in DB (private, reserved, brand-new allocation). Fall through to online.
+        return None
+
+
 def _fetch_geo_ipapi_co(ip: str):
     """Provider 1 — ipapi.co (HTTPS, 1000 req/day free, no key). Returns normalized dict or None."""
     import urllib.request
@@ -364,7 +435,7 @@ def _fetch_geo_ip_api_com(ip: str):
     }
 
 
-_GEO_PROVIDERS = (_fetch_geo_ipapi_co, _fetch_geo_ip_api_com)
+_GEO_PROVIDERS = (_fetch_geo_maxmind, _fetch_geo_ip_api_com, _fetch_geo_ipapi_co)
 
 
 def _fetch_city_async(ip: str):
