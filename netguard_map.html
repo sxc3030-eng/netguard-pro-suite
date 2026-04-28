@@ -771,11 +771,12 @@ async function showIPPanel(ip) {
   const isBlocked = blockedIPs.has(ip);
 
   content.innerHTML = `
-    <div style="padding:12px;display:flex;gap:8px">
-      <button class="btn btn-red" style="flex:1;justify-content:center" onclick="blockSingleIP('${ip}')">
+    <div style="padding:12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-red" style="flex:1;min-width:140px;justify-content:center" onclick="blockSingleIP('${ip}')">
         ${isBlocked ? '✓ Déjà bloqué' : '🚫 Bloquer cette IP'}
       </button>
-      <button class="btn btn-amber" style="flex:1;justify-content:center" onclick="lookupIP('${ip}').then(()=>showIPPanel('${ip}'))">↺ Rafraîchir</button>
+      <button class="btn" style="flex:1;min-width:140px;justify-content:center;background:linear-gradient(135deg,#1a3a6e,#2a1a4d);color:#4d9fff;border-color:#4d9fff" onclick="startTraceroute('${ip}')">🛰 Tracer le chemin</button>
+      <button class="btn btn-amber" style="flex:1;min-width:120px;justify-content:center" onclick="lookupIP('${ip}').then(()=>showIPPanel('${ip}'))">↺ Rafraîchir</button>
     </div>
 
     <div class="card">
@@ -1257,7 +1258,130 @@ function assignGeo(ip, pkt) {
 let lastSeenPktKey = ''; // deduplicate identical state broadcasts
 let arcThrottle = 0;
 
+// ── Traceroute rendering ─────────────────────────────────────────────
+let traceActive = false;
+
+function clearTrace() {
+  if (g) g.selectAll('.trace-arc, .trace-hop, .trace-label, .trace-pulse').remove();
+}
+
+function drawTraceroute(target, hops) {
+  if (!mapReady) return;
+  clearTrace();
+  // Build the polyline: [user → hop1 → hop2 → ... → target]
+  const points = [];
+  if (localCoords && localCoords[0] != null) {
+    points.push({ip: 'Vous', lat: localCoords[1], lon: localCoords[0], rtt_ms: 0, hop: 0, isStart: true});
+  }
+  hops.forEach(h => {
+    if (h.lat != null && h.lon != null) {
+      points.push({ip: h.ip || `*hop ${h.hop}`, lat: h.lat, lon: h.lon, rtt_ms: h.rtt_ms, hop: h.hop, isTarget: h.is_target});
+    }
+  });
+  if (points.length < 2) {
+    showTraceToast(`Aucun saut géolocalisé pour ${target}`, '#ffb347');
+    return;
+  }
+  // Draw arcs between consecutive points, sequentially over ~1.5s
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const sxy = projection([a.lon, a.lat]);
+    const dxy = projection([b.lon, b.lat]);
+    if (!sxy || !dxy) continue;
+    const t = (i + 1) / Math.max(1, points.length - 1);
+    const color = t < 0.34 ? '#3dffb4' : t < 0.67 ? '#ffb347' : '#ff4d6a';
+    const mx = (sxy[0] + dxy[0]) / 2;
+    const my = (sxy[1] + dxy[1]) / 2 - Math.abs(dxy[0] - sxy[0]) * 0.25;
+    const pathD = `M${sxy[0]},${sxy[1]} Q${mx},${my} ${dxy[0]},${dxy[1]}`;
+    setTimeout(() => {
+      // Arc
+      const arc = g.append('path').attr('class', 'trace-arc')
+        .attr('d', pathD)
+        .attr('fill', 'none')
+        .attr('stroke', color)
+        .attr('stroke-width', b.isTarget ? 2.4 : 1.8)
+        .attr('stroke-dasharray', '0')
+        .attr('opacity', 0)
+        .style('pointer-events', 'none');
+      arc.transition().duration(450).attr('opacity', 0.85);
+      // Pulse dot tracing along the arc
+      const pulse = g.append('circle').attr('class', 'trace-pulse')
+        .attr('cx', sxy[0]).attr('cy', sxy[1]).attr('r', 3)
+        .attr('fill', color).attr('opacity', 0.95)
+        .style('pointer-events', 'none');
+      pulse.transition().duration(800)
+        .attrTween('cx', () => tt => {
+          const ct = 1 - tt;
+          return ct * ct * sxy[0] + 2 * ct * tt * mx + tt * tt * dxy[0];
+        })
+        .attrTween('cy', () => tt => {
+          const ct = 1 - tt;
+          return ct * ct * sxy[1] + 2 * ct * tt * my + tt * tt * dxy[1];
+        })
+        .transition().duration(200).attr('opacity', 0).remove();
+      // Hop marker (concentric ring)
+      g.append('circle').attr('class', 'trace-hop')
+        .attr('cx', dxy[0]).attr('cy', dxy[1])
+        .attr('r', b.isTarget ? 7 : 5)
+        .attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2)
+        .attr('opacity', 0)
+        .style('pointer-events', 'none')
+        .transition().duration(400).attr('opacity', 0.95);
+      // Label
+      const lbl = b.isTarget ? `${b.ip} (target)` : `#${b.hop} ${b.ip}${b.rtt_ms != null ? ' · ' + b.rtt_ms + 'ms' : ''}`;
+      g.append('text').attr('class', 'trace-label')
+        .attr('x', dxy[0] + 9).attr('y', dxy[1] - 6)
+        .attr('fill', color).attr('font-size', '10px').attr('font-weight', '600').attr('font-family', "'Geist Mono',monospace")
+        .attr('opacity', 0)
+        .style('pointer-events', 'none')
+        .text(lbl)
+        .transition().delay(150).duration(400).attr('opacity', 0.9);
+    }, i * 220);
+  }
+  // Auto-clear after 60 seconds
+  const myToken = ++traceClearToken;
+  setTimeout(() => { if (myToken === traceClearToken) clearTrace(); }, 60000);
+}
+
+let traceClearToken = 0;
+
+function showTraceToast(text, color) {
+  let tt = document.getElementById('trace-toast');
+  if (!tt) {
+    tt = document.createElement('div');
+    tt.id = 'trace-toast';
+    tt.style.cssText = 'position:absolute;top:80px;left:50%;transform:translateX(-50%);padding:8px 16px;border-radius:6px;background:rgba(10,18,28,.9);border:1px solid var(--border2);color:var(--text);font-size:12px;z-index:200;font-family:Geist,sans-serif;pointer-events:none';
+    document.body.appendChild(tt);
+  }
+  tt.style.color = color || 'var(--text)';
+  tt.textContent = text;
+  tt.style.display = 'block';
+  setTimeout(() => { tt.style.display = 'none'; }, 4000);
+}
+
+function startTraceroute(ip) {
+  if (traceActive) { showTraceToast('Trace déjà en cours…', '#ffb347'); return; }
+  if (!ngAuthed) { showTraceToast('WebSocket non authentifié', '#ff4d6a'); return; }
+  traceActive = true;
+  showTraceToast(`Traceroute → ${ip}…`, '#4d9fff');
+  ws.send(JSON.stringify({cmd: 'traceroute', ip: ip, max_hops: 30}));
+}
+
 function handleMsg(msg) {
+  if (msg.type === 'traceroute_started') {
+    showTraceToast(`Trace en cours → ${msg.target} (max ${msg.max_hops} sauts)…`, '#4d9fff');
+    return;
+  }
+  if (msg.type === 'traceroute_result') {
+    traceActive = false;
+    if (!msg.ok) {
+      showTraceToast(`Trace échec: ${msg.error || 'inconnu'}`, '#ff4d6a');
+      return;
+    }
+    showTraceToast(`Trace OK: ${msg.hops.length} sauts → ${msg.target}`, '#3dffb4');
+    drawTraceroute(msg.target, msg.hops);
+    return;
+  }
   if (msg.type === 'state') {
     blockedIPs = new Set(msg.blocked_ips || []);
 

@@ -255,6 +255,69 @@ def get_geo_info(ip: str) -> dict:
     _geo_city_cache[ip] = result
     return result
 
+def _traceroute(target_ip: str, max_hops: int = 30) -> dict:
+    """Trace the network path to target_ip via scapy ICMP probes. Returns ordered hops with geo data.
+    Uses scapy.sr() to fan out all TTL probes in parallel — total wall time ~3-6s for 30 hops."""
+    if not _validate_ip(target_ip):
+        return {"ok": False, "error": "invalid_ip"}
+    if is_private(target_ip):
+        return {"ok": False, "error": "target_is_private"}
+    if not HAS_SCAPY:
+        return {"ok": False, "error": "scapy_not_installed"}
+    max_hops = max(1, min(int(max_hops or 30), 64))
+    try:
+        from scapy.all import sr, IP as _IP, ICMP as _ICMP
+        from scapy.layers.inet6 import IPv6 as _IPv6
+        # IPv4 vs IPv6 probe construction
+        is_v6 = ":" in target_ip
+        if is_v6:
+            from scapy.layers.inet6 import ICMPv6EchoRequest as _ICMPv6
+            probes = [_IPv6(dst=target_ip, hlim=ttl) / _ICMPv6() for ttl in range(1, max_hops + 1)]
+        else:
+            probes = [_IP(dst=target_ip, ttl=ttl) / _ICMP() for ttl in range(1, max_hops + 1)]
+        ans, unans = sr(probes, timeout=3, verbose=0)
+        hops_dict = {}
+        for snd, rcv in ans:
+            ttl = int(snd.ttl if not is_v6 else snd.hlim)
+            rtt = (rcv.time - snd.sent_time) * 1000 if rcv.time and snd.sent_time else None
+            hops_dict[ttl] = {
+                "hop":       ttl,
+                "ip":        rcv.src,
+                "rtt_ms":    round(rtt, 1) if rtt is not None else None,
+                "is_target": rcv.src == target_ip,
+            }
+        for snd in unans:
+            ttl = int(snd.ttl if not is_v6 else snd.hlim)
+            if ttl not in hops_dict:
+                hops_dict[ttl] = {"hop": ttl, "ip": None, "rtt_ms": None, "is_target": False}
+        hops = sorted(hops_dict.values(), key=lambda h: h["hop"])
+        # Truncate after the target hop (further TTL probes are noise)
+        for i, h in enumerate(hops):
+            if h.get("is_target"):
+                hops = hops[:i + 1]
+                break
+        # Geolocate each public hop (uses provider chain we wired earlier)
+        for h in hops:
+            if h["ip"] and not is_private(h["ip"]):
+                if h["ip"] not in _geo_city_cache:
+                    try:
+                        _fetch_city_async(h["ip"])  # sync call here — populates _geo_city_cache
+                    except Exception as e:
+                        log.debug(f"[TRACE] geo lookup failed for {h['ip']}: {e}")
+                geo = _geo_city_cache.get(h["ip"], {})
+                h["country"]  = geo.get("country", "")
+                h["city"]     = geo.get("city", "")
+                h["lat"]      = geo.get("latitude")
+                h["lon"]      = geo.get("longitude")
+                h["org"]      = geo.get("org", "")
+        return {"ok": True, "target": target_ip, "hops": hops, "max_hops": max_hops}
+    except PermissionError:
+        return {"ok": False, "error": "needs_admin: scapy probes require Administrator/root"}
+    except Exception as e:
+        log.error(f"[TRACE] {target_ip}: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"traceroute_error: {type(e).__name__}: {e}"}
+
+
 def _fetch_geo_ipapi_co(ip: str):
     """Provider 1 — ipapi.co (HTTPS, 1000 req/day free, no key). Returns normalized dict or None."""
     import urllib.request
@@ -3606,6 +3669,18 @@ async def handle_ws_command(ws, msg: dict):
             await ws.send(json.dumps({"type": "ip_unblocked", "ip": ip}))
     elif cmd == "get_blocked_ips":
         await ws.send(json.dumps({"type": "blocked_ips", "ips": list(BLOCKED_IPS)}))
+    elif cmd == "traceroute":
+        ip = (msg.get("ip") or "").strip()
+        max_hops = int(msg.get("max_hops", 30) or 30)
+        # Notify start so the UI can show a spinner
+        try:
+            await ws.send(json.dumps({"type": "traceroute_started", "target": ip, "max_hops": max_hops}))
+        except Exception:
+            pass
+        # Run blocking scapy.sr() in executor — total ~3-6 seconds wall time
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _traceroute, ip, max_hops)
+        await ws.send(json.dumps({"type": "traceroute_result", **result}))
     elif cmd == "clear_threats":
         STATE.threats.clear()
         await ws.send(json.dumps({"type": "threats_cleared"}))
