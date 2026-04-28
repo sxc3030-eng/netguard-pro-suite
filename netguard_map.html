@@ -109,9 +109,39 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 /* Live stats in titlebar */
 .live-stat{display:flex;align-items:center;gap:4px;font-size:11px;font-family:'Geist Mono',monospace}
 .live-stat .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+
+/* Noise meter — global network intensity (cool blue → hot red) */
+#noise-meter{
+  position:absolute;right:16px;top:80px;width:24px;height:200px;
+  background:rgba(10,18,28,.75);border:1px solid var(--border2);border-radius:6px;
+  z-index:50;display:flex;flex-direction:column;justify-content:flex-end;
+  pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.4)
+}
+#noise-meter-fill{
+  width:100%;
+  background:linear-gradient(to top, #4d9fff 0%, #3dffb4 35%, #ffb347 70%, #ff4d6a 100%);
+  transition:height .5s ease,opacity .3s ease;
+  height:0%;
+  box-shadow:0 0 10px rgba(255,255,255,.15) inset
+}
+#noise-meter-label{
+  position:absolute;top:-18px;left:50%;transform:translateX(-50%);
+  font-size:9px;color:var(--text3);font-family:'Geist Mono',monospace;
+  letter-spacing:.5px;white-space:nowrap;font-weight:600
+}
+#noise-meter-readout{
+  position:absolute;bottom:-18px;left:50%;transform:translateX(-50%);
+  font-size:10px;color:var(--text2);font-family:'Geist Mono',monospace;font-weight:700
+}
 </style>
 </head>
 <body>
+
+<div id="noise-meter" title="Intensité du bruit réseau (paquets recents, fenetre 30s)">
+  <span id="noise-meter-label">NOISE</span>
+  <div id="noise-meter-fill"></div>
+  <span id="noise-meter-readout">0</span>
+</div>
 
 <div id="tooltip">
   <div style="font-family:'Geist Mono',monospace;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:4px" id="tt-ip"></div>
@@ -387,7 +417,7 @@ function addMyLocationMarker() {
     .style('cursor','pointer')
     .on('click', () => { if(myIP) showIPPanel(myIP); });
   // Label
-  const label = myCity ? `Mon réseau (${myCity})` : 'Mon réseau';
+  const label = 'Mon réseau';
   g.append('text').attr('class','my-loc my-loc-label')
     .attr('x',mx+10).attr('y',my+4)
     .attr('fill','#4d9fff').attr('font-size','10px').attr('font-weight','600').attr('font-family','Outfit,sans-serif')
@@ -755,8 +785,73 @@ function closeIPPanel() {
 // Keep track of dot order for max 50 rule
 let dotOrder = []; // ordered list of IPs with dots
 
+// ── Noise / pulse intensity tracking ─────────────────────────────────
+const NOISE_WINDOW_MS = 30000;     // sliding window
+const NOISE_PER_IP_MAX = 30;       // 30 hits in 30s -> per-dot full intensity (energy=1)
+const NOISE_GLOBAL_MAX = 200;      // 200 hits in 30s across all IPs -> global meter full
+const haloElements = {};           // ip -> d3 selection (sustained glow ring)
+
+function pushNoise(ip) {
+  const d = ipData[ip];
+  if (!d) return;
+  if (!d.recentTs) d.recentTs = [];
+  d.recentTs.push(Date.now());
+  if (d.recentTs.length > 120) d.recentTs.shift();
+}
+
+function getEnergy(d) {
+  if (!d || !d.recentTs || !d.recentTs.length) return 0;
+  const cutoff = Date.now() - NOISE_WINDOW_MS;
+  d.recentTs = d.recentTs.filter(t => t >= cutoff);
+  return Math.min(1, d.recentTs.length / NOISE_PER_IP_MAX);
+}
+
+// Decay tick — every 600ms, reshape every dot + global meter according to current energy
+setInterval(function noiseTick() {
+  if (!mapReady) return;
+  let totalRecent = 0;
+  Object.entries(ipData).forEach(([ip, d]) => {
+    const e = getEnergy(d);
+    totalRecent += (d.recentTs ? d.recentTs.length : 0);
+    const dot = dotElements[ip];
+    if (!dot) return;
+    const baseR = parseFloat(dot.attr('data-r') || 3);
+    dot.transition().duration(450).attr('r', baseR + 6 * e);
+    if (e > 0.04) {
+      if (!haloElements[ip]) {
+        haloElements[ip] = g.insert('circle', () => dot.node())
+          .attr('cx', dot.attr('cx')).attr('cy', dot.attr('cy'))
+          .attr('r', baseR + 4)
+          .attr('fill', 'none')
+          .attr('stroke', dot.attr('fill'))
+          .attr('stroke-width', 1.5)
+          .attr('opacity', 0)
+          .style('pointer-events', 'none');
+      }
+      haloElements[ip]
+        .attr('cx', dot.attr('cx')).attr('cy', dot.attr('cy'))
+        .attr('stroke', dot.attr('fill'))
+        .transition().duration(450)
+        .attr('r', baseR + 4 + 14 * e)
+        .attr('opacity', 0.55 * e);
+    } else if (haloElements[ip]) {
+      haloElements[ip].transition().duration(500).attr('opacity', 0).remove();
+      delete haloElements[ip];
+    }
+  });
+  const fill = document.getElementById('noise-meter-fill');
+  const readout = document.getElementById('noise-meter-readout');
+  if (fill) {
+    const intensity = Math.min(1, totalRecent / NOISE_GLOBAL_MAX);
+    fill.style.height = (intensity * 100) + '%';
+    fill.style.opacity = (0.55 + 0.45 * intensity).toFixed(2);
+  }
+  if (readout) readout.textContent = totalRecent;
+}, 600);
+
 function addOrUpdateDot(ip, data) {
   if (!mapReady || data.lon == null || data.lat == null) return;
+  pushNoise(ip);
   const [px, py] = projection([data.lon, data.lat]);
   if (!px || !py) return;
 

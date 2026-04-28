@@ -65,8 +65,123 @@ SYSTEM_PROMPTS = {
 }
 
 
+# ── Persistent AI memory (cross-session) ────────────────────────────────────
+_AI_MEMORY_FILE = ROOT / "netguard_ai_memory.md"
+_AI_MEMORY_MAX_BYTES = 60_000   # truncate from top if larger (newest entries are kept)
+_AI_MEMORY_VALID_SECTIONS = ("Findings", "Decisions", "Context")
+
+
+def _read_ai_memory() -> str:
+    try:
+        text = _AI_MEMORY_FILE.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return ""
+    if len(text.encode("utf-8")) > _AI_MEMORY_MAX_BYTES:
+        # Keep only last 800 lines so prompt stays bounded
+        lines = text.splitlines()
+        text = "\n".join(lines[-800:])
+    return text
+
+
+def _append_ai_memory(section: str, note: str) -> bool:
+    """Insert a timestamped note at the top of `section` (newest first). Creates file/section if missing."""
+    if section not in _AI_MEMORY_VALID_SECTIONS:
+        return False
+    note = (note or "").strip()
+    if not note:
+        return False
+    # Cap a single note size
+    if len(note) > 1000:
+        note = note[:1000] + "…"
+    try:
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        entry = f"- [{ts}] {note}"
+        try:
+            text = _AI_MEMORY_FILE.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            text = ""
+        marker = f"## {section}"
+        if not text:
+            text = (
+                "# NetGuard AI Memory\n\n"
+                "_Persistent across sessions. Updated by the AI via the `save_memory_note` tool._\n\n"
+                "## Findings\n\n"
+                "## Decisions\n\n"
+                "## Context\n\n"
+            )
+        if marker in text:
+            idx = text.find(marker)
+            eol = text.find("\n", idx) + 1
+            # Skip blank lines right after the marker
+            while eol < len(text) and text[eol] == "\n":
+                eol += 1
+            text = text[:eol] + entry + "\n" + text[eol:]
+        else:
+            text += f"\n{marker}\n\n{entry}\n"
+        _AI_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _AI_MEMORY_FILE.write_text(text, encoding="utf-8")
+        try:
+            os.chmod(_AI_MEMORY_FILE, 0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def _system_prompt(lang: str | None) -> str:
-    return SYSTEM_PROMPTS.get((lang or "fr").lower(), SYSTEM_PROMPTS["fr"])
+    base = SYSTEM_PROMPTS.get((lang or "fr").lower(), SYSTEM_PROMPTS["fr"])
+    memory = _read_ai_memory()
+    memory_intro = {
+        "fr": (
+            "\n\n=== MEMOIRE PERSISTANTE (entre sessions) ===\n"
+            "Notes sauvegardees lors de conversations precedentes avec cet utilisateur. "
+            "Traite-les comme ta memoire long-terme : findings confirmes, investigations en cours, "
+            "preferences utilisateur, decisions passees. Reference-les quand pertinent.\n\n"
+        ),
+        "en": (
+            "\n\n=== PERSISTENT MEMORY (across sessions) ===\n"
+            "Notes saved from previous conversations with this user. "
+            "Treat as your long-term memory: confirmed findings, ongoing investigations, "
+            "user preferences, prior decisions. Reference when relevant.\n\n"
+        ),
+        "es": (
+            "\n\n=== MEMORIA PERSISTENTE (entre sesiones) ===\n"
+            "Notas guardadas de conversaciones anteriores con este usuario. "
+            "Tratalas como tu memoria a largo plazo: hallazgos confirmados, investigaciones en curso, "
+            "preferencias del usuario, decisiones previas. Referencia cuando sea relevante.\n\n"
+        ),
+    }.get((lang or "fr").lower(), "\n\n=== PERSISTENT MEMORY ===\n\n")
+
+    memory_outro = {
+        "fr": (
+            "\n=== FIN MEMOIRE ===\n\n"
+            "Quand l'utilisateur partage une donnee qui merite d'etre retenue entre sessions "
+            "(IP confirmee, hypothese validee, decision prise), appelle l'outil save_memory_note "
+            "(necessite approbation). Sections valides : Findings, Decisions, Context."
+        ),
+        "en": (
+            "\n=== END MEMORY ===\n\n"
+            "When the user shares a finding worth remembering across sessions "
+            "(confirmed IP, validated hypothesis, decision), call the save_memory_note tool "
+            "(needs approval). Valid sections: Findings, Decisions, Context."
+        ),
+        "es": (
+            "\n=== FIN MEMORIA ===\n\n"
+            "Cuando el usuario comparta un hallazgo que valga la pena recordar entre sesiones "
+            "(IP confirmada, hipotesis validada, decision), llama a la herramienta save_memory_note "
+            "(necesita aprobacion). Secciones validas: Findings, Decisions, Context."
+        ),
+    }.get((lang or "fr").lower(), "\n=== END MEMORY ===\n")
+
+    if memory.strip():
+        return base + memory_intro + memory + memory_outro
+    empty_hint = {
+        "fr": "\n\nMemoire persistante actuellement vide. Quand l'utilisateur partage un fait durable, appelle save_memory_note.",
+        "en": "\n\nPersistent memory currently empty. When the user shares lasting context, call save_memory_note.",
+        "es": "\n\nMemoria persistente actualmente vacia. Cuando el usuario comparta contexto duradero, llama save_memory_note.",
+    }.get((lang or "fr").lower(), "")
+    return base + empty_hint
 
 
 CAP_PROMPTS = {
@@ -171,6 +286,32 @@ TOOLS = [
         "description": "Run a network-state audit. Reads recent threats, top suspicious IPs, traffic anomalies, geo distribution. Returns structured findings with severity and a `suggested_fix` for each (typically block_ip with the offending address). Read-only, no approval required. Pair with the modifying tools to remediate.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
         "needs_approval": False,
+    },
+    {
+        "name": "read_memory",
+        "description": "Read your persistent memory file (notes saved across sessions: confirmed findings, decisions, user context). The current contents are also auto-injected into your system prompt — call this only if you need the full raw text.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+        "needs_approval": False,
+    },
+    {
+        "name": "save_memory_note",
+        "description": "Save a note to persistent memory so it survives across sessions. Use for: confirmed suspicious IPs and the reason; validated hypotheses; user decisions; ongoing investigations; lasting user context. Keep notes concise (1-3 lines), factual, and timestamped automatically. Sections: 'Findings' (security-relevant facts), 'Decisions' (actions taken / planned), 'Context' (user/network preferences). Requires user approval.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "section": {
+                    "type": "string",
+                    "enum": ["Findings", "Decisions", "Context"],
+                    "description": "Which memory section to append to.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "The note content. 1-3 short lines max. Auto-prefixed with UTC timestamp.",
+                },
+            },
+            "required": ["section", "note"],
+        },
+        "needs_approval": True,
     },
 ]
 
@@ -281,6 +422,19 @@ def _execute_tool(name: str, args: dict) -> dict:
         return _audit_program()
     if name == "audit_network":
         return _audit_network()
+    if name == "read_memory":
+        text = _read_ai_memory()
+        return {"ok": True, "data": {"memory": text, "bytes": len(text.encode("utf-8")), "path": str(_AI_MEMORY_FILE)}}
+    if name == "save_memory_note":
+        section = (args.get("section") or "Findings").strip()
+        note = (args.get("note") or "").strip()
+        if section not in _AI_MEMORY_VALID_SECTIONS:
+            return {"ok": False, "error": f"invalid_section: must be one of {_AI_MEMORY_VALID_SECTIONS}"}
+        if not note:
+            return {"ok": False, "error": "missing_note"}
+        if _append_ai_memory(section, note):
+            return {"ok": True, "saved": True, "section": section, "path": str(_AI_MEMORY_FILE)}
+        return {"ok": False, "error": "write_failed"}
     return {"ok": False, "error": f"unknown_tool:{name}"}
 
 

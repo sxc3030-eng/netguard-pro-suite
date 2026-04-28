@@ -73,6 +73,9 @@ vpnguard/configs/*.key
 .netguard_backup_key
 fim/data/.fim_hmac_key
 
+# AI persistent memory (per-installation; user-specific findings)
+netguard_ai_memory.md
+
 # License signing keys (NEVER commit the private key)
 tools/keys/
 *.priv
