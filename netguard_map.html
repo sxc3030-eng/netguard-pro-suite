@@ -163,8 +163,11 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 #trace-progress .tp-clock{font-family:'Geist Mono',monospace;color:#4d9fff;font-weight:700}
 #map-filters .mf-title{
   font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;
-  font-weight:700;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border)
+  font-weight:700;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border);
+  display:flex;justify-content:space-between;align-items:center
 }
+#map-filters .mf-title a{color:var(--blue);text-decoration:none;font-size:10px;text-transform:none;letter-spacing:0;font-weight:600}
+#map-filters .mf-title a:hover{color:#3dffb4}
 #map-filters .mf-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;color:var(--text2)}
 #map-filters .mf-row:last-child{margin-bottom:0}
 #map-filters .mf-row label{flex:1;cursor:pointer;user-select:none}
@@ -289,7 +292,10 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 
     <!-- Top-right overlays (filters + noise meter + trace progress) -->
     <div id="map-filters">
-      <div class="mf-title">Filtres carte</div>
+      <div class="mf-title">
+        Filtres carte
+        <a href="#" id="mf-reset" title="Reinitialiser les 3 filtres - tout voir">↺ Tout voir</a>
+      </div>
       <div class="mf-row">
         <label for="mf-noise">Bruit min</label>
         <input type="range" id="mf-noise" min="0" max="20" step="1" value="0">
@@ -937,6 +943,22 @@ function isTrustedIP(ip, data) {
     win.addEventListener('change', () => {
       mapFilters.windowMinutes = parseInt(win.value, 10) || 0;
       localStorage.setItem('ng_mf_window', String(mapFilters.windowMinutes));
+    });
+  }
+  const reset = document.getElementById('mf-reset');
+  if (reset) {
+    reset.addEventListener('click', (e) => {
+      e.preventDefault();
+      mapFilters.noiseMin = 0;
+      mapFilters.hideTrusted = false;
+      mapFilters.windowMinutes = 0;
+      localStorage.removeItem('ng_mf_noise');
+      localStorage.removeItem('ng_mf_trusted');
+      localStorage.removeItem('ng_mf_window');
+      if (noise) noise.value = 0;
+      if (noiseVal) noiseVal.textContent = '0';
+      if (trusted) trusted.checked = false;
+      if (win) win.value = '0';
     });
   }
 })();
