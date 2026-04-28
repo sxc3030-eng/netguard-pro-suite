@@ -110,9 +110,12 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 .live-stat{display:flex;align-items:center;gap:4px;font-size:11px;font-family:'Geist Mono',monospace}
 .live-stat .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 
-/* Noise meter — global network intensity (cool blue → hot red) */
+/* Map container — positioned so children with position:absolute align inside the map */
+.map-wrap{position:relative;flex:1;overflow:hidden;display:flex;flex-direction:column}
+
+/* Noise meter — global network intensity (cool blue → hot red), inside the map at top-right */
 #noise-meter{
-  position:absolute;right:16px;top:80px;width:24px;height:200px;
+  position:absolute;right:14px;top:158px;width:24px;height:200px;
   background:rgba(10,18,28,.75);border:1px solid var(--border2);border-radius:6px;
   z-index:50;display:flex;flex-direction:column;justify-content:flex-end;
   pointer-events:none;box-shadow:0 4px 12px rgba(0,0,0,.4)
@@ -134,13 +137,30 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
   font-size:10px;color:var(--text2);font-family:'Geist Mono',monospace;font-weight:700
 }
 
-/* Map filters — compact panel below the noise meter */
+/* Map filters — compact panel at top-right of the map (inside .map-wrap) */
 #map-filters{
-  position:absolute;right:14px;top:310px;width:170px;
+  position:absolute;right:14px;top:14px;width:180px;
   background:rgba(10,18,28,.75);border:1px solid var(--border2);border-radius:6px;
   z-index:50;padding:8px 10px;font-family:'Geist',sans-serif;
-  box-shadow:0 4px 12px rgba(0,0,0,.4)
+  box-shadow:0 4px 12px rgba(0,0,0,.4);backdrop-filter:blur(6px)
 }
+
+/* Traceroute progress banner — top-center while a trace is running */
+#trace-progress{
+  position:absolute;top:14px;left:50%;transform:translateX(-50%);
+  padding:8px 16px;border-radius:6px;
+  background:rgba(10,18,28,.92);border:1px solid #4d9fff;color:var(--text);
+  font-size:12px;z-index:200;font-family:'Geist',sans-serif;
+  display:none;align-items:center;gap:10px;pointer-events:none;
+  box-shadow:0 4px 16px rgba(77,159,255,.25)
+}
+#trace-progress .tp-spin{
+  width:14px;height:14px;border-radius:50%;
+  border:2px solid rgba(77,159,255,.25);border-top-color:#4d9fff;
+  animation:tp-rot 0.8s linear infinite
+}
+@keyframes tp-rot{to{transform:rotate(360deg)}}
+#trace-progress .tp-clock{font-family:'Geist Mono',monospace;color:#4d9fff;font-weight:700}
 #map-filters .mf-title{
   font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;
   font-weight:700;margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--border)
@@ -159,34 +179,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 </head>
 <body>
 
-<div id="noise-meter" title="Intensité du bruit réseau (paquets recents, fenetre 30s)">
-  <span id="noise-meter-label">NOISE</span>
-  <div id="noise-meter-fill"></div>
-  <span id="noise-meter-readout">0</span>
-</div>
-
-<div id="map-filters">
-  <div class="mf-title">Filtres carte</div>
-  <div class="mf-row">
-    <label for="mf-noise">Bruit min</label>
-    <input type="range" id="mf-noise" min="0" max="20" step="1" value="0">
-    <span class="mf-val" id="mf-noise-val">0</span>
-  </div>
-  <div class="mf-row">
-    <input type="checkbox" id="mf-trusted">
-    <label for="mf-trusted" title="Anthropic, Cloudflare, Vidéotron, mDNS, link-local">Cacher légitimes</label>
-  </div>
-  <div class="mf-row">
-    <label for="mf-window" style="flex:0">Fenêtre</label>
-    <select id="mf-window">
-      <option value="0">Tout</option>
-      <option value="5">5 min</option>
-      <option value="15">15 min</option>
-      <option value="30">30 min</option>
-      <option value="60">1 h</option>
-    </select>
-  </div>
-</div>
+<!-- noise-meter, map-filters and trace-progress moved inside .map-wrap below -->
 
 <div id="tooltip">
   <div style="font-family:'Geist Mono',monospace;color:var(--blue);font-size:13px;font-weight:600;margin-bottom:4px" id="tt-ip"></div>
@@ -293,6 +286,43 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
   <div class="map-wrap" id="map-wrap">
     <svg id="world-svg"></svg>
     <div id="sel-box"></div>
+
+    <!-- Top-right overlays (filters + noise meter + trace progress) -->
+    <div id="map-filters">
+      <div class="mf-title">Filtres carte</div>
+      <div class="mf-row">
+        <label for="mf-noise">Bruit min</label>
+        <input type="range" id="mf-noise" min="0" max="20" step="1" value="0">
+        <span class="mf-val" id="mf-noise-val">0</span>
+      </div>
+      <div class="mf-row">
+        <input type="checkbox" id="mf-trusted">
+        <label for="mf-trusted" title="Anthropic, Cloudflare, Vidéotron, mDNS, link-local">Cacher légitimes</label>
+      </div>
+      <div class="mf-row">
+        <label for="mf-window" style="flex:0">Fenêtre</label>
+        <select id="mf-window">
+          <option value="0">Tout</option>
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 h</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="noise-meter" title="Intensité du bruit réseau (paquets recents, fenetre 30s)">
+      <span id="noise-meter-label">NOISE</span>
+      <div id="noise-meter-fill"></div>
+      <span id="noise-meter-readout">0</span>
+    </div>
+
+    <div id="trace-progress">
+      <div class="tp-spin"></div>
+      <span>Traceroute en cours →</span>
+      <span class="tp-target" id="tp-target">—</span>
+      <span class="tp-clock" id="tp-clock">0.0s</span>
+    </div>
 
     <!-- Toolbar sélection -->
     <div id="sel-toolbar">
@@ -1359,26 +1389,63 @@ function showTraceToast(text, color) {
   setTimeout(() => { tt.style.display = 'none'; }, 4000);
 }
 
+let traceTimerStart = 0;
+let traceTimerHandle = null;
+
+function showTraceProgress(targetIp) {
+  const banner = document.getElementById('trace-progress');
+  const tgt = document.getElementById('tp-target');
+  const clock = document.getElementById('tp-clock');
+  if (!banner) return;
+  traceTimerStart = Date.now();
+  if (tgt) tgt.textContent = targetIp;
+  if (clock) clock.textContent = '0.0s';
+  banner.style.display = 'flex';
+  if (traceTimerHandle) clearInterval(traceTimerHandle);
+  traceTimerHandle = setInterval(() => {
+    const elapsed = (Date.now() - traceTimerStart) / 1000;
+    if (clock) clock.textContent = elapsed.toFixed(1) + 's';
+    // Soft warning at 10s+
+    if (elapsed > 10 && banner.style.borderColor !== 'rgb(255, 179, 71)') {
+      banner.style.borderColor = '#ffb347';
+      if (clock) clock.style.color = '#ffb347';
+    }
+  }, 100);
+}
+
+function hideTraceProgress() {
+  const banner = document.getElementById('trace-progress');
+  if (banner) {
+    banner.style.display = 'none';
+    banner.style.borderColor = '#4d9fff';
+    const clock = document.getElementById('tp-clock');
+    if (clock) clock.style.color = '#4d9fff';
+  }
+  if (traceTimerHandle) { clearInterval(traceTimerHandle); traceTimerHandle = null; }
+}
+
 function startTraceroute(ip) {
   if (traceActive) { showTraceToast('Trace déjà en cours…', '#ffb347'); return; }
   if (!ngAuthed) { showTraceToast('WebSocket non authentifié', '#ff4d6a'); return; }
   traceActive = true;
-  showTraceToast(`Traceroute → ${ip}…`, '#4d9fff');
+  showTraceProgress(ip);
   ws.send(JSON.stringify({cmd: 'traceroute', ip: ip, max_hops: 30}));
 }
 
 function handleMsg(msg) {
   if (msg.type === 'traceroute_started') {
-    showTraceToast(`Trace en cours → ${msg.target} (max ${msg.max_hops} sauts)…`, '#4d9fff');
+    // Server confirmed it started — banner already showing
     return;
   }
   if (msg.type === 'traceroute_result') {
     traceActive = false;
+    const elapsed = ((Date.now() - traceTimerStart) / 1000).toFixed(1);
+    hideTraceProgress();
     if (!msg.ok) {
-      showTraceToast(`Trace échec: ${msg.error || 'inconnu'}`, '#ff4d6a');
+      showTraceToast(`Trace échec (${elapsed}s): ${msg.error || 'inconnu'}`, '#ff4d6a');
       return;
     }
-    showTraceToast(`Trace OK: ${msg.hops.length} sauts → ${msg.target}`, '#3dffb4');
+    showTraceToast(`Trace OK (${elapsed}s): ${msg.hops.length} sauts → ${msg.target}`, '#3dffb4');
     drawTraceroute(msg.target, msg.hops);
     return;
   }
