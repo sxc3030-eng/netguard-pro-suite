@@ -559,7 +559,11 @@ class NetState:
         self.bytes_out             = 0
         self.active_conns          = defaultdict(set)
         self.threats               = deque(maxlen=100)
-        self.recent_packets        = deque(maxlen=500)
+        self.recent_packets        = deque(maxlen=2000)
+        # Per-IP ring buffer — guarantees every IP gets airtime in state broadcasts
+        # so chatty IPs (CDN, Claude API) don't starve quiet/new IPs.
+        self.ip_recent_packets     = defaultdict(lambda: deque(maxlen=4))
+        self.ip_first_seen_ts      = {}  # ip -> first time we ever saw it (for "new IP priority")
         self.geo_hits              = defaultdict(int)
         self.proto_stats           = defaultdict(int)
         self.traffic_history       = deque(maxlen=60)
@@ -3220,8 +3224,10 @@ def analyze_packet(pkt):
         lat, lon = _get_ip_coords(src_ip, country_code)
         location = f"{city}, {GEO_COUNTRY_NAMES.get(country_code, country_code)}" if city else GEO_COUNTRY_NAMES.get(country_code, country_code)
 
-        STATE.recent_packets.appendleft({
+        _now_ms = int(time.time() * 1000)
+        _pkt_entry = {
             "t":        datetime.now().strftime("%H:%M:%S"),
+            "ts_ms":    _now_ms,  # numeric sort key (replaces fragile HH:MM:SS sort)
             "src":      src_ip, "dst": dst_ip,
             "sport":    src_port, "dport": dst_port,
             "proto":    proto, "size": f"{pkt_len}B",
@@ -3231,7 +3237,13 @@ def analyze_packet(pkt):
             "location": location,
             "lat":      lat,
             "lon":      lon,
-        })
+        }
+        STATE.recent_packets.appendleft(_pkt_entry)
+        # Per-IP ring buffer: each IP keeps its own 4 newest packets. Chatty IPs
+        # cannot evict quiet/new IPs from the state broadcast.
+        STATE.ip_recent_packets[src_ip].appendleft(_pkt_entry)
+        if src_ip not in STATE.ip_first_seen_ts:
+            STATE.ip_first_seen_ts[src_ip] = _now_ms
 
 import csv
 import pathlib
@@ -3296,22 +3308,30 @@ def _build_top_ip_entry(ip: str, hits: int) -> dict:
         "org": geo.get("org", ""),
     }
 
-def _packets_for_state_msg(deque_obj, total_limit: int = 200, per_ip_limit: int = 4):
-    """Build the recent_packets payload sent to dashboards. Old slice was [:30] which let
-    chatty IPs (Claude API / CDN) starve other IPs from ever reaching the client.
-    Strategy: keep up to `total_limit` newest packets, but cap per source IP to
-    `per_ip_limit` so quieter IPs (video stream, single API call) get airtime."""
+def _packets_for_state_msg(_unused_deque, total_limit: int = 400, stale_seconds: int = 600):
+    """Build state-broadcast packet payload from the per-IP ring buffer (STATE.ip_recent_packets).
+    Every IP that's been active gets up to 4 packets in the broadcast — chatty IPs cannot
+    evict quiet or just-discovered IPs. Stale entries (IPs not seen in 10 min) are dropped."""
+    cutoff_ms = int(time.time() * 1000) - stale_seconds * 1000
     out = []
-    per_ip = {}
-    for pkt in deque_obj:  # iteration order = newest-first since deque.appendleft is used
-        if len(out) >= total_limit:
-            break
-        src = pkt.get("src") or ""
-        if per_ip.get(src, 0) >= per_ip_limit:
+    stale_ips = []
+    for ip, q in list(STATE.ip_recent_packets.items()):
+        if not q:
+            stale_ips.append(ip)
             continue
-        out.append(pkt)
-        per_ip[src] = per_ip.get(src, 0) + 1
-    return out
+        # If the newest packet for this IP is older than cutoff, drop the IP
+        newest_ts = q[0].get("ts_ms", 0) if q else 0
+        if newest_ts < cutoff_ms:
+            stale_ips.append(ip)
+            continue
+        out.extend(q)
+    # Cleanup stale entries to bound memory
+    for ip in stale_ips:
+        STATE.ip_recent_packets.pop(ip, None)
+        STATE.ip_first_seen_ts.pop(ip, None)
+    # Sort newest-first by ts_ms — guarantees recent packets near the top
+    out.sort(key=lambda p: p.get("ts_ms", 0), reverse=True)
+    return out[:total_limit]
 
 
 def build_state_message() -> dict:
