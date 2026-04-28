@@ -1920,6 +1920,28 @@ def get_protocol_name(pkt) -> str:
 
 import subprocess as _subprocess
 
+def _label_special_ip(ip: str) -> str:
+    """Return a short readable label for non-routable IPs (LAN / multicast / link-local / loopback).
+    Returns '' for public IPs — caller should fall back to GeoIP lookup for those."""
+    if not ip or not isinstance(ip, str):
+        return ""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ""
+    if addr.is_loopback:
+        return "Loopback"
+    if addr.is_multicast:
+        return "Multicast"
+    if addr.is_link_local:
+        return "Link-Local"
+    if addr.is_private:
+        return "LAN"
+    if addr.is_reserved or addr.is_unspecified:
+        return "Reserved"
+    return ""
+
+
 def _validate_ip(ip: str) -> bool:
     """Valide qu'une chaîne est une adresse IP légitime (anti-injection)"""
     try:
@@ -3294,6 +3316,14 @@ def analyze_packet(pkt):
         city = geo.get("city", "")
         lat, lon = _get_ip_coords(src_ip, country_code)
         location = f"{city}, {GEO_COUNTRY_NAMES.get(country_code, country_code)}" if city else GEO_COUNTRY_NAMES.get(country_code, country_code)
+        # Fallback for non-routable IPs (LAN, multicast, link-local, loopback) so the UI shows
+        # a readable origin instead of an empty string. Only applied when GeoIP returned nothing.
+        if not location:
+            special = _label_special_ip(src_ip)
+            if special:
+                location = special
+                if not country_code:
+                    country_code = special
 
         _now_ms = int(time.time() * 1000)
         _pkt_entry = {

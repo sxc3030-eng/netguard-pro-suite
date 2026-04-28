@@ -663,6 +663,12 @@ function blockTopASN() {
 
 // ── WHOIS/ASN lookup ──────────────────────────────────────────────────────
 async function lookupIP(ip) {
+  if (!ip || typeof ip !== 'string') return ipData[ip] || {};
+  // Virtual country markers ('geo-US', 'geo-FR', ...) and special internal labels
+  // are not real IPs — don't bother ipapi.co with them.
+  if (ip.startsWith('geo-') || ip.startsWith('LAN') || ip === 'Multicast' || ip === 'Loopback') {
+    return ipData[ip] || {};
+  }
   if (ipData[ip] && ipData[ip].org) return ipData[ip]; // Cached
   try {
     const res = await fetch(`https://ipapi.co/${ip}/json/`, {signal: AbortSignal.timeout(4000)});
