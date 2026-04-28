@@ -1240,7 +1240,16 @@ function showTooltip(event, ip, data) {
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
 function getNgToken() {
-  let t = localStorage.getItem('ng_ws_token') || '';
+  // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
+  try {
+    const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
+    if (_argusTok && _argusTok.length >= 32) {
+      try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      return _argusTok;
+    }
+  } catch(_) {}
+  let t = '';
+  try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
   if (!t || t.length < 32) {
     t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
     if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
