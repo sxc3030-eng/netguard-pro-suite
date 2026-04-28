@@ -242,27 +242,84 @@ def get_geo_info(ip: str) -> dict:
     _geo_city_cache[ip] = result
     return result
 
+def _fetch_geo_ipapi_co(ip: str):
+    """Provider 1 — ipapi.co (HTTPS, 1000 req/day free, no key). Returns normalized dict or None."""
+    import urllib.request
+    url = f"https://ipapi.co/{ip}/json/"
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        data = json.loads(r.read().decode())
+    if data.get("error") or not data.get("country_code"):
+        return None
+    return {
+        "country_code": data.get("country_code") or "",
+        "country_name": data.get("country_name") or "",
+        "city":         data.get("city") or "",
+        "latitude":     data.get("latitude"),
+        "longitude":    data.get("longitude"),
+        "org":          data.get("org") or "",
+        "asn":          data.get("asn") or "",
+        "_provider":    "ipapi.co",
+    }
+
+
+def _fetch_geo_ip_api_com(ip: str):
+    """Provider 2 — ip-api.com (HTTP, 45 req/min free, no key). Used as fallback when ipapi.co rate-limits or fails."""
+    import urllib.request
+    fields = "status,country,countryCode,city,lat,lon,org,as,isp,query"
+    url = f"http://ip-api.com/json/{ip}?fields={fields}"
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        data = json.loads(r.read().decode())
+    if data.get("status") != "success" or not data.get("countryCode"):
+        return None
+    # ip-api 'as' field is e.g. "AS8075 Microsoft Corporation" — extract the AS number alone
+    as_field = data.get("as") or ""
+    asn_num = as_field.split(" ", 1)[0] if as_field.startswith("AS") else ""
+    return {
+        "country_code": data.get("countryCode") or "",
+        "country_name": data.get("country") or "",
+        "city":         data.get("city") or "",
+        "latitude":     data.get("lat"),
+        "longitude":    data.get("lon"),
+        "org":          data.get("org") or data.get("isp") or "",
+        "asn":          asn_num,
+        "_provider":    "ip-api.com",
+    }
+
+
+_GEO_PROVIDERS = (_fetch_geo_ipapi_co, _fetch_geo_ip_api_com)
+
+
 def _fetch_city_async(ip: str):
-    """Récupère la ville et coordonnées en arrière-plan"""
-    try:
-        import urllib.request
-        url = f"https://ipapi.co/{ip}/json/"
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
-        with urllib.request.urlopen(req, timeout=3) as r:
-            data = json.loads(r.read().decode())
-        _geo_city_cache[ip] = {
-            "country":   data.get("country_code", ""),
-            "country_name": data.get("country_name", ""),
-            "city":      data.get("city", ""),
-            "latitude":  data.get("latitude"),
-            "longitude": data.get("longitude"),
-            "org":       data.get("org", ""),
-            "asn":       data.get("asn", ""),
-        }
-        # Update intel after geo fetch
-        _update_ip_intel(ip, data)
-    except Exception:
-        pass
+    """Resolve geo for `ip` via provider chain (ipapi.co → ip-api.com fallback). Caches result."""
+    result = None
+    for provider in _GEO_PROVIDERS:
+        try:
+            result = provider(ip)
+            if result:
+                break
+        except Exception as e:
+            log.debug(f"[GEO] {provider.__name__} failed for {ip}: {e}")
+            continue
+    if not result:
+        return  # All providers failed; cache untouched so a future packet retries
+    _geo_city_cache[ip] = {
+        "country":      result["country_code"],
+        "country_name": result["country_name"],
+        "city":         result["city"],
+        "latitude":     result["latitude"],
+        "longitude":    result["longitude"],
+        "org":          result["org"],
+        "asn":          result["asn"],
+    }
+    # _update_ip_intel expects ipapi.co-style 'country_code'/'org'/'asn' keys — bridge them
+    _update_ip_intel(ip, {
+        "country_code": result["country_code"],
+        "city":         result["city"],
+        "org":          result["org"],
+        "asn":          result["asn"],
+    })
 
 # ─── Listes VPN/Tor/Proxy connues ─────────────────────────────────────────
 _KNOWN_VPN_ORGS = [
