@@ -3296,6 +3296,24 @@ def _build_top_ip_entry(ip: str, hits: int) -> dict:
         "org": geo.get("org", ""),
     }
 
+def _packets_for_state_msg(deque_obj, total_limit: int = 200, per_ip_limit: int = 4):
+    """Build the recent_packets payload sent to dashboards. Old slice was [:30] which let
+    chatty IPs (Claude API / CDN) starve other IPs from ever reaching the client.
+    Strategy: keep up to `total_limit` newest packets, but cap per source IP to
+    `per_ip_limit` so quieter IPs (video stream, single API call) get airtime."""
+    out = []
+    per_ip = {}
+    for pkt in deque_obj:  # iteration order = newest-first since deque.appendleft is used
+        if len(out) >= total_limit:
+            break
+        src = pkt.get("src") or ""
+        if per_ip.get(src, 0) >= per_ip_limit:
+            continue
+        out.append(pkt)
+        per_ip[src] = per_ip.get(src, 0) + 1
+    return out
+
+
 def build_state_message() -> dict:
     with STATE.lock:
         conns_count = sum(len(v) for v in STATE.active_conns.values())
@@ -3310,7 +3328,7 @@ def build_state_message() -> dict:
             "blocked_rate":       round(STATE.packets_blocked * 100 / total, 1),
             "active_conns":       conns_count,
             "threats_count":      len(STATE.threats),
-            "recent_packets":     list(STATE.recent_packets)[:30],
+            "recent_packets":     _packets_for_state_msg(STATE.recent_packets),
             "threats":            list(STATE.threats)[:10],
             "traffic_history":    list(STATE.traffic_history),
             "proto_stats": [
