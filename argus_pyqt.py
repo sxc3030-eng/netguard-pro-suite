@@ -139,20 +139,21 @@ QPushButton#newTabBtn {
 }
 QPushButton#newTabBtn:hover { color: #4d9fff; border-color: #4d9fff; border-style: solid; }
 
-/* ── Mode badge ── */
-QLabel#modeBadge {
-    background: #1a1f28;
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 13px;
+/* ── Mode toggle button (in dock row 3, before NetGuard) ── */
+QPushButton#modeBtn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
     padding: 4px 12px;
-    font-size: 10px;
+    font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #9aa0ad;
     font-family: 'Geist Mono', 'Consolas', monospace;
 }
-QLabel#modeBadge[mode="private"] { color: #4d9fff; border-color: #4d9fff; }
-QLabel#modeBadge[mode="vault"]   { color: #d4af37; border-color: #d4af37;
+QPushButton#modeBtn:hover { color: #4d9fff; border-color: #4d9fff; background: #1a1f28; }
+QPushButton#modeBtn[mode="private"] { color: #4d9fff; border-color: #4d9fff; }
+QPushButton#modeBtn[mode="vault"]   { color: #d4af37; border-color: #d4af37;
     background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2a1f08, stop:1 #1a1409); }
 
 /* ── NetGuard status button (in dock row 3, where F12 used to be) ── */
@@ -603,6 +604,13 @@ class ArgusBrowser(QMainWindow):
         self.favs_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self._render_favs()
 
+        # Mode toggle button (Normal / Privé / Coffre) — moved from floating top-center to here
+        self.mode_btn = QPushButton(f"{MODES[0]['icon']}  {MODES[0]['text']}")
+        self.mode_btn.setObjectName("modeBtn")
+        self.mode_btn.setProperty("mode", "normal")
+        self.mode_btn.setToolTip("Click pour changer mode (Normal / Privé / Coffre)")
+        self.mode_btn.clicked.connect(self._cycle_mode)
+
         # NetGuard backend status button (replaces the F12 button — F12 key still works)
         self.ng_btn = QPushButton("🛡  NetGuard")
         self.ng_btn.setObjectName("ngBtn")
@@ -618,6 +626,7 @@ class ArgusBrowser(QMainWindow):
 
         h3.addWidget(settings_btn)
         h3.addWidget(self.favs_bar, 1)
+        h3.addWidget(self.mode_btn)
         h3.addWidget(self.ng_btn)
         h3.addWidget(new_tab_btn)
 
@@ -650,15 +659,7 @@ class ArgusBrowser(QMainWindow):
         m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
 
     def _build_overlays(self):
-        self.mode_badge = QLabel(f"{MODES[0]['icon']}  {MODES[0]['text']}", self)
-        self.mode_badge.setObjectName("modeBadge")
-        self.mode_badge.setProperty("mode", "normal")
-        self.mode_badge.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mode_badge.setToolTip("Click pour changer mode (Normal / Privé / Coffre)")
-        self.mode_badge.mousePressEvent = lambda e: self._cycle_mode()
-        self.mode_badge.adjustSize()
-
-        # Periodic NetGuard health check (button is in dock row 3, not floating)
+        # Periodic NetGuard health check (NetGuard + mode buttons live in dock row 3)
         self.ng_check_timer = QTimer(self)
         self.ng_check_timer.timeout.connect(self._check_netguard_status)
         self.ng_check_timer.start(5000)  # every 5s
@@ -820,17 +821,16 @@ class ArgusBrowser(QMainWindow):
 
     def _apply_mode(self):
         m = MODES[self.mode_idx]
-        self.mode_badge.setText(f"{m['icon']}  {m['text']}")
-        self.mode_badge.setProperty("mode", m["id"])
+        if hasattr(self, "mode_btn"):
+            self.mode_btn.setText(f"{m['icon']}  {m['text']}")
+            self.mode_btn.setProperty("mode", m["id"])
+            self.mode_btn.style().unpolish(self.mode_btn); self.mode_btn.style().polish(self.mode_btn)
         self.root.setProperty("mode", m["id"])
-        for w in (self.mode_badge, self.root):
-            w.style().unpolish(w); w.style().polish(w)
-        self.mode_badge.adjustSize()
+        self.root.style().unpolish(self.root); self.root.style().polish(self.root)
         # Update active tab's mode for the bar
         idx = self.pages_stack.currentIndex()
         if idx >= 0:
             self.tab_bar.update_tab(idx, mode=m["id"])
-        self._reposition_overlays()
 
     # ── NetGuard backend control ──────────────────────────────
     def _check_netguard_status(self):
@@ -881,12 +881,8 @@ class ArgusBrowser(QMainWindow):
         self._reposition_overlays()
 
     def _reposition_overlays(self):
-        if not hasattr(self, "mode_badge"):
-            return
-        bw = self.mode_badge.width()
-        # Mode badge — top center, just above tab bar
-        self.mode_badge.move((self.width() - bw) // 2, 50)
-        self.mode_badge.raise_()
+        # Mode + NetGuard buttons now live in the dock — no floating overlays to position.
+        pass
 
 
 def main():
