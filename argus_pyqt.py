@@ -28,6 +28,8 @@ Run:  python argus_pyqt.py   (or LANCER_ARGUS_2.bat)
 """
 import json
 import os
+import platform
+import subprocess
 import sys
 import threading
 import urllib.error
@@ -36,6 +38,10 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlparse
+
+# Module-level Argus version constant (used by About dialog + version banner +
+# Help > About menu). Bump this when shipping a new release.
+ARGUS_VERSION = "3.0.0"
 
 from PyQt6.QtCore import (
     Qt, QUrl, QSize, pyqtSignal, QObject, QTimer,
@@ -47,7 +53,8 @@ from PyQt6.QtWidgets import (
     QLineEdit, QComboBox, QPushButton, QLabel, QStackedWidget, QFrame,
     QSizePolicy, QScrollArea, QMenu, QDialog, QCheckBox, QFormLayout,
     QDialogButtonBox, QGroupBox, QTextBrowser, QTextEdit, QTabWidget,
-    QFileDialog, QMessageBox,
+    QFileDialog, QMessageBox, QSplashScreen, QListWidget, QListWidgetItem,
+    QPlainTextEdit, QHeaderView, QTableWidget, QTableWidgetItem, QMenuBar,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
@@ -172,6 +179,60 @@ except ImportError:
         raise RuntimeError("config module not available; cannot store secrets")
     def list_known_secrets():  # type: ignore[no-redef]
         return []
+
+# Vault management — used by Settings > Vault tab to list secrets metadata,
+# rotate masterkey, etc. Module shipped in argus_vault.py; graceful fallback.
+try:
+    from argus_vault import (
+        vault_list, vault_get, vault_delete, vault_rotate_masterkey,
+        vault_exists,
+    )
+    HAVE_VAULT = True
+except ImportError:
+    HAVE_VAULT = False
+    def vault_list():  # type: ignore[no-redef]
+        return []
+    def vault_get(_k, passphrase=None):  # type: ignore[no-redef]
+        return None
+    def vault_delete(_k):  # type: ignore[no-redef]
+        return False
+    def vault_rotate_masterkey(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("argus_vault module not available")
+    def vault_exists():  # type: ignore[no-redef]
+        return False
+
+# Audit chain verification (vault gateway) — Vault tab "Verify chain" button.
+try:
+    from argus_vault_gateway import gateway_audit_chain_verify
+    HAVE_VAULT_GATEWAY = True
+except ImportError:
+    HAVE_VAULT_GATEWAY = False
+    def gateway_audit_chain_verify():  # type: ignore[no-redef]
+        return False
+
+# Mythos bus presence flag (used in About dialog diagnostics).
+try:
+    import argus_mythos_bus  # noqa: F401
+    HAVE_MYTHOS = True
+except ImportError:
+    HAVE_MYTHOS = False
+
+# Sandbox download routing helper presence flag (About dialog diagnostics).
+try:
+    import argus_sandbox  # noqa: F401
+    HAVE_SANDBOX_MOD = True
+except ImportError:
+    HAVE_SANDBOX_MOD = False
+
+# Update checker — wired by another agent. Wrap in try/except so this file
+# stays runnable even if the module hasn't landed yet.
+try:
+    from argus_updater import check_for_update as _argus_check_for_update
+    HAVE_UPDATER = True
+except ImportError:
+    HAVE_UPDATER = False
+    def _argus_check_for_update(*_a, **_kw):  # type: ignore[no-redef]
+        return None
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "argus_data"
@@ -692,6 +753,19 @@ THEMES: dict[str, str] = {
     "Pastel":      _build_theme(bg="#f5f0e8", surface="#faf6f0", fg="#2d3033",
                                 accent="#c9a96e",
                                 border="#e0d5c4", muted="#857a6a"),
+    # ── 6 new themes (community-favorite palettes) ──
+    "Tokyo Night":     _build_theme(bg="#1a1b26", surface="#24283b", fg="#a9b1d6",
+                                    accent="#7aa2f7"),
+    "Catppuccin Mocha":_build_theme(bg="#1e1e2e", surface="#313244", fg="#cdd6f4",
+                                    accent="#cba6f7"),
+    "Dracula":         _build_theme(bg="#282a36", surface="#44475a", fg="#f8f8f2",
+                                    accent="#bd93f9"),
+    "Solarized Dark":  _build_theme(bg="#002b36", surface="#073642", fg="#839496",
+                                    accent="#268bd2"),
+    "Gruvbox Dark":    _build_theme(bg="#282828", surface="#3c3836", fg="#ebdbb2",
+                                    accent="#fabd2f"),
+    "Nord":            _build_theme(bg="#2e3440", surface="#3b4252", fg="#d8dee9",
+                                    accent="#88c0d0"),
 }
 
 DEFAULT_THEME = "Cyber Dark"
@@ -1224,10 +1298,11 @@ class SettingsDialog(QDialog):
         v.setSpacing(10)
         v.setContentsMargins(10, 10, 10, 10)
 
-        # Tabbed layout — Display / API Keys
+        # Tabbed layout — Display / API Keys / Vault
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_display_tab(), "Affichage")
         self._tabs.addTab(self._build_keys_tab(),    "API Keys")
+        self._tabs.addTab(self._build_vault_tab(),   "Vault")
         v.addWidget(self._tabs, 1)
 
         # Buttons
@@ -1258,7 +1333,7 @@ class SettingsDialog(QDialog):
         theme_row = QHBoxLayout()
         theme_row.addWidget(QLabel("Style global :"))
         self.theme_combo = QComboBox()
-        for name in THEMES.keys():
+        for name in sorted(THEMES.keys(), key=str.lower):
             self.theme_combo.addItem(name)
         # Restore current selection.
         current_theme = self.settings_mgr.get("theme") or DEFAULT_THEME
@@ -1515,6 +1590,200 @@ class SettingsDialog(QDialog):
             msg += "\n\nErreurs :\n" + "\n".join(errors)
         QMessageBox.information(self, "Argus — migration", msg)
 
+    # ── Vault tab ──────────────────────────────────────────────────────
+    def _build_vault_tab(self) -> QWidget:
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        ov.setSpacing(8)
+
+        if not HAVE_VAULT:
+            warn = QLabel(
+                "Module ``argus_vault`` indisponible — gestion du coffre désactivée."
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #ff9e7a; font-size: 12px; padding: 12px;")
+            ov.addWidget(warn)
+            ov.addStretch(1)
+            return outer
+
+        hdr = QLabel(
+            "Liste des secrets stockés dans le coffre chiffré. "
+            "Les valeurs ne sont jamais affichées, sauf bouton « View » "
+            "(confirmation requise)."
+        )
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet("font-size: 12px; color: #9aa0ad;")
+        ov.addWidget(hdr)
+
+        # Table: Name / Owner / Created / Actions
+        self._vault_table = QTableWidget()
+        self._vault_table.setColumnCount(4)
+        self._vault_table.setHorizontalHeaderLabels(
+            ["Nom", "Owner", "Créé", "Actions"]
+        )
+        self._vault_table.verticalHeader().setVisible(False)
+        self._vault_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._vault_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        try:
+            hh = self._vault_table.horizontalHeader()
+            hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        except Exception:
+            pass
+        ov.addWidget(self._vault_table, 1)
+        self._reload_vault_table()
+
+        # Bottom action row
+        actions = QHBoxLayout()
+        refresh_btn = QPushButton("Rafraîchir")
+        refresh_btn.clicked.connect(self._reload_vault_table)
+        rotate_btn = QPushButton("Rotate masterkey")
+        rotate_btn.setToolTip("Génère une nouvelle clé maître + ré-encrypte tous les secrets.")
+        rotate_btn.clicked.connect(self._rotate_masterkey)
+        verify_btn = QPushButton("Verify audit chain")
+        verify_btn.setToolTip("Vérifie la chaîne d'audit du Vault Gateway (HMAC).")
+        verify_btn.clicked.connect(self._verify_audit_chain)
+        actions.addWidget(refresh_btn)
+        actions.addStretch(1)
+        actions.addWidget(verify_btn)
+        actions.addWidget(rotate_btn)
+        ov.addLayout(actions)
+        return outer
+
+    def _reload_vault_table(self):
+        """Re-populate the vault table from vault_list() metadata."""
+        try:
+            entries = vault_list() or []
+        except Exception as e:
+            entries = []
+            QMessageBox.warning(self, "Argus — coffre",
+                                f"vault_list() a échoué : {e}")
+        self._vault_table.setRowCount(len(entries))
+        for r, entry in enumerate(entries):
+            name = entry.get("name", "")
+            owner = entry.get("owner", "") or "—"
+            created = entry.get("created_at", "") or "—"
+            self._vault_table.setItem(r, 0, QTableWidgetItem(name))
+            self._vault_table.setItem(r, 1, QTableWidgetItem(owner))
+            self._vault_table.setItem(r, 2, QTableWidgetItem(created))
+
+            # Actions cell — view / delete
+            cell = QWidget()
+            cl = QHBoxLayout(cell)
+            cl.setContentsMargins(2, 2, 2, 2)
+            cl.setSpacing(4)
+            view_btn = QPushButton("View")
+            view_btn.setToolTip("Affiche la valeur après confirmation.")
+            view_btn.clicked.connect(
+                lambda _=False, n=name: self._vault_view_value(n)
+            )
+            del_btn = QPushButton("Delete")
+            del_btn.clicked.connect(
+                lambda _=False, n=name: self._vault_delete_value(n)
+            )
+            cl.addWidget(view_btn)
+            cl.addWidget(del_btn)
+            cl.addStretch(1)
+            self._vault_table.setCellWidget(r, 3, cell)
+
+    def _vault_view_value(self, name: str):
+        ans = QMessageBox.warning(
+            self, "Argus — coffre",
+            f"Afficher la valeur de {name} en clair ?\n"
+            "La valeur restera affichée 30 secondes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            val = vault_get(name) or ""
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"vault_get a échoué : {e}")
+            return
+        if not val:
+            QMessageBox.information(self, "Argus — coffre",
+                                    f"{name} : (valeur vide ou indisponible)")
+            return
+        # Use a non-modal info box that auto-closes.
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(f"Argus — {name}")
+        msg.setText(f"<pre>{val}</pre>")
+        QTimer.singleShot(30000, msg.close)
+        msg.exec()
+
+    def _vault_delete_value(self, name: str):
+        ans = QMessageBox.question(
+            self, "Argus — coffre",
+            f"Supprimer définitivement {name} du coffre ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            vault_delete(name)
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"vault_delete a échoué : {e}")
+            return
+        self._reload_vault_table()
+
+    def _rotate_masterkey(self):
+        # 2FA gate when available.
+        if HAVE_2FA:
+            try:
+                if two_fa_is_setup() and not two_fa_challenge():
+                    QMessageBox.warning(self, "Argus — 2FA",
+                                        "Échec 2FA — rotation annulée.")
+                    return
+            except Exception:
+                pass
+        ans = QMessageBox.question(
+            self, "Argus — coffre",
+            "Générer une nouvelle clé maître et ré-encrypter tous les secrets ?\n"
+            "Cette opération peut être longue selon le nombre de secrets.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            vault_rotate_masterkey()
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"Rotation a échoué : {e}")
+            return
+        QMessageBox.information(self, "Argus — coffre",
+                                "Clé maître régénérée. Tous les secrets ont été ré-encryptés.")
+        self._reload_vault_table()
+
+    def _verify_audit_chain(self):
+        if not HAVE_VAULT_GATEWAY:
+            QMessageBox.information(
+                self, "Argus — gateway",
+                "Vault Gateway non disponible — démarre le gateway pour vérifier la chaîne d'audit."
+            )
+            return
+        try:
+            ok = bool(gateway_audit_chain_verify())
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — gateway",
+                                 f"Vérification a échoué : {e}")
+            return
+        if ok:
+            QMessageBox.information(self, "Argus — gateway",
+                                    "Chaîne d'audit valide ✓")
+        else:
+            QMessageBox.warning(self, "Argus — gateway",
+                                "Chaîne d'audit invalide ou interrompue ✗")
+
     def _on_theme_preview(self, name: str):
         """Live preview — apply immediately. _cancel reverts."""
         apply_theme(name)
@@ -1566,16 +1835,54 @@ class RequestInterceptor(QWebEngineUrlRequestInterceptor):
 
 
 class LiveFeed(QFrame):
+    # Emits when the user clicks the version badge — wired by ArgusBrowser
+    # to open the About dialog.
+    version_clicked = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setObjectName("liveFeed")
         self.setFixedHeight(46)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 4, 14, 4)
-        layout.setSpacing(2)
-        self.layout_box = layout
+        # Outer horizontal: rows column on the left, version badge on the right.
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(14, 4, 10, 4)
+        outer.setSpacing(8)
+        rows_col = QVBoxLayout()
+        rows_col.setContentsMargins(0, 0, 0, 0)
+        rows_col.setSpacing(2)
+        outer.addLayout(rows_col, 1)
+        # Version badge — clickable, opens About.
+        self.version_badge = QPushButton(f"Argus v{ARGUS_VERSION}")
+        self.version_badge.setFlat(True)
+        self.version_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version_badge.setToolTip("À propos d'Argus")
+        self.version_badge.setStyleSheet(
+            "QPushButton { background: transparent; color: #9aa0ad; "
+            "border: 1px solid rgba(255,255,255,0.10); border-radius: 4px; "
+            "padding: 2px 8px; font-size: 10px; "
+            "font-family: 'Geist Mono','Consolas',monospace; }"
+            "QPushButton:hover { color: #4d9fff; border-color: #4d9fff; }"
+        )
+        self.version_badge.clicked.connect(self.version_clicked.emit)
+        outer.addWidget(self.version_badge, 0, Qt.AlignmentFlag.AlignTop)
+        self.layout_box = rows_col
         self.rows: list[QLabel] = []
+
+    def set_update_available(self, available: bool, info: dict | None = None):
+        """Mark the version badge to indicate an update is available."""
+        if available:
+            ver = (info or {}).get("latest", "")
+            tip = f"Mise à jour disponible : {ver}" if ver else "Mise à jour disponible"
+            self.version_badge.setText(f"Argus v{ARGUS_VERSION} ↑")
+            self.version_badge.setToolTip(tip)
+            self.version_badge.setStyleSheet(
+                "QPushButton { background: rgba(61,255,180,0.10); color: #3dffb4; "
+                "border: 1px solid #3dffb4; border-radius: 4px; "
+                "padding: 2px 8px; font-size: 10px; "
+                "font-family: 'Geist Mono','Consolas',monospace; }"
+                "QPushButton:hover { color: #0a0e14; background: #3dffb4; }"
+            )
 
     def push(self, kind: str, method: str, url: str, status: str = "—", time: str = ""):
         display_url = url
@@ -2199,6 +2506,410 @@ class ArgusWebPage(QWebEnginePage):
         return None
 
 
+# ── Quick switcher (Ctrl+K) ──────────────────────────────────────────────
+class QuickSwitcherDialog(QDialog):
+    """VS Code style command palette + tab/history/bookmark fuzzy finder.
+
+    Sources are aggregated lazily via a callable injected by ArgusBrowser
+    so this widget stays decoupled from the browser internals.
+    """
+
+    def __init__(self, sources_provider, on_activate, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Argus — Quick Switcher")
+        self.setObjectName("quickSwitcher")
+        self.setModal(True)
+        self.resize(600, 400)
+        self._sources_provider = sources_provider
+        self._on_activate = on_activate
+        self._items: list[dict] = []
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(6)
+
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Tabs / History / Bookmarks / Commands…")
+        self.input.textChanged.connect(self._refilter)
+        self.input.returnPressed.connect(self._activate_current)
+        v.addWidget(self.input)
+
+        self.list = QListWidget()
+        self.list.setUniformItemSizes(True)
+        self.list.itemActivated.connect(lambda _i: self._activate_current())
+        self.list.itemDoubleClicked.connect(lambda _i: self._activate_current())
+        v.addWidget(self.list, 1)
+
+        # Populate lazily so opening is fast even with big history.
+        QTimer.singleShot(0, self._reload_items)
+        self.input.setFocus()
+
+    def keyPressEvent(self, event):  # type: ignore[override]
+        # Esc closes; Up/Down navigate the list even from the input field.
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            row = self.list.currentRow()
+            n = self.list.count()
+            if n > 0:
+                if event.key() == Qt.Key.Key_Down:
+                    self.list.setCurrentRow(min(row + 1, n - 1))
+                else:
+                    self.list.setCurrentRow(max(row - 1, 0))
+            return
+        super().keyPressEvent(event)
+
+    def _reload_items(self):
+        try:
+            self._items = list(self._sources_provider())
+        except Exception:
+            self._items = []
+        self._refilter(self.input.text())
+
+    @staticmethod
+    def _fuzzy_score(needle: str, hay: str) -> int:
+        """Naive case-insensitive subsequence score; -1 means no match."""
+        if not needle:
+            return 0
+        needle = needle.lower()
+        hay_low = hay.lower()
+        # Prefer prefix matches.
+        if hay_low.startswith(needle):
+            return 1000 - len(hay_low)
+        if needle in hay_low:
+            return 500 - hay_low.index(needle)
+        # Subsequence fallback.
+        i = 0
+        for ch in hay_low:
+            if ch == needle[i]:
+                i += 1
+                if i == len(needle):
+                    return 100
+        return -1
+
+    def _refilter(self, text: str):
+        self.list.clear()
+        text = (text or "").strip()
+        scored: list[tuple[int, dict]] = []
+        for it in self._items:
+            label = it.get("label", "")
+            score = self._fuzzy_score(text, label)
+            if score >= 0:
+                scored.append((score, it))
+        scored.sort(key=lambda x: -x[0])
+        for _s, it in scored[:60]:
+            icon = it.get("icon", "•")
+            label = it.get("label", "")
+            row = QListWidgetItem(f"{icon}  {label}")
+            row.setData(Qt.ItemDataRole.UserRole, it)
+            self.list.addItem(row)
+        if self.list.count() > 0:
+            self.list.setCurrentRow(0)
+
+    def _activate_current(self):
+        row = self.list.currentItem()
+        if row is None and self.list.count() > 0:
+            row = self.list.item(0)
+        if row is None:
+            return
+        item = row.data(Qt.ItemDataRole.UserRole)
+        try:
+            self._on_activate(item)
+        finally:
+            self.accept()
+
+
+# ── About dialog ─────────────────────────────────────────────────────────
+class AboutDialog(QDialog):
+    """Help > About — shows version, license, modules detected, diagnostics."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("À propos d'Argus")
+        self.resize(480, 540)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 20, 20, 16)
+        v.setSpacing(8)
+
+        # Logo
+        try:
+            logo_path = ROOT / "branding" / "argus" / "argus_v2_256.png"
+            if not logo_path.exists():
+                logo_path = ROOT / "branding" / "argus" / "argus_normal.png"
+            if logo_path.exists():
+                pix = QPixmap(str(logo_path))
+                if not pix.isNull():
+                    logo = QLabel()
+                    logo.setPixmap(pix.scaled(96, 96,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+                    logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    v.addWidget(logo)
+        except Exception:
+            pass
+
+        title = QLabel(f"<b style='font-size:18px;'>Argus v{ARGUS_VERSION}</b>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(title)
+
+        tagline = QLabel("Cybersecurity browser & workbench — l'œil aux 100 yeux.")
+        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tagline.setStyleSheet("color:#9aa0ad; font-size:12px;")
+        v.addWidget(tagline)
+
+        info_lines = [
+            "Licence : <b>GPL v3</b> — voir LICENSE",
+            'Repo : <a href="https://github.com/sxc3030-eng/netguard-pro-suite">'
+            'github.com/sxc3030-eng/netguard-pro-suite</a>',
+        ]
+        info = QLabel("<br>".join(info_lines))
+        info.setOpenExternalLinks(True)
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info.setStyleSheet("font-size:12px; padding:4px;")
+        v.addWidget(info)
+
+        # Modules detected
+        modules = [
+            ("Sandbox",      HAVE_SANDBOX),
+            ("Surveillance", HAVE_SURVEILLANCE),
+            ("Arbiter",      HAVE_ARBITER),
+            ("Vault",        HAVE_VAULT),
+            ("Vault domains",HAVE_VAULT_DOMAINS),
+            ("Vault gateway",HAVE_VAULT_GATEWAY),
+            ("2FA",          HAVE_2FA),
+            ("Onboarding",   HAVE_ONBOARDING),
+            ("Config",       HAVE_CONFIG),
+            ("Mythos bus",   HAVE_MYTHOS),
+            ("Updater",      HAVE_UPDATER),
+        ]
+        mod_text = "<b>Modules détectés :</b><br>" + "<br>".join(
+            f"&nbsp;&nbsp;{'✓' if ok else '✗'} {n}" for n, ok in modules
+        )
+        mod_label = QLabel(mod_text)
+        mod_label.setStyleSheet("font-size:11px; padding:6px;")
+        v.addWidget(mod_label)
+
+        v.addStretch(1)
+
+        btns = QHBoxLayout()
+        copy_btn = QPushButton("Copier diagnostic")
+        copy_btn.clicked.connect(self._copy_diag)
+        ok_btn = QPushButton("Fermer")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btns.addWidget(copy_btn)
+        btns.addStretch(1)
+        btns.addWidget(ok_btn)
+        v.addLayout(btns)
+
+    def _copy_diag(self):
+        try:
+            from PyQt6.QtCore import QT_VERSION_STR
+        except Exception:
+            QT_VERSION_STR = "?"
+        modules = {
+            "Sandbox":       HAVE_SANDBOX,
+            "Surveillance":  HAVE_SURVEILLANCE,
+            "Arbiter":       HAVE_ARBITER,
+            "Vault":         HAVE_VAULT,
+            "Vault domains": HAVE_VAULT_DOMAINS,
+            "Vault gateway": HAVE_VAULT_GATEWAY,
+            "2FA":           HAVE_2FA,
+            "Onboarding":    HAVE_ONBOARDING,
+            "Config":        HAVE_CONFIG,
+            "Mythos bus":    HAVE_MYTHOS,
+            "Updater":       HAVE_UPDATER,
+        }
+        diag = (
+            f"Argus v{ARGUS_VERSION}\n"
+            f"Python   : {platform.python_version()}\n"
+            f"Platform : {platform.system()} {platform.release()} ({platform.machine()})\n"
+            f"PyQt6/Qt : {QT_VERSION_STR}\n"
+            f"Modules  :\n"
+            + "\n".join(f"  {'+' if v else '-'} {k}" for k, v in modules.items())
+        )
+        try:
+            cb = QApplication.clipboard()
+            cb.setText(diag)
+            QMessageBox.information(self, "Diagnostic", "Copié dans le presse-papier.")
+        except Exception:
+            QMessageBox.warning(self, "Diagnostic",
+                                "Échec de la copie. Voici le contenu :\n\n" + diag)
+
+
+# ── Reader mode overlay ──────────────────────────────────────────────────
+class ReaderModeOverlay(QFrame):
+    """F9 reader mode — strips chrome, shows article in serif font.
+
+    Content is extracted from the current page via simple JS (article tag,
+    main tag, or fallback to body innerText).
+    """
+
+    summary_requested = pyqtSignal(str)  # emits raw text → AI summarize
+    closed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("readerOverlay")
+        self.setStyleSheet("""
+            QFrame#readerOverlay {
+                background: rgba(20, 24, 33, 0.98);
+            }
+            QFrame#readerInner {
+                background: #1a1f28;
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 10px;
+            }
+            QPushButton#readerClose {
+                background: transparent;
+                color: #9aa0ad;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 5px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }
+            QPushButton#readerClose:hover { color: #ff4d6a; border-color: #ff4d6a; }
+            QPushButton#readerSummary {
+                background: #4d9fff;
+                color: #0a0e14;
+                border: 1px solid #4d9fff;
+                border-radius: 5px;
+                padding: 4px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QTextBrowser#readerBody {
+                background: transparent;
+                color: #e6edf3;
+                border: none;
+                font-family: 'Georgia','Cambria','Times New Roman',serif;
+                font-size: 16px;
+                padding: 24px 32px;
+            }
+            QLabel#readerTitle {
+                color: #e6edf3;
+                font-family: 'Georgia',serif;
+                font-size: 22px;
+                font-weight: 700;
+                padding: 4px 8px;
+            }
+        """)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(40, 40, 40, 40)
+
+        inner = QFrame()
+        inner.setObjectName("readerInner")
+        # Constrain to readable width.
+        inner.setMaximumWidth(820)
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(0)
+
+        bar = QFrame()
+        bv = QHBoxLayout(bar)
+        bv.setContentsMargins(12, 10, 12, 10)
+        self.title_lbl = QLabel("Reader mode")
+        self.title_lbl.setObjectName("readerTitle")
+        bv.addWidget(self.title_lbl, 1)
+        self.summary_btn = QPushButton("📝 Résume")
+        self.summary_btn.setObjectName("readerSummary")
+        self.summary_btn.setToolTip("Demande un résumé IA de cet article (Ctrl+J)")
+        self.summary_btn.clicked.connect(self._emit_summary)
+        bv.addWidget(self.summary_btn)
+        close_btn = QPushButton("Fermer")
+        close_btn.setObjectName("readerClose")
+        close_btn.clicked.connect(self.closed.emit)
+        bv.addWidget(close_btn)
+        iv.addWidget(bar)
+
+        self.body = QTextBrowser()
+        self.body.setObjectName("readerBody")
+        self.body.setOpenExternalLinks(True)
+        iv.addWidget(self.body, 1)
+
+        wrap = QHBoxLayout()
+        wrap.addStretch(1)
+        wrap.addWidget(inner, 1)
+        wrap.addStretch(1)
+        outer.addLayout(wrap, 1)
+
+    def show_content(self, title: str, text: str):
+        self.title_lbl.setText(title or "Reader mode")
+        # QTextBrowser handles plain text + paragraphs nicely.
+        self.body.setPlainText(text or "(Pas de contenu extrait.)")
+        self.show()
+        self.raise_()
+
+    def _emit_summary(self):
+        text = self.body.toPlainText()
+        if text:
+            self.summary_requested.emit(text[:6000])
+
+
+# ── Code sandbox QPlainTextEdit fallback (when Monaco HTML missing) ──────
+class CodeSandboxFallback(QWidget):
+    """Minimal QPlainTextEdit + Run button — used when monaco_sandbox.html
+    is missing or QWebEngine fails to load it. Runs JS via QWebEngineView
+    eval, no Pyodide."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(6)
+
+        toolbar = QHBoxLayout()
+        run_btn = QPushButton("Run JS")
+        run_btn.clicked.connect(self._run)
+        clear_btn = QPushButton("Clear output")
+        clear_btn.clicked.connect(lambda: self.output.clear())
+        toolbar.addWidget(QLabel("Code Sandbox (fallback)"))
+        toolbar.addStretch(1)
+        toolbar.addWidget(run_btn)
+        toolbar.addWidget(clear_btn)
+        v.addLayout(toolbar)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("// JS code here. Click Run JS.")
+        self.editor.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace;")
+        self.editor.setPlainText(
+            "// Argus Code Sandbox (fallback mode).\n"
+            "console.log('Hello from Argus!');\n"
+            "1 + 1\n"
+        )
+        v.addWidget(self.editor, 2)
+
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace; background: #050709;")
+        v.addWidget(self.output, 1)
+
+        # Hidden web view used as JS evaluator.
+        self._eval_view = QWebEngineView()
+        self._eval_view.setVisible(False)
+        self._eval_view.setHtml("<html><body><script>console.log('eval-ready');</script></body></html>")
+
+    def _run(self):
+        code = self.editor.toPlainText()
+        # Wrap in IIFE that captures console.log, returns the result string.
+        wrapper = (
+            "(function(){var _o=[];var _e=console.log;console.log=function(){"
+            "_o.push(Array.prototype.map.call(arguments,function(a){"
+            "try{return typeof a==='object'?JSON.stringify(a):String(a);}catch(e){return String(a);}"
+            "}).join(' '));};try{var r=eval(" + json.dumps(code) + ");console.log=_e;"
+            "return _o.join('\\n')+(r!==undefined?'\\n→ '+String(r):'');"
+            "}catch(e){console.log=_e;return 'ERROR: '+String(e);}})()"
+        )
+        try:
+            self._eval_view.page().runJavaScript(wrapper, self._on_result)
+        except Exception as e:
+            self.output.appendPlainText(f"[failed to eval] {e}")
+
+    def _on_result(self, result):
+        self.output.appendPlainText(str(result if result is not None else ""))
+
+
 # ── Main window ──────────────────────────────────────────────────────────
 class ArgusBrowser(QMainWindow):
     def __init__(self):
@@ -2291,7 +3002,12 @@ class ArgusBrowser(QMainWindow):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
+        # Menu bar — File / Help (kept minimal so we don't shadow the existing
+        # dock-driven UI, but lets users discover About + new actions).
+        self._build_menu_bar()
+
         self.feed = LiveFeed()
+        self.feed.version_clicked.connect(self._open_about)
         v.addWidget(self.feed)
 
         # Top URL strip (optional) — shows current URL + a spinner on the right
@@ -2369,10 +3085,25 @@ class ArgusBrowser(QMainWindow):
         QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
         QShortcut(QKeySequence("Ctrl+J"), self, activated=self._toggle_ai_panel)
         QShortcut(QKeySequence("Ctrl+P"), self, activated=self._print_current_page)
+        # New hotkeys (V3 polish pass)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_quick_switcher)
+        QShortcut(QKeySequence("F9"), self, activated=self._toggle_reader_mode)
+        QShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self._open_code_sandbox_tab)
+
+        # Reader mode overlay (lazily shown). Parented to the page column so
+        # it covers content but not the dock / tab bar.
+        self.reader_overlay = ReaderModeOverlay(parent=root)
+        self.reader_overlay.hide()
+        self.reader_overlay.closed.connect(self._close_reader_mode)
+        self.reader_overlay.summary_requested.connect(self._summarize_in_ai_panel)
 
         # Restore AI panel state (persisted across sessions)
         if bool(self.settings_mgr.get("ai_panel_open")):
             QTimer.singleShot(50, self.ai_panel.expand)
+
+        # Background update check (best-effort, non-blocking via QTimer).
+        if HAVE_UPDATER:
+            QTimer.singleShot(2500, self._check_for_update_async)
 
     # ── Build helpers ─────────────────────────────────────────
     def _build_dock(self) -> QFrame:
@@ -2467,6 +3198,12 @@ class ArgusBrowser(QMainWindow):
         self.ng_btn.setToolTip("Backend NetGuard — click pour lancer / voir état")
         self.ng_btn.clicked.connect(self._toggle_netguard)
 
+        # vinom-snip launcher (✂) — sibling repo at ../vinom-snip/
+        self.snip_btn = QPushButton("✂")
+        self.snip_btn.setObjectName("ngBtn")  # reuse ngBtn style for visual match
+        self.snip_btn.setToolTip("Lancer vinom-snip (capture+annotation)")
+        self.snip_btn.clicked.connect(self._launch_vinom_snip)
+
         # AI side panel toggle (Ctrl+J)
         self.ai_btn = QPushButton("🤖")
         self.ai_btn.setObjectName("aiBtn")
@@ -2484,6 +3221,7 @@ class ArgusBrowser(QMainWindow):
         h3.addWidget(self.favs_bar, 1)
         h3.addWidget(self.mode_btn)
         h3.addWidget(self.ng_btn)
+        h3.addWidget(self.snip_btn)
         h3.addWidget(self.ai_btn)
         h3.addWidget(new_tab_btn)
         self.row_actions = row3
@@ -3431,9 +4169,353 @@ class ArgusBrowser(QMainWindow):
             pass
 
     # ── Overlay positioning ───────────────────────────────────
+    # ── Menu bar ──────────────────────────────────────────────
+    def _build_menu_bar(self):
+        try:
+            mb = self.menuBar()
+            mb.clear()
+            file_menu = mb.addMenu("&Fichier")
+            act_new_tab = file_menu.addAction("Nouveau tab\tCtrl+T")
+            act_new_tab.triggered.connect(
+                lambda: self._open_new_tab("https://duckduckgo.com")
+            )
+            act_new_sandbox = file_menu.addAction("Nouveau Code Sandbox\tCtrl+Shift+N")
+            act_new_sandbox.triggered.connect(self._open_code_sandbox_tab)
+            file_menu.addSeparator()
+            act_settings = file_menu.addAction("Paramètres…\tCtrl+,")
+            act_settings.triggered.connect(self._open_settings)
+            file_menu.addSeparator()
+            act_quit = file_menu.addAction("Quitter")
+            act_quit.triggered.connect(self.close)
+
+            view_menu = mb.addMenu("&Affichage")
+            act_quick = view_menu.addAction("Quick Switcher…\tCtrl+K")
+            act_quick.triggered.connect(self._open_quick_switcher)
+            act_reader = view_menu.addAction("Mode Lecture\tF9")
+            act_reader.triggered.connect(self._toggle_reader_mode)
+            act_ai = view_menu.addAction("Panneau IA\tCtrl+J")
+            act_ai.triggered.connect(self._toggle_ai_panel)
+
+            tools_menu = mb.addMenu("&Outils")
+            act_snip = tools_menu.addAction("Lancer vinom-snip")
+            act_snip.triggered.connect(self._launch_vinom_snip)
+            act_sandbox_tab = tools_menu.addAction("Code Sandbox (nouveau tab)")
+            act_sandbox_tab.triggered.connect(self._open_code_sandbox_tab)
+
+            help_menu = mb.addMenu("&Aide")
+            act_about = help_menu.addAction("À propos d'Argus")
+            act_about.triggered.connect(self._open_about)
+        except Exception:
+            # Menu bar is decorative — never crash startup over it.
+            pass
+
+    # ── About / version banner ────────────────────────────────
+    def _open_about(self):
+        try:
+            dlg = AboutDialog(self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.information(self, "Argus", f"v{ARGUS_VERSION}\n\n{e}")
+
+    def _check_for_update_async(self):
+        """Best-effort update check; updates the version badge if newer is found."""
+        if not HAVE_UPDATER:
+            return
+
+        def _worker():
+            try:
+                info = _argus_check_for_update(current=ARGUS_VERSION)
+            except Exception:
+                info = None
+
+            def _apply():
+                if info and isinstance(info, dict) and info.get("update_available"):
+                    try:
+                        self.feed.set_update_available(True, info)
+                    except Exception:
+                        pass
+
+            try:
+                QTimer.singleShot(0, _apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ── vinom-snip launcher ───────────────────────────────────
+    def _launch_vinom_snip(self):
+        """Try a few entrypoints in ../vinom-snip/. Show a toast in the live
+        feed on success or failure. Logs to surveillance."""
+        snip_root = ROOT.parent / "vinom-snip"
+        candidates: list[list[str]] = []
+        # Pre-built C# .exe (real product wins) takes precedence if present.
+        for exe_rel in (
+            "src/VinomSnip.App/bin/Release/net8.0-windows10.0.19041.0/win-x64/VinomSnip.exe",
+            "src/VinomSnip.App/bin/Debug/net8.0-windows10.0.19041.0/win-x64/VinomSnip.exe",
+            "VinomSnip.exe",
+            "src/VinomSnip.App/bin/Release/VinomSnip.exe",
+            "src/VinomSnip.App/bin/Debug/VinomSnip.exe",
+        ):
+            full = snip_root / exe_rel
+            if full.exists():
+                candidates.append([str(full)])
+        # Python entry points (kept for Python-port future-proofing).
+        for py_rel in ("__main__.py", "main.py", "vinom_snip.py", "src/main.py"):
+            full = snip_root / py_rel
+            if full.exists():
+                candidates.append([sys.executable, str(full)])
+        # `dotnet run` against the csproj as last resort.
+        csproj = snip_root / "src" / "VinomSnip.App" / "VinomSnip.App.csproj"
+        if csproj.exists():
+            candidates.append(["dotnet", "run", "--project", str(csproj)])
+
+        if not candidates:
+            self.feed.push("warn", "snip",
+                           "vinom-snip not installed at ../vinom-snip/",
+                           "404", "")
+            return
+
+        cmd = candidates[0]
+        try:
+            subprocess.Popen(
+                cmd,
+                cwd=str(snip_root),
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.feed.push("info", "snip",
+                           f"Lancé : {Path(cmd[0]).name}", "OK", "")
+            try:
+                surveil_log_event("user_action", {"type": "snip_launched",
+                                                  "cmd": cmd[0]})
+            except Exception:
+                pass
+        except Exception as e:
+            self.feed.push("bad", "snip", f"Échec lancement: {e}", "FAIL", "")
+
+    # ── Quick switcher (Ctrl+K) ───────────────────────────────
+    def _open_quick_switcher(self):
+        try:
+            dlg = QuickSwitcherDialog(
+                sources_provider=self._collect_quick_switcher_items,
+                on_activate=self._activate_quick_switcher_item,
+                parent=self,
+            )
+            dlg.exec()
+        except Exception as e:
+            self.feed.push("bad", "qs", f"Quick switcher error: {e}", "ERR", "")
+
+    def _collect_quick_switcher_items(self) -> list[dict]:
+        items: list[dict] = []
+        # Open tabs
+        try:
+            for i, view in enumerate(self.tab_pages):
+                title = view.title() or view.url().toString() or f"Tab {i+1}"
+                items.append({
+                    "kind": "tab",
+                    "icon": "📑",
+                    "label": f"Tab — {title}",
+                    "tab_index": i,
+                })
+        except Exception:
+            pass
+        # Bookmarks
+        try:
+            for fav in self.favs_mgr.favorites:
+                title = fav.get("title") or fav.get("url", "")
+                items.append({
+                    "kind": "bookmark",
+                    "icon": "★",
+                    "label": f"Bookmark — {title}",
+                    "url": fav.get("url", ""),
+                })
+        except Exception:
+            pass
+        # History (last 50)
+        if HAVE_SURVEILLANCE:
+            try:
+                events = surveil_query(event_types=["navigation"], limit=50) or []
+                seen = set()
+                for ev in reversed(events):  # newest first
+                    payload = ev.get("payload", {}) if isinstance(ev, dict) else {}
+                    url = payload.get("url") or ev.get("url") or ""
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    items.append({
+                        "kind": "history",
+                        "icon": "🕓",
+                        "label": f"History — {url}",
+                        "url": url,
+                    })
+                    if len(seen) >= 50:
+                        break
+            except Exception:
+                pass
+        # Commands
+        commands = [
+            ("Nouveau tab",          "cmd_new_tab"),
+            ("Toggle AI Panel",      "cmd_toggle_ai"),
+            ("Ouvrir Settings",      "cmd_settings"),
+            ("Cycle Mode",           "cmd_cycle_mode"),
+            ("Lancer vinom-snip",    "cmd_snip"),
+            ("Code Sandbox",         "cmd_sandbox"),
+            ("Mode Lecture",         "cmd_reader"),
+            ("À propos d'Argus",     "cmd_about"),
+            ("Toggle DevTools (F12)","cmd_devtools"),
+            ("Toggle NetGuard",      "cmd_ng"),
+        ]
+        for label, cmd_id in commands:
+            items.append({
+                "kind": "command",
+                "icon": "⚡",
+                "label": f"Cmd — {label}",
+                "cmd": cmd_id,
+            })
+        return items
+
+    def _activate_quick_switcher_item(self, item: dict):
+        if not isinstance(item, dict):
+            return
+        kind = item.get("kind")
+        if kind == "tab":
+            idx = item.get("tab_index")
+            if isinstance(idx, int) and 0 <= idx < len(self.tab_pages):
+                self._switch_to_tab(idx)
+        elif kind in ("bookmark", "history"):
+            url = item.get("url")
+            if url:
+                self._open_new_tab(url)
+        elif kind == "command":
+            cmd = item.get("cmd")
+            if cmd == "cmd_new_tab":
+                self._open_new_tab("https://duckduckgo.com")
+            elif cmd == "cmd_toggle_ai":
+                self._toggle_ai_panel()
+            elif cmd == "cmd_settings":
+                self._open_settings()
+            elif cmd == "cmd_cycle_mode":
+                self._cycle_mode()
+            elif cmd == "cmd_snip":
+                self._launch_vinom_snip()
+            elif cmd == "cmd_sandbox":
+                self._open_code_sandbox_tab()
+            elif cmd == "cmd_reader":
+                self._toggle_reader_mode()
+            elif cmd == "cmd_about":
+                self._open_about()
+            elif cmd == "cmd_devtools":
+                self._toggle_devtools()
+            elif cmd == "cmd_ng":
+                self._toggle_netguard()
+
+    # ── Code sandbox tab ─────────────────────────────────────
+    def _open_code_sandbox_tab(self):
+        """Open a new tab pointing at branding/argus/monaco_sandbox.html.
+
+        Falls back to a QPlainTextEdit-based JS-only sandbox if the HTML is
+        missing or QWebEngine cannot resolve the file URL.
+        """
+        html_path = ROOT / "branding" / "argus" / "monaco_sandbox.html"
+        if html_path.exists():
+            try:
+                file_url = QUrl.fromLocalFile(str(html_path)).toString()
+                self._open_new_tab(file_url)
+                self.feed.push("info", "sandbox",
+                               "Code Sandbox loaded (Monaco)", "OK", "")
+                return
+            except Exception:
+                pass
+        # Fallback — embed CodeSandboxFallback in a new QWidget tab.
+        # We don't fully integrate this widget into the QStackedWidget tab
+        # system (that would need refactor) — instead show as modal-less
+        # secondary window so the feature still works on V1.
+        try:
+            wnd = QMainWindow(self)
+            wnd.setWindowTitle("Argus — Code Sandbox (fallback)")
+            wnd.resize(900, 640)
+            wnd.setCentralWidget(CodeSandboxFallback())
+            wnd.show()
+            self.feed.push("warn", "sandbox",
+                           "Monaco HTML missing — fallback editor shown",
+                           "WARN", "")
+        except Exception as e:
+            self.feed.push("bad", "sandbox", f"Sandbox failed: {e}", "ERR", "")
+
+    # ── Reader mode (F9) ─────────────────────────────────────
+    def _toggle_reader_mode(self):
+        if self.reader_overlay.isVisible():
+            self._close_reader_mode()
+            return
+        view = self._current_view()
+        if view is None:
+            return
+        # Inject a JS extractor — falls back to body innerText if no <article>.
+        js = (
+            "(function(){var n=document.querySelector('article')||"
+            "document.querySelector('main')||document.body;"
+            "var t=(document.title||'')+'';var c=(n?n.innerText:'')+'';"
+            "return JSON.stringify({title:t,text:c});})()"
+        )
+        try:
+            view.page().runJavaScript(js, self._on_reader_extracted)
+        except Exception:
+            self._on_reader_extracted("")
+
+    def _on_reader_extracted(self, payload):
+        title = ""
+        text = ""
+        try:
+            if isinstance(payload, str) and payload:
+                data = json.loads(payload)
+                title = (data.get("title") or "").strip()
+                text = (data.get("text") or "").strip()
+        except Exception:
+            pass
+        if not text:
+            view = self._current_view()
+            text = "(Aucun contenu extrait pour cette page.)"
+            if view is not None:
+                title = title or view.title() or view.url().toString()
+        # Position overlay over the page column area.
+        try:
+            self.reader_overlay.setGeometry(self.root.rect())
+        except Exception:
+            pass
+        self.reader_overlay.show_content(title, text)
+        try:
+            surveil_log_event("user_action", {"type": "reader_mode_open",
+                                              "title": title})
+        except Exception:
+            pass
+
+    def _close_reader_mode(self):
+        self.reader_overlay.hide()
+
+    def _summarize_in_ai_panel(self, text: str):
+        """Pre-fill the AI panel with a summary request and send."""
+        try:
+            if not self.ai_panel.is_open:
+                self._toggle_ai_panel()
+            # Prefill the input + click send programmatically.
+            preset = (
+                "Résume cet article en 5-7 points clés :\n\n"
+                + (text or "")[:6000]
+            )
+            self.ai_panel.input.setPlainText(preset)
+            QTimer.singleShot(80, self.ai_panel._send_clicked)
+        except Exception as e:
+            self.feed.push("bad", "ai", f"Summary failed: {e}", "ERR", "")
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._reposition_overlays()
+        # Keep the reader overlay covering the root area.
+        try:
+            if hasattr(self, "reader_overlay") and self.reader_overlay.isVisible():
+                self.reader_overlay.setGeometry(self.root.rect())
+        except Exception:
+            pass
 
     def _reposition_overlays(self):
         # Mode + NetGuard buttons now live in the dock — no floating overlays to position.
@@ -3473,8 +4555,37 @@ def main():
         apply_theme(prelim.get("theme") or DEFAULT_THEME)
     except Exception:
         apply_theme(DEFAULT_THEME)
+
+    # ── Splash screen — show 1.5s while heavy modules import ──
+    splash = None
+    try:
+        splash_path = _argus_root / "branding" / "argus" / "argus_splash.png"
+        if splash_path.exists():
+            pix = QPixmap(str(splash_path))
+            if not pix.isNull():
+                # Scale down if image is huge — keep splash readable on 1080p.
+                if pix.width() > 720 or pix.height() > 480:
+                    pix = pix.scaled(720, 480,
+                                     Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                splash = QSplashScreen(pix, Qt.WindowType.WindowStaysOnTopHint)
+                splash.showMessage(
+                    f"Argus v{ARGUS_VERSION}",
+                    Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                    Qt.GlobalColor.white,
+                )
+                splash.show()
+                app.processEvents()
+    except Exception:
+        splash = None
+
     win = ArgusBrowser()
     win.show()
+
+    # Splash stays on top for ~1.5s, then closes. If splash failed to load
+    # we just continue with no-op.
+    if splash is not None:
+        QTimer.singleShot(1500, lambda: splash.finish(win))
 
     # First-run onboarding — the dialog is responsible for calling
     # mark_first_run_complete() when the user clicks Get Started.

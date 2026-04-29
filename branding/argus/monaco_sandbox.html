@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<!--
+  Argus Code Sandbox — Monaco editor with JS + Python (Pyodide) execution.
+  Loaded by argus_pyqt.py via QWebEngineView pointing to this file (file://).
+  Self-contained except for two CDN deps (Monaco + Pyodide) loaded on demand.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Argus — Code Sandbox</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0e14; color: #e6edf3;
+    font-family: 'Outfit','Segoe UI',sans-serif;
+    overflow: hidden;
+  }
+  .toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px;
+    background: #141821;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    height: 36px;
+  }
+  .toolbar select, .toolbar button {
+    background: #0a0e14;
+    color: #e6edf3;
+    border: 1px solid rgba(255,255,255,0.12);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .toolbar button:hover { border-color: #4d9fff; color: #4d9fff; }
+  .toolbar button.run { background: #4d9fff; color: #0a0e14; border-color: #4d9fff; font-weight: 600; }
+  .toolbar button.run:hover { opacity: 0.9; color: #0a0e14; }
+  .toolbar .spacer { flex: 1; }
+  .label { font-size: 11px; color: #9aa0ad; }
+  #editor { height: calc(60% - 36px); }
+  #output {
+    height: 40%;
+    background: #050709;
+    color: #c8ccd6;
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 12px;
+    padding: 8px 12px;
+    overflow: auto;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #output .ok    { color: #3dffb4; }
+  #output .err   { color: #ff4d6a; }
+  #output .info  { color: #4d9fff; }
+  #output .warn  { color: #ffb347; }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <span class="label">Argus Code Sandbox</span>
+  <select id="lang">
+    <option value="javascript">JavaScript</option>
+    <option value="python">Python (Pyodide)</option>
+    <option value="html">HTML</option>
+    <option value="json">JSON</option>
+  </select>
+  <button class="run" id="runJs">Run JS</button>
+  <button id="runPy">Run Python</button>
+  <button id="format">Format</button>
+  <button id="clear">Clear Output</button>
+  <span class="spacer"></span>
+  <span class="label" id="status">ready</span>
+</div>
+<div id="editor"></div>
+<div id="output"><span class="info">Argus Sandbox ready. Click "Run JS" or "Run Python".</span></div>
+
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script>
+  // ── Monaco editor ──
+  let editor = null;
+  let pyodide = null;
+
+  const $ = (id) => document.getElementById(id);
+  const out = $("output");
+  const statusEl = $("status");
+
+  function append(html) {
+    out.innerHTML += html + "\n";
+    out.scrollTop = out.scrollHeight;
+  }
+  function setStatus(t) { statusEl.textContent = t; }
+
+  require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs" } });
+  require(["vs/editor/editor.main"], function () {
+    editor = monaco.editor.create($("editor"), {
+      value: "// Argus Code Sandbox\n// Press 'Run JS' to execute, or switch language above.\n\nconst greet = (name) => `Hello, ${name}!`;\nconsole.log(greet('Argus'));\n",
+      language: "javascript",
+      theme: "vs-dark",
+      fontSize: 13,
+      minimap: { enabled: false },
+      automaticLayout: true,
+      scrollBeyondLastLine: false,
+      wordWrap: "on",
+    });
+
+    $("lang").addEventListener("change", (e) => {
+      const l = e.target.value;
+      monaco.editor.setModelLanguage(editor.getModel(), l);
+      if (l === "python") {
+        editor.setValue("# Argus Python Sandbox\nprint('Hello from Pyodide!')\nimport sys\nprint('Python', sys.version)\n");
+      } else if (l === "html") {
+        editor.setValue("<!doctype html>\n<html><body>\n  <h1>Hello Argus</h1>\n</body></html>\n");
+      } else if (l === "json") {
+        editor.setValue('{\n  "argus": "code-sandbox",\n  "ready": true\n}\n');
+      }
+    });
+
+    setStatus("ready");
+  });
+
+  // ── Run JS (in iframe sandbox for safety) ──
+  $("runJs").addEventListener("click", () => {
+    if (!editor) return;
+    const code = editor.getValue();
+    setStatus("running JS…");
+    append('<span class="info">▶ Run JS</span>');
+    try {
+      // Capture console.log via Function-eval in a sandboxed iframe is overkill
+      // for V1. Use a captured-console proxy on the current realm.
+      const captured = [];
+      const origLog = console.log;
+      const origErr = console.error;
+      console.log = (...a) => { captured.push(["log", a]); origLog.apply(console, a); };
+      console.error = (...a) => { captured.push(["err", a]); origErr.apply(console, a); };
+      let result;
+      try {
+        // eslint-disable-next-line no-new-func
+        result = (new Function(code))();
+      } finally {
+        console.log = origLog;
+        console.error = origErr;
+      }
+      for (const [k, args] of captured) {
+        const cls = (k === "err") ? "err" : "ok";
+        append(`<span class="${cls}">${args.map(a => {
+          try { return typeof a === "object" ? JSON.stringify(a) : String(a); }
+          catch (e) { return String(a); }
+        }).join(" ")}</span>`);
+      }
+      if (result !== undefined) {
+        append(`<span class="info">→ ${typeof result === "object" ? JSON.stringify(result) : String(result)}</span>`);
+      }
+      setStatus("done");
+    } catch (e) {
+      append(`<span class="err">${(e && e.stack) ? e.stack : String(e)}</span>`);
+      setStatus("error");
+    }
+  });
+
+  // ── Run Python via Pyodide (lazy load) ──
+  async function ensurePyodide() {
+    if (pyodide) return pyodide;
+    setStatus("loading Pyodide…");
+    append('<span class="info">⏵ loading Pyodide (first run only, ~6MB)…</span>');
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js";
+    document.head.appendChild(s);
+    await new Promise((res, rej) => { s.onload = res; s.onerror = () => rej(new Error("Pyodide CDN load failed")); });
+    pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.25.0/full/" });
+    pyodide.setStdout({ batched: (t) => append(`<span class="ok">${t}</span>`) });
+    pyodide.setStderr({ batched: (t) => append(`<span class="err">${t}</span>`) });
+    return pyodide;
+  }
+
+  $("runPy").addEventListener("click", async () => {
+    if (!editor) return;
+    const code = editor.getValue();
+    append('<span class="info">▶ Run Python</span>');
+    try {
+      const py = await ensurePyodide();
+      setStatus("running Python…");
+      const result = await py.runPythonAsync(code);
+      if (result !== undefined && result !== null) {
+        try { append(`<span class="info">→ ${result.toString()}</span>`); } catch (e) {}
+      }
+      setStatus("done");
+    } catch (e) {
+      append(`<span class="err">${String(e)}</span>`);
+      setStatus("error");
+    }
+  });
+
+  $("format").addEventListener("click", () => {
+    if (!editor) return;
+    editor.getAction("editor.action.formatDocument").run();
+  });
+
+  $("clear").addEventListener("click", () => {
+    out.innerHTML = '<span class="info">[output cleared]</span>\n';
+  });
+</script>
+</body>
+</html>
