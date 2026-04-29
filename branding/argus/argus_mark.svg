@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Argus Panoptes Browser - Master Mark
+  Original SVG, hand-written. Composed from primitives only (circles, polygons, lines).
+  Concept: 100-eyed giant sigil. Central iris + 12-eye ring + sacred-geometry frame.
+  Copyright (c) 2026 sxc3030-eng. Licensed GPL v3.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Argus Panoptes Mark">
+  <defs>
+    <!-- Cyber dark backdrop -->
+    <radialGradient id="bg" cx="50%" cy="50%" r="65%">
+      <stop offset="0%"   stop-color="#10141c"/>
+      <stop offset="65%"  stop-color="#0a0e14"/>
+      <stop offset="100%" stop-color="#05070b"/>
+    </radialGradient>
+
+    <!-- Iris gradient: blue -> purple (Argus signature pair) -->
+    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#9bd0ff"/>
+      <stop offset="35%"  stop-color="#4d9fff"/>
+      <stop offset="78%"  stop-color="#3d6acc"/>
+      <stop offset="100%" stop-color="#1e2a4d"/>
+    </radialGradient>
+
+    <!-- Outer-ring gradient: full Argus chord blue -> purple -->
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#4d9fff"/>
+      <stop offset="50%"  stop-color="#7d8eff"/>
+      <stop offset="100%" stop-color="#b47dff"/>
+    </linearGradient>
+
+    <!-- Mint accent for the watch-line tick -->
+    <linearGradient id="mint" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"  stop-color="#3dffb4" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#3dffb4"/>
+      <stop offset="100%" stop-color="#3dffb4" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Soft halo filter for glow -->
+    <filter id="halo" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2"/>
+    </filter>
+
+    <!-- A satellite eye, used 12x around the rim -->
+    <g id="eyelet">
+      <!-- almond shell -->
+      <ellipse cx="0" cy="0" rx="34" ry="20" fill="#0a0e14" stroke="#4d9fff" stroke-width="3"/>
+      <!-- iris -->
+      <circle cx="0" cy="0" r="14" fill="#4d9fff"/>
+      <!-- pupil -->
+      <circle cx="0" cy="0" r="6" fill="#0a0e14"/>
+      <!-- highlight -->
+      <circle cx="-4" cy="-4" r="2.2" fill="#9bd0ff"/>
+    </g>
+  </defs>
+
+  <!-- 1. Backdrop disc -->
+  <circle cx="512" cy="512" r="500" fill="url(#bg)"/>
+
+  <!-- 2. Sacred-geometry outer dodecagon (12-sided, one side per eye) -->
+  <g stroke="#1a2638" stroke-width="2" fill="none" opacity="0.7">
+    <polygon points="
+      512,42 750,116 924,290 998,528 924,766 750,940
+      512,1014 274,940 100,766 26,528 100,290 274,116"/>
+  </g>
+
+  <!-- 3. Outer ring (gradient stroke) -->
+  <circle cx="512" cy="512" r="468" fill="none" stroke="url(#ring)" stroke-width="6" opacity="0.85"/>
+  <circle cx="512" cy="512" r="468" fill="none" stroke="url(#ring)" stroke-width="14" opacity="0.18" filter="url(#halo)"/>
+
+  <!-- 4. Twelve satellite eyes (the 100 eyes, stylized to 12) -->
+  <g>
+    <use href="#eyelet" transform="translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(30 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(60 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(90 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(120 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(150 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(180 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(210 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(240 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(270 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(300 512 512) translate(512 92)"/>
+    <use href="#eyelet" transform="rotate(330 512 512) translate(512 92)"/>
+  </g>
+
+  <!-- 5. Inner containment ring (cyan thin) -->
+  <circle cx="512" cy="512" r="358" fill="none" stroke="#6ef0ff" stroke-width="2.2" stroke-opacity="0.55"/>
+
+  <!-- 6. Six-pointed seal lines (hexagram, lighter) -->
+  <g stroke="#4d9fff" stroke-width="1.5" stroke-opacity="0.35" fill="none">
+    <polygon points="512,200 782,668 242,668"/>
+    <polygon points="512,824 242,356 782,356"/>
+  </g>
+
+  <!-- 7. Central eye almond (the master eye) -->
+  <!-- almond shape: two arcs forming a vesica piscis-like eye -->
+  <path d="M 200 512 Q 512 250, 824 512 Q 512 774, 200 512 Z"
+        fill="#0a0e14" stroke="url(#ring)" stroke-width="6"/>
+  <path d="M 200 512 Q 512 250, 824 512 Q 512 774, 200 512 Z"
+        fill="none" stroke="url(#ring)" stroke-width="14" stroke-opacity="0.25" filter="url(#halo)"/>
+
+  <!-- 8. Iris (concentric rings) -->
+  <circle cx="512" cy="512" r="160" fill="url(#iris)"/>
+  <!-- iris striations -->
+  <g stroke="#9bd0ff" stroke-width="1.6" stroke-opacity="0.55" fill="none">
+    <circle cx="512" cy="512" r="148"/>
+    <circle cx="512" cy="512" r="134"/>
+    <circle cx="512" cy="512" r="118"/>
+    <circle cx="512" cy="512" r="98"/>
+  </g>
+  <!-- radial striations: 16 short ticks -->
+  <g stroke="#bcdcff" stroke-width="2.2" stroke-opacity="0.45" stroke-linecap="round">
+    <line x1="512" y1="372" x2="512" y2="396"/>
+    <line x1="512" y1="628" x2="512" y2="652"/>
+    <line x1="372" y1="512" x2="396" y2="512"/>
+    <line x1="628" y1="512" x2="652" y2="512"/>
+    <line x1="413" y1="413" x2="430" y2="430"/>
+    <line x1="611" y1="413" x2="594" y2="430"/>
+    <line x1="413" y1="611" x2="430" y2="594"/>
+    <line x1="611" y1="611" x2="594" y2="594"/>
+    <line x1="446" y1="382" x2="453" y2="402"/>
+    <line x1="578" y1="382" x2="571" y2="402"/>
+    <line x1="382" y1="446" x2="402" y2="453"/>
+    <line x1="382" y1="578" x2="402" y2="571"/>
+    <line x1="642" y1="446" x2="622" y2="453"/>
+    <line x1="642" y1="578" x2="622" y2="571"/>
+    <line x1="446" y1="642" x2="453" y2="622"/>
+    <line x1="578" y1="642" x2="571" y2="622"/>
+  </g>
+
+  <!-- 9. Pupil -->
+  <circle cx="512" cy="512" r="58" fill="#05070b"/>
+  <!-- pupil ring -->
+  <circle cx="512" cy="512" r="58" fill="none" stroke="#4d9fff" stroke-width="2" stroke-opacity="0.7"/>
+
+  <!-- 10. Catchlight (the watcher gleam) -->
+  <circle cx="488" cy="488" r="14" fill="#dcefff" fill-opacity="0.95"/>
+  <circle cx="476" cy="476" r="6" fill="#ffffff"/>
+
+  <!-- 11. Mint scan-tick: a thin horizontal line crossing the eye, signalling "live watching" -->
+  <line x1="200" y1="512" x2="824" y2="512" stroke="url(#mint)" stroke-width="1.4" stroke-opacity="0.7"/>
+  <circle cx="200" cy="512" r="6" fill="#3dffb4" fill-opacity="0.6"/>
+  <circle cx="824" cy="512" r="6" fill="#3dffb4" fill-opacity="0.6"/>
+
+  <!-- 12. Outer faint signature dots (sacred-geo cardinals) -->
+  <g fill="#4d9fff" fill-opacity="0.6">
+    <circle cx="512" cy="22"   r="4"/>
+    <circle cx="512" cy="1002" r="4"/>
+    <circle cx="22"   cy="512" r="4"/>
+    <circle cx="1002" cy="512" r="4"/>
+  </g>
+</svg>

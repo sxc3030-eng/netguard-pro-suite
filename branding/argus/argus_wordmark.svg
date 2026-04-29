@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Argus Panoptes Browser - Horizontal Wordmark
+  Original SVG, hand-written. Mark on the left, "ARGUS" geometric type on the right.
+  Type is hinted as JetBrains Mono (Google Font) but rendered as text so it falls
+  back gracefully in any viewer (matching weight: 700, letter-spacing 0.18em).
+  Copyright (c) 2026 sxc3030-eng. Licensed GPL v3.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200" role="img" aria-label="Argus Browser Wordmark">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="80%">
+      <stop offset="0%"   stop-color="#10141c"/>
+      <stop offset="100%" stop-color="#0a0e14"/>
+    </radialGradient>
+    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#9bd0ff"/>
+      <stop offset="40%"  stop-color="#4d9fff"/>
+      <stop offset="100%" stop-color="#1e2a4d"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#4d9fff"/>
+      <stop offset="100%" stop-color="#b47dff"/>
+    </linearGradient>
+    <linearGradient id="textGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#dcefff"/>
+      <stop offset="100%" stop-color="#b47dff"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="800" height="200" fill="url(#bg)"/>
+
+  <!-- Compact mark on the left (scaled-down version of the full mark) -->
+  <g transform="translate(20 20) scale(0.156)">
+    <!-- backdrop disc -->
+    <circle cx="512" cy="512" r="500" fill="#0a0e14"/>
+    <!-- outer ring -->
+    <circle cx="512" cy="512" r="468" fill="none" stroke="url(#ring)" stroke-width="14"/>
+    <!-- 12 satellite eyes (simplified for small size) -->
+    <g fill="#0a0e14" stroke="#4d9fff" stroke-width="10">
+      <circle cx="512" cy="92"   r="34"/>
+      <circle cx="722" cy="178"  r="34"/>
+      <circle cx="876" cy="332"  r="34"/>
+      <circle cx="932" cy="512"  r="34"/>
+      <circle cx="876" cy="692"  r="34"/>
+      <circle cx="722" cy="846"  r="34"/>
+      <circle cx="512" cy="932"  r="34"/>
+      <circle cx="302" cy="846"  r="34"/>
+      <circle cx="148" cy="692"  r="34"/>
+      <circle cx="92"  cy="512"  r="34"/>
+      <circle cx="148" cy="332"  r="34"/>
+      <circle cx="302" cy="178"  r="34"/>
+    </g>
+    <g fill="#4d9fff">
+      <circle cx="512" cy="92"   r="14"/>
+      <circle cx="722" cy="178"  r="14"/>
+      <circle cx="876" cy="332"  r="14"/>
+      <circle cx="932" cy="512"  r="14"/>
+      <circle cx="876" cy="692"  r="14"/>
+      <circle cx="722" cy="846"  r="14"/>
+      <circle cx="512" cy="932"  r="14"/>
+      <circle cx="302" cy="846"  r="14"/>
+      <circle cx="148" cy="692"  r="14"/>
+      <circle cx="92"  cy="512"  r="14"/>
+      <circle cx="148" cy="332"  r="14"/>
+      <circle cx="302" cy="178"  r="14"/>
+    </g>
+    <!-- almond eye -->
+    <path d="M 200 512 Q 512 250, 824 512 Q 512 774, 200 512 Z"
+          fill="#0a0e14" stroke="url(#ring)" stroke-width="14"/>
+    <!-- iris -->
+    <circle cx="512" cy="512" r="160" fill="url(#iris)"/>
+    <!-- pupil -->
+    <circle cx="512" cy="512" r="58" fill="#05070b"/>
+    <!-- catchlight -->
+    <circle cx="488" cy="488" r="14" fill="#dcefff"/>
+    <circle cx="476" cy="476" r="6" fill="#ffffff"/>
+  </g>
+
+  <!-- Wordmark: ARGUS, geometric/monospace, letter-spaced -->
+  <!-- font hint: JetBrains Mono (Google Font), bold, tracking 0.18em -->
+  <text x="225" y="118"
+        font-family="'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace"
+        font-size="78"
+        font-weight="700"
+        letter-spacing="14"
+        fill="url(#textGrad)">ARGUS</text>
+
+  <!-- Tagline below -->
+  <text x="227" y="156"
+        font-family="'JetBrains Mono', 'Fira Code', 'Consolas', 'Courier New', monospace"
+        font-size="16"
+        font-weight="400"
+        letter-spacing="6"
+        fill="#6ef0ff"
+        fill-opacity="0.75">CYBERSECURITY  WORKBENCH</text>
+
+  <!-- mint underbar accent -->
+  <line x1="225" y1="172" x2="305" y2="172" stroke="#3dffb4" stroke-width="2"/>
+</svg>

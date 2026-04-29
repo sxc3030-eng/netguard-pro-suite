@@ -1,3 +1,11 @@
+# Copyright (C) 2026 NetGuard Pro Suite contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file in the
+# repository root for the full GPL v3 text, or
+# <https://www.gnu.org/licenses/gpl-3.0.html>.
 """
 Argus 2.0 — Real PyQt6 + QtWebEngine cybersecurity browser.
 
@@ -5,6 +13,7 @@ Layout:
   Top   : transparent live network feed (2 lines, color-coded, animated)
   Tabs  : bookmark-style strip just under feed (multi-tab, click to switch, × to close)
   Mid   : QStackedWidget with one QWebEngineView per tab (real Chromium, sandboxed)
+          + optional right-side AI side panel (Ctrl+J)
   Bot   : 3-row dock — HTTPS / Engine+Search+Star / Settings+Favs+F12+NewTab
   Float : mode badge top-center (Normal / Privé / Coffre)
   F12   : Chromium DevTools panel slide-up, resizable
@@ -13,34 +22,188 @@ Persistence:
   Sessions (cookies, localStorage) survive restarts via persistent profile path
   → log into Google/Microsoft once, stays signed in next launch.
   Favorites stored in argus_data/favorites.json.
+  AI conversation history in argus_data/ai_history.json (gitignored, last 50 msgs).
 
 Run:  python argus_pyqt.py   (or LANCER_ARGUS_2.bat)
 """
 import json
+import os
 import sys
+import threading
+import urllib.error
+import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
-from PyQt6.QtCore import Qt, QUrl, QSize, pyqtSignal, QObject, QTimer
-from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap
+from PyQt6.QtCore import (
+    Qt, QUrl, QSize, pyqtSignal, QObject, QTimer,
+    QPropertyAnimation, QEasingCurve,
+)
+from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QComboBox, QPushButton, QLabel, QStackedWidget, QFrame,
     QSizePolicy, QScrollArea, QMenu, QDialog, QCheckBox, QFormLayout,
-    QDialogButtonBox, QGroupBox,
+    QDialogButtonBox, QGroupBox, QTextBrowser, QTextEdit, QTabWidget,
+    QFileDialog, QMessageBox,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
     QWebEnginePage, QWebEngineProfile, QWebEngineUrlRequestInterceptor,
-    QWebEngineSettings,
+    QWebEngineSettings, QWebEngineScript,
 )
+from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
+
+# ── Wave 2 module imports — graceful degradation if missing ──────────────
+# Each import is wrapped so a missing module disables only that feature.
+# Flags are inspected at runtime by the UI to skip wiring + show toasts.
+
+try:
+    from argus_sandbox import (
+        make_normal_profile, make_private_profile, make_vault_profile,
+        install_anti_skimmer_script, randomize_user_agent,
+    )
+    HAVE_SANDBOX = True
+except ImportError:
+    HAVE_SANDBOX = False
+    make_normal_profile = make_private_profile = make_vault_profile = None
+    install_anti_skimmer_script = randomize_user_agent = None
+
+try:
+    from argus_surveillance import (
+        surveil_init, surveil_log_event, surveil_query, surveil_stats,
+    )
+    HAVE_SURVEILLANCE = True
+except ImportError:
+    HAVE_SURVEILLANCE = False
+    def surveil_init(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def surveil_log_event(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def surveil_query(*_a, **_kw):  # type: ignore[no-redef]
+        return []
+    def surveil_stats(*_a, **_kw):  # type: ignore[no-redef]
+        return {}
+
+try:
+    from argus_arbiter import (
+        arbiter_init, arbiter_decide, arbiter_decide_async, Decision, ActionType,
+    )
+    HAVE_ARBITER = True
+except ImportError:
+    HAVE_ARBITER = False
+    Decision = None  # type: ignore[assignment,misc]
+    ActionType = str  # type: ignore[assignment,misc]
+    def arbiter_init(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def arbiter_decide(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def arbiter_decide_async(*_a, **_kw):  # type: ignore[no-redef]
+        # Synchronously invoke the callback with a None-ish allow so the UI
+        # doesn't hang when arbiter is missing.
+        cb = _kw.get("callback")
+        if cb is None and len(_a) >= 3:
+            cb = _a[2]
+        if callable(cb):
+            try:
+                cb(None)
+            except Exception:
+                pass
+
+try:
+    from argus_vault_domains import is_vault_domain, VaultMatch
+    HAVE_VAULT_DOMAINS = True
+except ImportError:
+    HAVE_VAULT_DOMAINS = False
+    VaultMatch = None  # type: ignore[assignment,misc]
+    def is_vault_domain(_url):  # type: ignore[no-redef]
+        return None
+
+try:
+    from argus_2fa import (
+        two_fa_is_setup, two_fa_setup_wizard, two_fa_challenge,
+        two_fa_required_for,
+    )
+    HAVE_2FA = True
+except ImportError:
+    HAVE_2FA = False
+    def two_fa_is_setup(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_setup_wizard(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_challenge(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_required_for(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+
+try:
+    from argus_onboarding import (
+        is_first_run, mark_first_run_complete, show_first_run_dialog,
+    )
+    HAVE_ONBOARDING = True
+except ImportError:
+    HAVE_ONBOARDING = False
+    def is_first_run(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def mark_first_run_complete(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def show_first_run_dialog(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+
+try:
+    from config import (
+        get_secret, get_required_secret, store_secret, list_known_secrets,
+        CANONICAL_SECRETS,
+    )
+    HAVE_CONFIG = True
+except ImportError:
+    HAVE_CONFIG = False
+    CANONICAL_SECRETS = {}  # type: ignore[assignment]
+    def get_secret(_n, fallback=None):  # type: ignore[no-redef]
+        return os.environ.get(_n, fallback)
+    def get_required_secret(_n, hint=""):  # type: ignore[no-redef]
+        v = os.environ.get(_n)
+        if not v:
+            raise RuntimeError(f"Required secret {_n!r} not set")
+        return v
+    def store_secret(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("config module not available; cannot store secrets")
+    def list_known_secrets():  # type: ignore[no-redef]
+        return []
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "argus_data"
 CACHE_DIR = ROOT / "argus_cache"
 FAVS_FILE = DATA_DIR / "favorites.json"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+AI_HISTORY_FILE = DATA_DIR / "ai_history.json"
+VAULT_AUTO_SWITCH_FILE = DATA_DIR / "vault_auto_switch.json"
+DOWNLOADS_SANDBOX_DIR = DATA_DIR / "downloads_sandbox"
+
+# Help URLs for "Open URL" button next to API-Keys settings entries.
+SECRET_HELP_URLS: dict[str, str] = {
+    "ANTHROPIC_API_KEY":   "https://console.anthropic.com/settings/keys",
+    "OPENAI_API_KEY":      "https://platform.openai.com/api-keys",
+    "GOOGLE_API_KEY":      "https://aistudio.google.com/app/apikey",
+    "OLLAMA_BASE_URL":     "https://ollama.com/download",
+    "VIRUSTOTAL_API_KEY":  "https://www.virustotal.com/gui/my-apikey",
+    "ABUSEIPDB_API_KEY":   "https://www.abuseipdb.com/account/api",
+    "MAXMIND_LICENSE_KEY": "https://www.maxmind.com/en/accounts/current/license-key",
+    "MAXMIND_ACCOUNT_ID":  "https://www.maxmind.com/en/account",
+    "DISCORD_WEBHOOK_URL": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+    "TELEGRAM_BOT_TOKEN":  "https://core.telegram.org/bots#botfather",
+    "TELEGRAM_CHAT_ID":    "https://core.telegram.org/bots/api#getupdates",
+}
+
+# Local AI backend (netguard_ai_server.py — DEFAULT_PORT = 8770)
+AI_SERVER_HOST = "127.0.0.1"
+AI_SERVER_PORT = 8770
+AI_SERVER_BASE = f"http://{AI_SERVER_HOST}:{AI_SERVER_PORT}"
+AI_HISTORY_MAX = 50          # cap conversation lines persisted
+AI_PAGE_TEXT_MAX = 4096      # chars of page.toPlainText() included as context
+AI_PAGE_TEXT_TIMEOUT_MS = 2000  # 2s, then send without page text
 
 DEFAULT_SETTINGS = {
     "show_live_feed":   True,
@@ -48,7 +211,26 @@ DEFAULT_SETTINGS = {
     "show_url_top":     True,
     "show_url_bottom":  True,
     "show_search_row":  True,
+    "theme":            "Cyber Dark",
+    "ai_panel_open":    False,
 }
+
+# Quick-action prefills for the AI side panel.
+AI_QUICK_ACTIONS = [
+    ("Résume",       "Résume cette page"),
+    ("Failles",      "Trouve les failles de sécurité de cette page"),
+    ("Explique",     "Explique ce code / JS"),
+    ("Architecture", "Génère une architecture pour cette page"),
+]
+
+# Provider display labels (fallback if /api/providers is unreachable).
+# The backend (netguard_ai_server.py) ships with anthropic / openai / google.
+# UI labels follow the user-facing brief: Claude / GPT / Gemini.
+AI_PROVIDER_FALLBACK = [
+    ("anthropic", "Claude"),
+    ("openai",    "GPT"),
+    ("google",    "Gemini"),
+]
 
 SEARCH_ENGINES = [
     ("DuckDuckGo",  "https://duckduckgo.com/?q={q}"),
@@ -78,6 +260,441 @@ MODES = [
     {"id": "private", "icon": "🟦", "text": "PRIVÉ",   "color": "#4d9fff"},
     {"id": "vault",   "icon": "🟡", "text": "COFFRE",  "color": "#d4af37"},
 ]
+
+
+# ── Theme palette → QSS (full app stylesheets, applied via app.setStyleSheet) ──
+def _build_theme(bg: str, surface: str, fg: str, accent: str,
+                 border: str = "rgba(255,255,255,0.10)",
+                 muted: str = "#9aa0ad",
+                 font_family: str = "'Outfit','Segoe UI',sans-serif") -> str:
+    """Compose a full app-wide QSS using a 4-color palette.
+
+    Used for every theme so widgets that don't have an explicit Argus rule
+    (QTabBar, QScrollBar, QDockWidget, generic QLineEdit/QPushButton) still
+    inherit a coherent look.
+    """
+    return f"""
+* {{ font-family: {font_family}; }}
+QMainWindow, QWidget#root {{ background: {bg}; color: {fg}; }}
+QWidget {{ color: {fg}; }}
+
+/* Live feed (top transparent bar) */
+QWidget#liveFeed {{
+    background: {surface};
+    border-bottom: 1px solid {border};
+}}
+QLabel.feedRow {{
+    color: {fg};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 11px;
+    background: transparent;
+}}
+QLabel.feedRow[kind="ok"]   {{ color: #3dffb4; }}
+QLabel.feedRow[kind="warn"] {{ color: #ffb347; }}
+QLabel.feedRow[kind="bad"]  {{ color: #ff4d6a; }}
+QLabel.feedRow[kind="info"] {{ color: {accent}; }}
+
+/* Tab bar */
+QFrame#tabBar {{ background: {surface}; border-bottom: 1px solid {border}; }}
+QPushButton.tab {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    padding: 4px 8px 4px 10px;
+    margin: 4px 1px 0 1px;
+    font-size: 11px;
+    text-align: left;
+    min-width: 100px; max-width: 220px;
+}}
+QPushButton.tab:hover {{ background: {surface}; color: {fg}; }}
+QPushButton.tab[active="true"] {{
+    background: {surface};
+    color: {accent};
+    border-bottom-color: {accent};
+}}
+QPushButton.tabClose {{
+    background: transparent;
+    color: {muted};
+    border: none;
+    padding: 0;
+    min-width: 16px; max-width: 16px;
+    min-height: 16px; max-height: 16px;
+    font-size: 14px;
+    border-radius: 8px;
+    margin-left: 4px;
+}}
+QPushButton.tabClose:hover {{ background: #ff4d6a; color: white; }}
+QPushButton#newTabBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px dashed {border};
+    border-radius: 5px;
+    margin: 4px 4px 0 4px;
+    min-width: 28px; max-width: 28px;
+    font-size: 14px;
+    padding: 4px;
+}}
+QPushButton#newTabBtn:hover {{ color: {accent}; border-color: {accent}; border-style: solid; }}
+
+/* Generic QTabBar (for any future QTabWidget) */
+QTabBar::tab {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    padding: 6px 12px;
+}}
+QTabBar::tab:selected {{ background: {surface}; color: {accent}; }}
+QTabBar::tab:hover {{ color: {fg}; }}
+
+/* Mode toggle button */
+QPushButton#modeBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: {muted};
+    font-family: 'Geist Mono','Consolas',monospace;
+}}
+QPushButton#modeBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#modeBtn[mode="private"] {{ color: {accent}; border-color: {accent}; }}
+QPushButton#modeBtn[mode="vault"]   {{ color: #d4af37; border-color: #d4af37; }}
+
+/* NetGuard status button */
+QPushButton#ngBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: {muted};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-weight: 600;
+}}
+QPushButton#ngBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#ngBtn[status="up"]   {{ color: #3dffb4; border-color: rgba(61,255,180,0.5); }}
+QPushButton#ngBtn[status="down"] {{ color: #ff4d6a; border-color: rgba(255,77,106,0.5); }}
+QPushButton#ngBtn[status="warn"] {{ color: #ffb347; border-color: rgba(255,179,71,0.5); }}
+
+/* AI toggle button */
+QPushButton#aiBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: {muted};
+}}
+QPushButton#aiBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#aiBtn[open="true"] {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+
+/* Bottom dock */
+QFrame#dock {{ background: {surface}; border-top: 1px solid {border}; }}
+QFrame.dockRow {{ background: transparent; border-top: 1px solid {border}; }}
+QFrame.dockRow[first="true"] {{ border-top: none; }}
+
+QLabel.lock {{ font-size: 13px; color: #3dffb4; }}
+QLabel.lock[level="warn"] {{ color: #ffb347; }}
+QLabel.lock[level="bad"]  {{ color: #ff4d6a; }}
+QLabel#urlDisplay {{
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 12px;
+    color: {fg};
+    padding: 4px 8px;
+    background: transparent;
+}}
+QLabel#urlDisplay:hover {{ background: {surface}; border-radius: 4px; }}
+
+QComboBox#engineSelect {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    min-width: 130px;
+}}
+QComboBox#engineSelect:focus {{ border-color: {accent}; }}
+QComboBox#engineSelect QAbstractItemView {{
+    background: {surface};
+    color: {fg};
+    selection-background-color: {bg};
+    border: 1px solid {border};
+}}
+
+/* Generic QComboBox (theme combo, AI provider combo) */
+QComboBox {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QComboBox:focus {{ border-color: {accent}; }}
+QComboBox QAbstractItemView {{
+    background: {surface};
+    color: {fg};
+    selection-background-color: {bg};
+    border: 1px solid {border};
+}}
+
+QLineEdit#searchBar {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'Geist Mono','Consolas',monospace;
+}}
+QLineEdit#searchBar:focus {{ border-color: {accent}; background: {bg}; }}
+
+/* Generic QLineEdit / QTextEdit */
+QLineEdit, QTextEdit {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 5px 8px;
+    border-radius: 5px;
+    selection-background-color: {accent};
+    selection-color: {bg};
+}}
+QLineEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
+
+QPushButton.dockBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    min-width: 32px;
+}}
+QPushButton.dockBtn:hover {{ color: {accent}; background: {surface}; border-color: {border}; }}
+QPushButton.dockBtn[primary="true"] {{ color: {accent}; }}
+QPushButton#starBtn {{ font-size: 16px; color: #ffb347; }}
+QPushButton#starBtn[saved="true"] {{ color: #ffd700; }}
+
+/* Generic QPushButton (covers buttons not pinned to a class) */
+QPushButton {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QPushButton:hover  {{ border-color: {accent}; color: {accent}; }}
+QPushButton:disabled {{ color: {muted}; border-color: {border}; }}
+
+QFrame#favsBar {{
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 2px 4px;
+}}
+QPushButton.fav {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid transparent;
+    border-radius: 5px;
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
+    font-size: 11px;
+    margin: 0 1px;
+}}
+QPushButton.fav:hover {{ color: {accent}; border-color: {accent}; }}
+QPushButton.fav[broken="true"] {{ color: #ff4d6a; border: 1px dashed #ff4d6a; }}
+
+QWidget#root[mode="vault"]   {{ border: 2px solid #d4af37; }}
+QWidget#root[mode="private"] {{ border: 1px solid {accent}; }}
+
+/* Top URL strip */
+QFrame#topUrlStrip {{
+    background: {surface};
+    border-bottom: 1px solid {border};
+}}
+QLabel#topUrlText {{
+    color: {fg};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 11px;
+    background: transparent;
+    padding: 2px 8px;
+}}
+
+/* Spinner */
+QLabel#spinner, QLabel#topSpinner {{
+    color: {accent};
+    font-size: 14px;
+    background: transparent;
+    padding: 0 4px;
+    min-width: 16px;
+}}
+
+/* AI side panel */
+QFrame#aiPanel {{
+    background: {surface};
+    border-left: 1px solid {border};
+}}
+QFrame#aiPanelHeader {{
+    background: {bg};
+    border-bottom: 1px solid {border};
+}}
+QLabel#aiPanelTitle {{
+    color: {fg};
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 4px;
+}}
+QTextBrowser#aiHistory {{
+    background: {bg};
+    border: none;
+    color: {fg};
+    padding: 6px;
+    font-size: 12px;
+    selection-background-color: {accent};
+    selection-color: {bg};
+}}
+QTextEdit#aiInput {{
+    background: {bg};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QTextEdit#aiInput:focus {{ border-color: {accent}; }}
+QPushButton#aiSendBtn {{
+    background: {accent};
+    color: {bg};
+    border: 1px solid {accent};
+    border-radius: 5px;
+    padding: 6px 14px;
+    font-weight: 600;
+}}
+QPushButton#aiSendBtn:hover {{ opacity: 0.9; }}
+QPushButton#aiSendBtn:disabled {{ background: {muted}; border-color: {muted}; }}
+QPushButton.aiQuick {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}}
+QPushButton.aiQuick:hover {{ color: {accent}; border-color: {accent}; }}
+QPushButton#aiClearBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+}}
+QPushButton#aiClearBtn:hover {{ color: #ff4d6a; border-color: #ff4d6a; }}
+
+/* Settings dialog */
+QDialog#settingsDialog {{
+    background: {surface};
+    color: {fg};
+}}
+QDialog#settingsDialog QGroupBox {{
+    border: 1px solid {border};
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 10px 6px 6px 6px;
+    color: {accent};
+    font-weight: 600;
+    font-size: 12px;
+}}
+QDialog#settingsDialog QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    background: {surface};
+}}
+QDialog#settingsDialog QCheckBox {{
+    color: {fg};
+    font-size: 12px;
+    padding: 4px 6px;
+    spacing: 8px;
+}}
+QDialog#settingsDialog QCheckBox::indicator {{
+    width: 14px; height: 14px;
+    border: 1px solid {accent};
+    border-radius: 3px;
+    background: {bg};
+}}
+QDialog#settingsDialog QCheckBox::indicator:checked {{
+    background: {accent};
+    border-color: {accent};
+}}
+QDialog#settingsDialog QPushButton {{
+    background: {bg};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QDialog#settingsDialog QPushButton:hover {{ border-color: {accent}; color: {accent}; }}
+QDialog#settingsDialog QPushButton:default {{ background: {accent}; color: {bg}; border-color: {accent}; }}
+QDialog#settingsDialog QLabel {{ color: {fg}; }}
+
+/* QScrollBar */
+QScrollBar:vertical {{
+    background: {bg};
+    width: 10px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {border};
+    border-radius: 5px;
+    min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {accent}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{ background: {bg}; height: 10px; margin: 0; }}
+QScrollBar::handle:horizontal {{ background: {border}; border-radius: 5px; min-width: 24px; }}
+QScrollBar::handle:horizontal:hover {{ background: {accent}; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+/* QDockWidget (defensive — Argus uses custom dock, but cover the standard one) */
+QDockWidget {{ color: {fg}; titlebar-close-icon: none; titlebar-normal-icon: none; }}
+QDockWidget::title {{ background: {surface}; padding: 4px 8px; }}
+
+QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; }}
+QMenu::item:selected {{ background: {accent}; color: {bg}; }}
+QToolTip {{ background: {bg}; color: {fg}; border: 1px solid {border}; padding: 4px 6px; }}
+"""
+
+
+THEMES: dict[str, str] = {
+    "Cyber Dark":  _build_theme(bg="#0a0e14", surface="#141821", fg="#e6edf3",
+                                accent="#4d9fff"),
+    "Pro Dark":    _build_theme(bg="#1a1a1f", surface="#25252d", fg="#d4d4dc",
+                                accent="#8b8b9d"),
+    "Light Pro":   _build_theme(bg="#fafafa", surface="#ffffff", fg="#1a1a1f",
+                                accent="#2563eb",
+                                border="#e5e7eb", muted="#6b7280"),
+    "Hacker Green":_build_theme(bg="#000800", surface="#001a05", fg="#00ff41",
+                                accent="#00ff41",
+                                border="#003311", muted="#008822",
+                                font_family="'Consolas',monospace"),
+    "Bank Vault":  _build_theme(bg="#1a1410", surface="#2a2018", fg="#d4af37",
+                                accent="#b8860b",
+                                border="#3a2e22", muted="#8a7050"),
+    "Pastel":      _build_theme(bg="#f5f0e8", surface="#faf6f0", fg="#2d3033",
+                                accent="#c9a96e",
+                                border="#e0d5c4", muted="#857a6a"),
+}
+
+DEFAULT_THEME = "Cyber Dark"
 
 
 THEME_QSS = r"""
@@ -341,6 +958,130 @@ QDialog#settingsDialog QPushButton:default { background: #4d9fff; color: white; 
 """
 
 
+# ── Theme application ────────────────────────────────────────────────────
+def apply_theme(name: str) -> str:
+    """Apply a named theme stylesheet to the active QApplication.
+
+    Returns the resolved theme name (falls back to the default if `name` is
+    unknown). Safe to call before windows are constructed.
+    """
+    if name not in THEMES:
+        name = DEFAULT_THEME
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(THEMES[name])
+    return name
+
+
+# ── AI conversation history ──────────────────────────────────────────────
+class AIHistoryManager:
+    """Persisted AI chat history (last AI_HISTORY_MAX messages)."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.messages: list[dict] = []
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                # Tolerate corrupt entries silently — keep only well-shaped ones.
+                self.messages = [
+                    m for m in data
+                    if isinstance(m, dict) and m.get("role") in ("user", "assistant", "error")
+                    and isinstance(m.get("content"), str)
+                ]
+        except (OSError, json.JSONDecodeError):
+            self.messages = []
+
+    def _save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps(self.messages[-AI_HISTORY_MAX:], indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def append(self, role: str, content: str):
+        if role not in ("user", "assistant", "error"):
+            return
+        self.messages.append({"role": role, "content": content,
+                              "ts": datetime.now().isoformat()})
+        # Cap to the last AI_HISTORY_MAX entries (in-memory + on disk).
+        if len(self.messages) > AI_HISTORY_MAX:
+            self.messages = self.messages[-AI_HISTORY_MAX:]
+        self._save()
+
+    def clear(self):
+        self.messages = []
+        self._save()
+
+    def for_api(self) -> list[dict]:
+        """Return the conversation in the shape /api/chat expects."""
+        return [
+            {"role": m["role"], "content": m["content"]}
+            for m in self.messages
+            if m["role"] in ("user", "assistant")
+        ]
+
+
+# ── AI HTTP worker (background thread) ───────────────────────────────────
+class AIChatWorker(QObject):
+    """Posts a chat message to netguard_ai_server on a background thread.
+
+    Emits `done(reply)` on success or `failed(error)` on any failure. Kept
+    intentionally minimal — no streaming, the backend doesn't expose SSE.
+    """
+    done = pyqtSignal(str, dict)   # (reply_text, raw_result_dict)
+    failed = pyqtSignal(str)       # error string
+
+    def __init__(self, messages: list[dict], lang: str = "fr",
+                 timeout: float = 60.0, parent=None):
+        super().__init__(parent)
+        self.messages = messages
+        self.lang = lang
+        self.timeout = timeout
+        self._thread: threading.Thread | None = None
+
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        body = json.dumps({
+            "messages": self.messages,
+            "lang": self.lang,
+            "agent_mode": False,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{AI_SERVER_BASE}/api/chat",
+            data=body, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.URLError as e:
+            self.failed.emit(f"Backend unreachable — démarre netguard_ai_server.py ({e.reason})")
+            return
+        except (TimeoutError, OSError) as e:
+            self.failed.emit(f"Backend unreachable — démarre netguard_ai_server.py ({e})")
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self.failed.emit("Réponse invalide du backend (JSON parse error)")
+            return
+        if not data.get("ok", False):
+            self.failed.emit(f"Backend error: {data.get('error', 'unknown')} — {data.get('reply', '')[:200]}")
+            return
+        self.done.emit(data.get("reply", ""), data)
+
+
 # ── Persistence ──────────────────────────────────────────────────────────
 class SettingsManager:
     """Layout/UX preferences persisted between sessions."""
@@ -467,23 +1208,78 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.settings_mgr = settings_mgr
         self.setObjectName("settingsDialog")
-        self.setWindowTitle("Argus — Paramètres d'affichage")
-        self.resize(440, 380)
+        self.setWindowTitle("Argus — Paramètres")
+        self.resize(560, 580)
+
+        # Capture original theme so Cancel can revert live-preview changes.
+        self._original_theme = settings_mgr.get("theme") or DEFAULT_THEME
+        if self._original_theme not in THEMES:
+            self._original_theme = DEFAULT_THEME
+
+        # Track API-keys edits so we know what to flush on Apply.
+        # Map name -> (line_edit, "Show" toggle widget). Filled by _build_keys_tab.
+        self._keys_widgets: dict[str, tuple] = {}
 
         v = QVBoxLayout(self)
         v.setSpacing(10)
+        v.setContentsMargins(10, 10, 10, 10)
 
-        title = QLabel("Affichage des modules")
-        title.setStyleSheet("color:#e8eaf0; font-size:15px; font-weight:600; margin-bottom:6px;")
+        # Tabbed layout — Display / API Keys
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_display_tab(), "Affichage")
+        self._tabs.addTab(self._build_keys_tab(),    "API Keys")
+        v.addWidget(self._tabs, 1)
+
+        # Buttons
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("Annuler")
+        cancel.clicked.connect(self._cancel)
+        ok = QPushButton("Appliquer")
+        ok.setDefault(True)
+        ok.clicked.connect(self._apply)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        v.addLayout(btns)
+
+    # ── Display tab (existing section, just moved into a tab) ──────────
+    def _build_display_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(10)
+
+        title = QLabel("Apparence et affichage")
+        title.setStyleSheet("font-size:15px; font-weight:600; margin-bottom:6px;")
         v.addWidget(title)
+
+        # Group: Theme (NEW — always at top)
+        gb_theme = QGroupBox("Thème")
+        gl_theme = QVBoxLayout(gb_theme)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Style global :"))
+        self.theme_combo = QComboBox()
+        for name in THEMES.keys():
+            self.theme_combo.addItem(name)
+        # Restore current selection.
+        current_theme = self.settings_mgr.get("theme") or DEFAULT_THEME
+        if current_theme in THEMES:
+            self.theme_combo.setCurrentText(current_theme)
+        # Live preview — apply on selection change.
+        self.theme_combo.currentTextChanged.connect(self._on_theme_preview)
+        theme_row.addWidget(self.theme_combo, 1)
+        gl_theme.addLayout(theme_row)
+        hint = QLabel("Aperçu en direct. « Annuler » restaure le thème précédent.")
+        hint.setStyleSheet("font-size: 11px; color: #9aa0ad;")
+        gl_theme.addWidget(hint)
+        v.addWidget(gb_theme)
 
         # Group: Top
         gb_top = QGroupBox("Haut de la fenêtre")
         gl_top = QVBoxLayout(gb_top)
         self.cb_feed = QCheckBox("Live feed (lignes de code / requêtes réseau)")
-        self.cb_feed.setChecked(settings_mgr.get("show_live_feed"))
+        self.cb_feed.setChecked(self.settings_mgr.get("show_live_feed"))
         self.cb_url_top = QCheckBox("Barre URL en haut (juste au-dessus des onglets)")
-        self.cb_url_top.setChecked(settings_mgr.get("show_url_top"))
+        self.cb_url_top.setChecked(self.settings_mgr.get("show_url_top"))
         gl_top.addWidget(self.cb_feed)
         gl_top.addWidget(self.cb_url_top)
         v.addWidget(gb_top)
@@ -492,36 +1288,261 @@ class SettingsDialog(QDialog):
         gb_bot = QGroupBox("Bas de la fenêtre (dock)")
         gl_bot = QVBoxLayout(gb_bot)
         self.cb_url_bottom = QCheckBox("Barre URL + cadenas")
-        self.cb_url_bottom.setChecked(settings_mgr.get("show_url_bottom"))
+        self.cb_url_bottom.setChecked(self.settings_mgr.get("show_url_bottom"))
         self.cb_search = QCheckBox("Barre de recherche (moteur + champ)")
-        self.cb_search.setChecked(settings_mgr.get("show_search_row"))
+        self.cb_search.setChecked(self.settings_mgr.get("show_search_row"))
         self.cb_favs = QCheckBox("Favoris + boutons (mode, NetGuard, +tab)")
-        self.cb_favs.setChecked(settings_mgr.get("show_favs"))
+        self.cb_favs.setChecked(self.settings_mgr.get("show_favs"))
         gl_bot.addWidget(self.cb_url_bottom)
         gl_bot.addWidget(self.cb_search)
         gl_bot.addWidget(self.cb_favs)
         v.addWidget(gb_bot)
 
         v.addStretch(1)
+        return w
 
-        # Buttons
-        btns = QHBoxLayout()
-        btns.addStretch(1)
-        cancel = QPushButton("Annuler")
-        cancel.clicked.connect(self.reject)
-        ok = QPushButton("Appliquer")
-        ok.setDefault(True)
-        ok.clicked.connect(self._apply)
-        btns.addWidget(cancel)
-        btns.addWidget(ok)
-        v.addLayout(btns)
+    # ── API Keys tab ───────────────────────────────────────────────────
+    def _build_keys_tab(self) -> QWidget:
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        ov.setSpacing(8)
+        ov.setContentsMargins(2, 2, 2, 2)
+
+        if not HAVE_CONFIG:
+            warn = QLabel(
+                "Module ``config`` indisponible — les clés API ne peuvent pas "
+                "être stockées dans le coffre. Définis-les via .env ou "
+                "variables d'environnement OS, puis redémarre Argus."
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #ff9e7a; font-size: 12px; padding: 12px;")
+            ov.addWidget(warn)
+            ov.addStretch(1)
+            return outer
+
+        # Header — short hint + .env migration button
+        hdr = QHBoxLayout()
+        lbl = QLabel(
+            "Stocke les clés API et webhooks utilisés par Argus. Les valeurs "
+            "saisies vont dans le coffre chiffré (DPAPI sous Windows)."
+        )
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("font-size: 12px; color: #9aa0ad;")
+        hdr.addWidget(lbl, 1)
+        ov.addLayout(hdr)
+
+        migrate_row = QHBoxLayout()
+        migrate_row.addStretch(1)
+        migrate_btn = QPushButton("Migrer depuis .env")
+        migrate_btn.setToolTip(
+            "Lit le fichier .env du repo, propose de copier ces secrets dans le coffre."
+        )
+        migrate_btn.clicked.connect(self._migrate_from_env)
+        migrate_row.addWidget(migrate_btn)
+        ov.addLayout(migrate_row)
+
+        # Scrollable list of canonical secrets
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        bv.setSpacing(8)
+        bv.setContentsMargins(2, 2, 2, 2)
+
+        for name, description in CANONICAL_SECRETS.items():
+            bv.addWidget(self._build_secret_row(name, description))
+
+        bv.addStretch(1)
+        scroll.setWidget(body)
+        ov.addWidget(scroll, 1)
+        return outer
+
+    def _build_secret_row(self, name: str, description: str) -> QFrame:
+        row = QFrame()
+        row.setStyleSheet(
+            "QFrame { border: 1px solid rgba(255,255,255,0.06); "
+            "border-radius: 6px; padding: 6px; }"
+        )
+        rv = QVBoxLayout(row)
+        rv.setSpacing(4)
+        rv.setContentsMargins(8, 6, 8, 6)
+
+        head = QHBoxLayout()
+        title = QLabel(f"<b>{name}</b>")
+        title.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace; font-size: 12px;")
+        head.addWidget(title, 1)
+        if name in SECRET_HELP_URLS:
+            link = QPushButton("Open URL")
+            link.setToolTip(SECRET_HELP_URLS[name])
+            link.clicked.connect(
+                lambda _=False, u=SECRET_HELP_URLS[name]: webbrowser.open(u)
+            )
+            head.addWidget(link)
+        rv.addLayout(head)
+
+        desc = QLabel(description)
+        desc.setStyleSheet("color: #9aa0ad; font-size: 11px;")
+        desc.setWordWrap(True)
+        rv.addWidget(desc)
+
+        # Resolve current value (mask if present).
+        try:
+            current_val = get_secret(name) or ""
+        except Exception:
+            current_val = ""
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        if current_val:
+            edit.setPlaceholderText("•" * 12)
+        else:
+            edit.setPlaceholderText("(not set)")
+
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+        controls.addWidget(edit, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setCheckable(True)
+        show_btn.setToolTip("Afficher la valeur en clair temporairement.")
+
+        def _on_show_toggled(checked: bool, le=edit, btn=show_btn, n=name):
+            if checked:
+                # Reveal: prefer the current input, fall back to the stored val.
+                if not le.text():
+                    try:
+                        v = get_secret(n) or ""
+                    except Exception:
+                        v = ""
+                    if v:
+                        le.setText(v)
+                le.setEchoMode(QLineEdit.EchoMode.Normal)
+                btn.setText("Hide")
+            else:
+                le.setEchoMode(QLineEdit.EchoMode.Password)
+                btn.setText("Show")
+
+        show_btn.toggled.connect(_on_show_toggled)
+        controls.addWidget(show_btn)
+
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(False)
+        save_btn.clicked.connect(
+            lambda _=False, n=name, le=edit: self._save_one_secret(n, le)
+        )
+        controls.addWidget(save_btn)
+        rv.addLayout(controls)
+
+        self._keys_widgets[name] = (edit, show_btn)
+        return row
+
+    def _save_one_secret(self, name: str, line_edit: QLineEdit):
+        value = line_edit.text().strip()
+        if not value:
+            QMessageBox.information(
+                self, "Argus — clé vide",
+                f"Saisis une valeur pour {name} avant de sauvegarder.",
+            )
+            return
+        try:
+            store_secret(name, value, owner="user")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Argus — coffre",
+                f"Impossible de stocker {name} :\n{e}",
+            )
+            return
+        # Mask again on success.
+        line_edit.clear()
+        line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        line_edit.setPlaceholderText("•" * 12)
+        QMessageBox.information(
+            self, "Argus — coffre",
+            f"{name} a été stocké dans le coffre chiffré.",
+        )
+
+    def _migrate_from_env(self):
+        env_path = ROOT / ".env"
+        if not env_path.exists():
+            QMessageBox.information(
+                self, "Argus — .env",
+                f"Aucun fichier .env trouvé à {env_path}.",
+            )
+            return
+        # Parse .env (KEY=VALUE per line, ignore comments / blanks).
+        candidates: dict[str, str] = {}
+        try:
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and v and k in CANONICAL_SECRETS:
+                    candidates[k] = v
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Argus — .env",
+                f"Lecture de .env a échoué : {e}",
+            )
+            return
+        if not candidates:
+            QMessageBox.information(
+                self, "Argus — .env",
+                "Aucune clé canonique trouvée dans .env.",
+            )
+            return
+        names = "\n".join(f"  • {k}" for k in candidates)
+        ans = QMessageBox.question(
+            self, "Argus — migrer .env vers coffre",
+            f"Copier {len(candidates)} clé(s) de .env vers le coffre chiffré ?\n\n"
+            f"{names}\n\n"
+            "Le fichier .env n'est PAS modifié — tu pourras le supprimer manuellement après.",
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        ok_count = 0
+        errors: list[str] = []
+        for name, value in candidates.items():
+            try:
+                store_secret(name, value, owner="env-migration")
+                ok_count += 1
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+        msg = f"{ok_count} secret(s) migrés."
+        if errors:
+            msg += "\n\nErreurs :\n" + "\n".join(errors)
+        QMessageBox.information(self, "Argus — migration", msg)
+
+    def _on_theme_preview(self, name: str):
+        """Live preview — apply immediately. _cancel reverts."""
+        apply_theme(name)
+
+    def _cancel(self):
+        # Revert live-preview theme change.
+        apply_theme(self._original_theme)
+        self.reject()
+
+    def reject(self):
+        # Triggered by Esc or window-close-X — revert theme too.
+        apply_theme(self._original_theme)
+        super().reject()
 
     def _apply(self):
+        new_theme = self.theme_combo.currentText()
+        if new_theme not in THEMES:
+            new_theme = DEFAULT_THEME
+        self.settings_mgr.set("theme", new_theme)
+        apply_theme(new_theme)  # ensure persisted choice is applied
         self.settings_mgr.set("show_live_feed", self.cb_feed.isChecked())
         self.settings_mgr.set("show_url_top",   self.cb_url_top.isChecked())
         self.settings_mgr.set("show_url_bottom",self.cb_url_bottom.isChecked())
         self.settings_mgr.set("show_search_row",self.cb_search.isChecked())
         self.settings_mgr.set("show_favs",      self.cb_favs.isChecked())
+        # Note: API keys are saved on their per-row Save button — Apply
+        # only persists display preferences. We don't auto-save the keys
+        # tab to avoid surprising the user with a flush of partial values.
         self.accept()
 
 
@@ -655,6 +1676,529 @@ class TabBar(QFrame):
         return title if len(title) <= n else title[:n - 1] + "…"
 
 
+# ── AI side panel (right collapsible) ────────────────────────────────────
+class AIPanel(QFrame):
+    """Right-side collapsible AI assistant panel.
+
+    Width animates 0 ↔ 380px (200ms OutCubic). Sends chat to
+    netguard_ai_server.py at AI_SERVER_BASE/api/chat. Conversation persisted
+    to argus_data/ai_history.json (last AI_HISTORY_MAX messages).
+
+    Page context (URL + first 4096 chars of QWebEnginePage.toPlainText) is
+    attached to each user message via a system-style note so the model can
+    reason about whatever the user is currently looking at.
+    """
+    EXPANDED_WIDTH = 380
+    ANIM_MS = 200
+
+    # Signal: emits when the user clicks Send and we need the current page text.
+    # The browser provides the page; the panel only sees a callable + url.
+    page_text_requested = pyqtSignal()
+
+    def __init__(self, history_mgr: AIHistoryManager, parent=None):
+        super().__init__(parent)
+        self.setObjectName("aiPanel")
+        self.history = history_mgr
+        self.is_open = False
+        self._worker: AIChatWorker | None = None
+        self._pending_user_msg: str | None = None
+        # Provided by the browser owner via set_page_provider().
+        self._page_provider: callable | None = None
+
+        self.setFixedWidth(0)
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # Header — provider combo + Clear
+        header = QFrame()
+        header.setObjectName("aiPanelHeader")
+        header.setFixedHeight(40)
+        h = QHBoxLayout(header)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(6)
+        title = QLabel("AI")
+        title.setObjectName("aiPanelTitle")
+        self.provider_combo = QComboBox()
+        for _name, label in AI_PROVIDER_FALLBACK:
+            self.provider_combo.addItem(label)
+        self.provider_combo.setToolTip(
+            "Provider actif. Le choix réel se règle via netguard_ai_settings.json (clés API)."
+        )
+        clear_btn = QPushButton("Clear")
+        clear_btn.setObjectName("aiClearBtn")
+        clear_btn.setToolTip("Vider la conversation")
+        clear_btn.clicked.connect(self._clear_conversation)
+        h.addWidget(title)
+        h.addWidget(self.provider_combo, 1)
+        h.addWidget(clear_btn)
+        v.addWidget(header)
+
+        # Conversation history (HTML rendered into QTextBrowser)
+        self.history_view = QTextBrowser()
+        self.history_view.setObjectName("aiHistory")
+        self.history_view.setOpenExternalLinks(False)
+        v.addWidget(self.history_view, 1)
+
+        # Bottom — input + send + quick actions
+        bottom = QFrame()
+        bottom.setObjectName("aiPanelBottom")
+        b = QVBoxLayout(bottom)
+        b.setContentsMargins(8, 6, 8, 8)
+        b.setSpacing(6)
+
+        # Input row: QTextEdit (3-line height) + Send button
+        input_row = QHBoxLayout()
+        input_row.setSpacing(6)
+        self.input = QTextEdit()
+        self.input.setObjectName("aiInput")
+        self.input.setPlaceholderText("Pose une question…  (Ctrl+Enter pour envoyer)")
+        # ~3 lines @ 12pt ≈ 60px
+        self.input.setFixedHeight(60)
+        self.input.setAcceptRichText(False)
+        self.input.installEventFilter(self)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("aiSendBtn")
+        self.send_btn.clicked.connect(self._send_clicked)
+        input_row.addWidget(self.input, 1)
+        input_row.addWidget(self.send_btn)
+        b.addLayout(input_row)
+
+        # Quick actions
+        qa_row = QHBoxLayout()
+        qa_row.setSpacing(4)
+        for label, prefill in AI_QUICK_ACTIONS:
+            btn = QPushButton(label)
+            btn.setProperty("class", "aiQuick")
+            btn.setToolTip(prefill)
+            btn.clicked.connect(lambda _=False, p=prefill: self._prefill(p))
+            qa_row.addWidget(btn)
+        qa_row.addStretch(1)
+        b.addLayout(qa_row)
+
+        v.addWidget(bottom)
+
+        # Animator
+        self._anim = QPropertyAnimation(self, b"maximumWidth")
+        self._anim.setDuration(self.ANIM_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim2 = QPropertyAnimation(self, b"minimumWidth")
+        self._anim2.setDuration(self.ANIM_MS)
+        self._anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # Restore saved conversation
+        self._render_history()
+
+    # ── Page-text bridge (browser provides current QWebEngineView) ──
+    def set_page_provider(self, fn):
+        """Register a callable returning (url, view) for the current tab."""
+        self._page_provider = fn
+
+    # ── UX behaviour ────────────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        if obj is self.input and event.type() == event.Type.KeyPress:
+            mods = event.modifiers()
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) \
+                    and (mods & Qt.KeyboardModifier.ControlModifier):
+                self._send_clicked()
+                return True
+        return super().eventFilter(obj, event)
+
+    def toggle(self):
+        if self.is_open:
+            self.collapse()
+        else:
+            self.expand()
+
+    def expand(self):
+        if self.is_open:
+            return
+        self.is_open = True
+        self._animate_to(self.EXPANDED_WIDTH)
+        # Focus input for immediate typing
+        QTimer.singleShot(self.ANIM_MS + 30, lambda: self.input.setFocus())
+
+    def collapse(self):
+        if not self.is_open:
+            return
+        self.is_open = False
+        self._animate_to(0)
+
+    def _animate_to(self, target: int):
+        for anim, prop_get in (
+            (self._anim, self.maximumWidth),
+            (self._anim2, self.minimumWidth),
+        ):
+            anim.stop()
+            anim.setStartValue(prop_get())
+            anim.setEndValue(target)
+            anim.start()
+
+    def _prefill(self, text: str):
+        self.input.setPlainText(text)
+        self.input.setFocus()
+        cursor = self.input.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.input.setTextCursor(cursor)
+
+    def _clear_conversation(self):
+        self.history.clear()
+        self._render_history()
+
+    # ── Send ────────────────────────────────────────────────────────
+    def _send_clicked(self):
+        text = self.input.toPlainText().strip()
+        if not text or self._worker is not None:
+            return
+        # Capture page text asynchronously (callable returns view; we call toPlainText with a 2s timeout fallback).
+        self._pending_user_msg = text
+        self.input.clear()
+        # Append user msg immediately
+        self.history.append("user", text)
+        self._render_history()
+        self.send_btn.setEnabled(False)
+        # Show typing indicator
+        self._set_typing(True)
+        # Try to get page text; fall back to URL only if it doesn't return in time.
+        url, view = self._current_page_info()
+        if view is not None:
+            received = {"done": False}
+
+            def on_text(plain_text: str):
+                if received["done"]:
+                    return
+                received["done"] = True
+                ctx_text = (plain_text or "")[:AI_PAGE_TEXT_MAX]
+                self._send_to_backend(text, url, ctx_text)
+
+            try:
+                view.page().toPlainText(on_text)
+            except Exception:
+                received["done"] = True
+                self._send_to_backend(text, url, "")
+                return
+
+            def fallback():
+                if received["done"]:
+                    return
+                received["done"] = True
+                self._send_to_backend(text, url, "")
+
+            QTimer.singleShot(AI_PAGE_TEXT_TIMEOUT_MS, fallback)
+        else:
+            self._send_to_backend(text, url, "")
+
+    def _current_page_info(self):
+        if self._page_provider is None:
+            return ("", None)
+        try:
+            return self._page_provider()
+        except Exception:
+            return ("", None)
+
+    def _send_to_backend(self, user_msg: str, url: str, page_text: str):
+        # Build the message list: full saved conversation, plus a context-augmented
+        # version of the *latest* user msg. We only mutate the last entry in `for_api()`
+        # so prior turns stay untouched.
+        msgs = self.history.for_api()
+        if msgs and msgs[-1]["role"] == "user":
+            ctx_block = self._format_ctx(url, page_text)
+            msgs[-1] = {"role": "user", "content": f"{ctx_block}{user_msg}"}
+        # Lang from system locale would be better; default to French for this build.
+        worker = AIChatWorker(messages=msgs, lang="fr")
+        worker.done.connect(self._on_worker_done)
+        worker.failed.connect(self._on_worker_failed)
+        self._worker = worker
+        worker.start()
+
+    @staticmethod
+    def _format_ctx(url: str, page_text: str) -> str:
+        if not url and not page_text:
+            return ""
+        parts = ["[Page context]"]
+        if url:
+            parts.append(f"URL: {url}")
+        if page_text:
+            parts.append("Content (first 4096 chars):")
+            parts.append(page_text)
+        parts.append("[/Page context]\n\n")
+        return "\n".join(parts)
+
+    def _on_worker_done(self, reply: str, _raw: dict):
+        self._worker = None
+        self._set_typing(False)
+        self.send_btn.setEnabled(True)
+        if not reply:
+            reply = "(Réponse vide)"
+        self.history.append("assistant", reply)
+        self._render_history()
+
+    def _on_worker_failed(self, error: str):
+        self._worker = None
+        self._set_typing(False)
+        self.send_btn.setEnabled(True)
+        self.history.append("error", error)
+        self._render_history()
+
+    # ── Rendering ───────────────────────────────────────────────────
+    def _set_typing(self, on: bool):
+        # Re-render with optional trailing typing bubble.
+        self._typing = on
+        self._render_history()
+
+    def _render_history(self):
+        """Render the conversation as HTML bubbles into the QTextBrowser."""
+        html_parts = [
+            "<style>",
+            "body { background: transparent; margin: 0; padding: 4px; }",
+            ".row-u { text-align: right; margin: 6px 0; }",
+            ".row-a { text-align: left;  margin: 6px 0; }",
+            ".bubble-u { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 10px 10px 2px 10px; background: #4d9fff; color: #ffffff; "
+            "white-space: pre-wrap; text-align: left; }",
+            ".bubble-a { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 10px 10px 10px 2px; background: #1c2128; color: #e6edf3; "
+            "white-space: pre-wrap; }",
+            ".bubble-e { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 8px; background: #3a1419; color: #ff9da6; "
+            "border: 1px solid #ff4d6a; white-space: pre-wrap; }",
+            ".retry { display: inline-block; margin-left: 8px; padding: 2px 8px; "
+            "border: 1px solid #ff4d6a; border-radius: 4px; color: #ff4d6a; "
+            "text-decoration: none; font-size: 11px; }",
+            ".typing { display: inline-block; padding: 6px 10px; border-radius: 10px; "
+            "background: #1c2128; color: #9aa0ad; }",
+            "</style>",
+        ]
+        for m in self.history.messages:
+            content = m.get("content", "")
+            # Escape HTML — user content is untrusted page text in some cases.
+            safe = (content
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+            if m["role"] == "user":
+                html_parts.append(f'<div class="row-u"><span class="bubble-u">{safe}</span></div>')
+            elif m["role"] == "assistant":
+                html_parts.append(f'<div class="row-a"><span class="bubble-a">{safe}</span></div>')
+            else:  # error
+                html_parts.append(
+                    f'<div class="row-a"><span class="bubble-e">{safe}'
+                    f'<a href="argus://retry" class="retry">Retry</a></span></div>'
+                )
+        if getattr(self, "_typing", False):
+            html_parts.append('<div class="row-a"><span class="typing">…</span></div>')
+
+        self.history_view.setHtml("\n".join(html_parts))
+        # Auto-scroll to bottom
+        scrollbar = self.history_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        # Wire retry link clicks (anchorClicked emits QUrl)
+        try:
+            self.history_view.anchorClicked.disconnect()
+        except TypeError:
+            pass
+        self.history_view.anchorClicked.connect(self._on_anchor_clicked)
+
+    def _on_anchor_clicked(self, url):
+        # Only handle our internal "argus://retry" pseudo-link.
+        if url.toString() != "argus://retry":
+            return
+        # Find the last user message and resend it
+        for m in reversed(self.history.messages):
+            if m["role"] == "user":
+                self._prefill(m["content"])
+                self._send_clicked()
+                return
+
+
+# ── Vault auto-switch banner ─────────────────────────────────────────────
+class VaultBanner(QFrame):
+    """Non-modal banner shown when the user navigates to a known banking /
+    payment / brokerage domain while NOT already in vault mode.
+
+    Appears at the top of the tab content area. Three actions:
+        * Switch to Vault — invokes the parent's mode-switch with a vault
+          target.
+        * Not now — hide the banner for this navigation only.
+        * Always — persist the host to ``vault_auto_switch.json`` so future
+          visits trigger an automatic switch (still respecting 2FA).
+    """
+    switch_requested = pyqtSignal(str)   # institution_name
+    always_requested = pyqtSignal(str)   # host
+    dismissed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("vaultBanner")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QFrame#vaultBanner { background: #d4af37; border-bottom: 1px solid #b8860b; }"
+            "QFrame#vaultBanner QLabel { color: #1a1410; font-weight: 600; "
+            "font-size: 12px; padding: 6px 10px; }"
+            "QFrame#vaultBanner QPushButton.bannerPrimary { "
+            "background: #1a1410; color: #d4af37; border: 1px solid #1a1410; "
+            "border-radius: 4px; padding: 4px 12px; font-size: 11px; font-weight: 600; }"
+            "QFrame#vaultBanner QPushButton.bannerPrimary:hover { background: #2a2018; }"
+            "QFrame#vaultBanner QPushButton.bannerSecondary { "
+            "background: transparent; color: #1a1410; border: 1px solid #1a1410; "
+            "border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+            "QFrame#vaultBanner QPushButton.bannerSecondary:hover { background: rgba(0,0,0,0.06); }"
+            "QFrame#vaultBanner QPushButton.bannerLink { "
+            "background: transparent; color: #1a1410; border: none; "
+            "padding: 4px 6px; font-size: 11px; text-decoration: underline; }"
+        )
+        self.setFixedHeight(38)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 8, 0)
+        h.setSpacing(6)
+        self._label = QLabel("Banking detected")
+        h.addWidget(self._label, 1)
+        self._switch_btn = QPushButton("Switch to Vault")
+        self._switch_btn.setProperty("class", "bannerPrimary")
+        self._switch_btn.clicked.connect(self._emit_switch)
+        h.addWidget(self._switch_btn)
+        self._notnow_btn = QPushButton("Not now")
+        self._notnow_btn.setProperty("class", "bannerSecondary")
+        self._notnow_btn.clicked.connect(self._emit_dismiss)
+        h.addWidget(self._notnow_btn)
+        self._always_btn = QPushButton("Always")
+        self._always_btn.setProperty("class", "bannerLink")
+        self._always_btn.clicked.connect(self._emit_always)
+        h.addWidget(self._always_btn)
+        self._institution = ""
+        self._host = ""
+        self.hide()
+
+    def show_for(self, institution_name: str, host: str):
+        self._institution = institution_name or "this institution"
+        self._host = host or ""
+        self._label.setText(
+            f"  Banking detected: {self._institution}. "
+            f"Switch to Vault mode for stricter protection?"
+        )
+        self.show()
+
+    def _emit_switch(self):
+        self.switch_requested.emit(self._institution)
+        self.hide()
+
+    def _emit_dismiss(self):
+        self.hide()
+        self.dismissed.emit()
+
+    def _emit_always(self):
+        if self._host:
+            self.always_requested.emit(self._host)
+        self.hide()
+
+
+# ── Form-submit JS bridge (Wave 2 task #7) ───────────────────────────────
+# A small JS payload installed into every page profile that intercepts
+# form.submit events, stops propagation, then notifies the host via a
+# location.hash sentinel that Python polls. Python decides via arbiter
+# whether to allow the submit — if allowed, JS replays the submission.
+#
+# This is the lowest-friction integration that doesn't require QWebChannel
+# (which adds a runtime dependency on qtwebchannel.js being injected first).
+# For V1 we ship logging only, with arbiter check kept best-effort: JS
+# pauses the submit, records context, calls Python, and Python decides
+# whether to release. If anything goes wrong the form proceeds (fail-open)
+# because blocking real banking submits via JS edge-cases would be worse
+# than the alternative.
+FORM_SUBMIT_INTERCEPT_JS = r"""
+(function () {
+  if (window.__argusFormHookInstalled) return;
+  window.__argusFormHookInstalled = true;
+
+  function summarize(form) {
+    var fields = form.elements ? form.elements.length : 0;
+    var hasPwd = false, hasCC = false;
+    try {
+      for (var i = 0; i < form.elements.length; i++) {
+        var el = form.elements[i];
+        var t = (el.type || '').toLowerCase();
+        var n = (el.name || '').toLowerCase();
+        if (t === 'password') hasPwd = true;
+        if (n.indexOf('card') !== -1 || n.indexOf('cc') !== -1 ||
+            n.indexOf('cvv') !== -1 || /\bccnum\b/.test(n)) hasCC = true;
+      }
+    } catch (e) {}
+    return {
+      action_url: form.action || window.location.href,
+      method: (form.method || 'GET').toUpperCase(),
+      fields_count: fields,
+      has_password: hasPwd,
+      has_cc: hasCC,
+      origin: window.location.href
+    };
+  }
+
+  document.addEventListener('submit', function (ev) {
+    try {
+      var form = ev.target;
+      if (!form || !form.tagName || form.tagName.toLowerCase() !== 'form') return;
+      var info = summarize(form);
+      // Best-effort beacon to host. Python polls runJavaScript for these.
+      window.__argusLastFormSubmit = info;
+      // Surface a short text marker the host can grep without a full RTT.
+      var beacon = '__ARGUS_FORM_SUBMIT__:' + JSON.stringify(info);
+      try { console.log(beacon); } catch (e) {}
+    } catch (e) { /* swallow */ }
+  }, true);
+})();
+"""
+
+
+# ── Custom QWebEnginePage that intercepts new-window + injects download hook ──
+class ArgusWebPage(QWebEnginePage):
+    """QWebEnginePage subclass that:
+
+    * Routes window.open / target=_blank into a new tab in our custom
+      TabBar instead of spawning an unmanaged QWebEngineView.
+    * Forwards JavaScript console messages so the host can grep for the
+      ``__ARGUS_FORM_SUBMIT__`` beacon emitted by FORM_SUBMIT_INTERCEPT_JS
+      and route the event to surveillance + arbiter.
+
+    The browser owner registers itself via :meth:`set_owner` so the page
+    can call back without holding a hard ref to the QMainWindow.
+    """
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        self._owner = None
+
+    def set_owner(self, owner):
+        self._owner = owner
+
+    def javaScriptConsoleMessage(self, level, message, line, source_id):
+        # Forward the form-submit beacon to the host owner.
+        try:
+            if message and message.startswith("__ARGUS_FORM_SUBMIT__:"):
+                payload = message.split(":", 1)[1]
+                if self._owner is not None and hasattr(self._owner, "_on_form_submit_beacon"):
+                    self._owner._on_form_submit_beacon(payload)
+        except Exception:
+            pass
+        # Default behaviour (no-op in PyQt6 base).
+        try:
+            super().javaScriptConsoleMessage(level, message, line, source_id)
+        except Exception:
+            pass
+
+    def createWindow(self, _wintype):
+        # Open in a new tab inside our window. Returning None lets Qt
+        # silently drop popups (the desired behaviour when no owner).
+        if self._owner is not None and hasattr(self._owner, "_open_new_tab"):
+            self._owner._open_new_tab("about:blank")
+            view = self._owner._current_view()
+            if view is not None:
+                return view.page()
+        return None
+
+
 # ── Main window ──────────────────────────────────────────────────────────
 class ArgusBrowser(QMainWindow):
     def __init__(self):
@@ -663,27 +2207,80 @@ class ArgusBrowser(QMainWindow):
         self.resize(1400, 900)
 
         self.mode_idx = 0
+        # Track current mode by name (separate from the cycling index so vault
+        # can be entered/exited without forcing private as an intermediate).
+        self.current_mode: str = "normal"
         self.dev_tools_view = None
         self.dev_tools_container = None
         self.tab_pages: list[QWebEngineView] = []
+        # Per-tab profile reference so we know which profile a download
+        # came from (and can route the download to the right sandbox path).
+        self.tab_profiles: list[QWebEngineProfile] = []
         self.favs_mgr = FavoritesManager(FAVS_FILE)
         self.settings_mgr = SettingsManager(SETTINGS_FILE)
+        self.ai_history_mgr = AIHistoryManager(AI_HISTORY_FILE)
+
+        # Vault auto-switch — set of hosts the user has whitelisted with
+        # "Always". Persisted as JSON in argus_data/vault_auto_switch.json.
+        self._vault_always_hosts: set[str] = self._load_vault_always()
+        # Track which navigation we already showed a banner for (so the
+        # banner doesn't flap during in-page redirects).
+        self._banner_shown_host: str = ""
+
+        # Apply persisted theme BEFORE building UI so widgets pick it up.
+        apply_theme(self.settings_mgr.get("theme") or DEFAULT_THEME)
+
+        # ── Surveillance / arbiter init (best-effort) ──
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_init()
+            except Exception:
+                pass
+        if HAVE_ARBITER:
+            try:
+                arbiter_init("balanced")
+            except Exception:
+                pass
 
         # ── Profile (persistent — sessions survive restart) ──
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        self.profile = QWebEngineProfile("argus-default", self)
-        self.profile.setPersistentStoragePath(str(DATA_DIR / "normal"))
-        self.profile.setCachePath(str(CACHE_DIR / "normal"))
-        self.profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies
-        )
-        self.profile.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
-        self.profile.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+        DOWNLOADS_SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        # Default ("normal") profile. Either built via argus_sandbox (preferred,
+        # ships randomized UA + anti-skimmer hardening) or a plain persistent
+        # profile if the sandbox module is missing.
+        if HAVE_SANDBOX:
+            try:
+                self.profile = make_normal_profile()
+                self.profile.setParent(self)
+            except Exception:
+                self.profile = QWebEngineProfile("argus-default", self)
+                self._configure_basic_profile(
+                    self.profile,
+                    storage=str(DATA_DIR / "normal"),
+                    cache=str(CACHE_DIR / "normal"),
+                )
+        else:
+            self.profile = QWebEngineProfile("argus-default", self)
+            self._configure_basic_profile(
+                self.profile,
+                storage=str(DATA_DIR / "normal"),
+                cache=str(CACHE_DIR / "normal"),
+            )
+        # Anti-skimmer hardening + form-submit hook installed on the default
+        # profile (re-applied per-profile in _build_profile_for_mode).
+        self._install_profile_scripts(self.profile)
+        self._wire_profile_downloads(self.profile)
+
         self.feed_signal = FeedSignal()
         self.feed_signal.new_request.connect(self._on_request)
         self.interceptor = RequestInterceptor(self.feed_signal)
         self.profile.setUrlRequestInterceptor(self.interceptor)
+
+        # Cached pristine private/vault profiles. Built lazily on first use
+        # so cold start stays fast (vault profile randomizes UA which is OK
+        # to defer).
+        self._mode_profiles: dict[str, QWebEngineProfile] = {"normal": self.profile}
 
         # ── Layout ──
         root = QWidget()
@@ -718,8 +2315,28 @@ class ArgusBrowser(QMainWindow):
         self.tab_bar.new_tab_requested.connect(lambda: self._open_new_tab("https://duckduckgo.com"))
         v.addWidget(self.tab_bar)
 
+        # Main area = vault banner + pages_stack + AI side panel
+        # The banner stacks above the page area (but below the tab bar) so
+        # users see it without it hijacking focus.
+        main_area = QWidget()
+        ma_layout = QHBoxLayout(main_area)
+        ma_layout.setContentsMargins(0, 0, 0, 0)
+        ma_layout.setSpacing(0)
+        page_column = QWidget()
+        page_v = QVBoxLayout(page_column)
+        page_v.setContentsMargins(0, 0, 0, 0)
+        page_v.setSpacing(0)
+        self.vault_banner = VaultBanner(parent=page_column)
+        self.vault_banner.switch_requested.connect(self._on_banner_switch)
+        self.vault_banner.always_requested.connect(self._on_banner_always)
+        page_v.addWidget(self.vault_banner)
         self.pages_stack = QStackedWidget()
-        v.addWidget(self.pages_stack, 1)
+        page_v.addWidget(self.pages_stack, 1)
+        ma_layout.addWidget(page_column, 1)
+        self.ai_panel = AIPanel(self.ai_history_mgr)
+        self.ai_panel.set_page_provider(self._current_page_info_for_ai)
+        ma_layout.addWidget(self.ai_panel)
+        v.addWidget(main_area, 1)
 
         self.dev_tools_container = QWidget()
         self.dev_tools_container.setVisible(False)
@@ -730,7 +2347,7 @@ class ArgusBrowser(QMainWindow):
         v.addWidget(self._build_dock())
 
         self._build_overlays()
-        self.setStyleSheet(THEME_QSS)
+        # Theme is applied app-wide via apply_theme() — no per-window stylesheet.
         self._apply_mode()
 
         # First tab
@@ -750,6 +2367,12 @@ class ArgusBrowser(QMainWindow):
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self._on_tab_close(self.pages_stack.currentIndex()))
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self._toggle_favorite_current)
         QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
+        QShortcut(QKeySequence("Ctrl+J"), self, activated=self._toggle_ai_panel)
+        QShortcut(QKeySequence("Ctrl+P"), self, activated=self._print_current_page)
+
+        # Restore AI panel state (persisted across sessions)
+        if bool(self.settings_mgr.get("ai_panel_open")):
+            QTimer.singleShot(50, self.ai_panel.expand)
 
     # ── Build helpers ─────────────────────────────────────────
     def _build_dock(self) -> QFrame:
@@ -844,6 +2467,13 @@ class ArgusBrowser(QMainWindow):
         self.ng_btn.setToolTip("Backend NetGuard — click pour lancer / voir état")
         self.ng_btn.clicked.connect(self._toggle_netguard)
 
+        # AI side panel toggle (Ctrl+J)
+        self.ai_btn = QPushButton("🤖")
+        self.ai_btn.setObjectName("aiBtn")
+        self.ai_btn.setProperty("open", False)
+        self.ai_btn.setToolTip("Panneau IA (Ctrl+J)")
+        self.ai_btn.clicked.connect(self._toggle_ai_panel)
+
         new_tab_btn = QPushButton("+")
         new_tab_btn.setProperty("class", "dockBtn")
         new_tab_btn.setProperty("primary", True)
@@ -854,6 +2484,7 @@ class ArgusBrowser(QMainWindow):
         h3.addWidget(self.favs_bar, 1)
         h3.addWidget(self.mode_btn)
         h3.addWidget(self.ng_btn)
+        h3.addWidget(self.ai_btn)
         h3.addWidget(new_tab_btn)
         self.row_actions = row3
 
@@ -894,18 +2525,33 @@ class ArgusBrowser(QMainWindow):
 
     # ── Tab management ────────────────────────────────────────
     def _open_new_tab(self, url: str = "about:blank"):
+        # Tabs are bound to the current mode's profile so privé/coffre
+        # switching is observable per-tab. Switching mode replaces a tab's
+        # view with a fresh one bound to the target profile (see _set_mode).
+        profile = self._mode_profile_for(self.current_mode)
+        view = self._create_view_for_profile(profile)
+        view.setUrl(QUrl(url))
+        self.tab_pages.append(view)
+        self.tab_profiles.append(profile)
+        idx = self.pages_stack.addWidget(view)
+        self.tab_bar.add_tab(idx, "Loading…", mode=self.current_mode)
+        self._switch_to_tab(len(self.tab_pages) - 1)
+
+    def _create_view_for_profile(self, profile: QWebEngineProfile) -> QWebEngineView:
+        """Build a QWebEngineView wired to ``profile`` and our hooks.
+
+        Uses :class:`ArgusWebPage` so console-message form-submit beacons
+        and createWindow popup intercepts route back to this owner.
+        """
         view = QWebEngineView()
-        page = QWebEnginePage(self.profile, view)
+        page = ArgusWebPage(profile, view)
+        page.set_owner(self)
         view.setPage(page)
         view.urlChanged.connect(lambda u, v=view: self._on_view_url_changed(v, u))
         view.titleChanged.connect(lambda t, v=view: self._on_view_title_changed(v, t))
         view.loadStarted.connect(lambda v=view: self._on_load_started(v))
         view.loadFinished.connect(lambda _ok, v=view: self._on_load_finished(v))
-        view.setUrl(QUrl(url))
-        self.tab_pages.append(view)
-        idx = self.pages_stack.addWidget(view)
-        self.tab_bar.add_tab(idx, "Loading…")
-        self._switch_to_tab(len(self.tab_pages) - 1)
+        return view
 
     def _on_tab_clicked(self, idx: int):
         if 0 <= idx < len(self.tab_pages):
@@ -915,6 +2561,8 @@ class ArgusBrowser(QMainWindow):
         if not (0 <= idx < len(self.tab_pages)):
             return
         view = self.tab_pages.pop(idx)
+        if 0 <= idx < len(self.tab_profiles):
+            self.tab_profiles.pop(idx)
         self.pages_stack.removeWidget(view)
         view.deleteLater()
         self.tab_bar.remove_tab(idx)
@@ -949,8 +2597,17 @@ class ArgusBrowser(QMainWindow):
 
     # ── Event handlers ────────────────────────────────────────
     def _on_view_url_changed(self, view: QWebEngineView, url: QUrl):
+        url_str = url.toString()
         if view is self._current_view():
-            self._sync_url_display(url.toString())
+            self._sync_url_display(url_str)
+            # Surveillance hook: log every navigation in the active tab.
+            if HAVE_SURVEILLANCE and url_str and not url_str.startswith("about:"):
+                try:
+                    surveil_log_event("navigation", {"url": url_str, "mode": self.current_mode})
+                except Exception:
+                    pass
+            # Auto-vault detection on navigation.
+            self._maybe_show_vault_banner(url_str)
 
     def _on_view_title_changed(self, view: QWebEngineView, title: str):
         try:
@@ -1073,10 +2730,94 @@ class ArgusBrowser(QMainWindow):
             self.dev_tools_container.setVisible(False)
 
     def _cycle_mode(self):
-        self.mode_idx = (self.mode_idx + 1) % len(MODES)
+        # Move forward through normal -> private -> vault -> normal …
+        next_idx = (self.mode_idx + 1) % len(MODES)
+        target_id = MODES[next_idx]["id"]
+        self._set_mode(target_id, source="cycle")
+
+    def _set_mode(self, target_id: str, source: str = "user"):
+        """Switch to ``target_id`` (one of normal/private/vault) with full
+        confirmation + 2FA gating + profile swap on the active tab.
+
+        ``source`` is recorded in surveillance for auditability.
+        """
+        old_id = self.current_mode
+        if old_id == target_id:
+            return
+
+        # ── Confirmation ─────────────────────────────────────
+        # Switching INTO vault is a privileged action — confirm + 2FA.
+        if target_id == "vault":
+            if not self._enter_vault_mode_gate():
+                # Aborted (2FA refused, arbiter blocked, etc.). Stay put.
+                return
+        elif target_id == "private":
+            ans = QMessageBox.question(
+                self, "Argus — mode Privé",
+                "Activer le mode Privé ?\n\n"
+                "Le tab actif sera rechargé dans un profil éphémère "
+                "(cookies + cache effacés à la fermeture).",
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        elif target_id == "normal" and old_id in ("private", "vault"):
+            # Going back to normal — informational confirm.
+            ans = QMessageBox.question(
+                self, "Argus — retour mode Normal",
+                "Retourner en mode Normal ?\n\n"
+                "Le tab actif sera rechargé dans le profil persistant.",
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        # ── Apply ────────────────────────────────────────────
+        self.current_mode = target_id
+        try:
+            self.mode_idx = next(i for i, m in enumerate(MODES) if m["id"] == target_id)
+        except StopIteration:
+            self.mode_idx = 0
+
+        # Surveillance audit trail.
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("mode_switch", {
+                    "from": old_id, "to": target_id, "source": source,
+                })
+            except Exception:
+                pass
+
+        # Recreate the active tab's view bound to the new profile so
+        # new requests use the right cookie jar / cache. Keep URL.
+        idx = self.pages_stack.currentIndex()
+        if 0 <= idx < len(self.tab_pages):
+            old_view = self.tab_pages[idx]
+            current_url = old_view.url().toString() or "about:blank"
+            new_profile = self._mode_profile_for(target_id, current_url=current_url)
+            new_view = self._create_view_for_profile(new_profile)
+            new_view.setUrl(QUrl(current_url))
+            # Swap into the stack at the same index.
+            self.pages_stack.removeWidget(old_view)
+            self.pages_stack.insertWidget(idx, new_view)
+            self.tab_pages[idx] = new_view
+            if 0 <= idx < len(self.tab_profiles):
+                self.tab_profiles[idx] = new_profile
+            else:
+                self.tab_profiles.append(new_profile)
+            old_view.deleteLater()
+            self.pages_stack.setCurrentIndex(idx)
+            self.tab_bar.set_active(idx)
+
         self._apply_mode()
+        self._set_live_feed_arbiter_decision(
+            "info", f"Mode → {target_id.upper()}", reason=f"source={source}"
+        )
 
     def _apply_mode(self):
+        """Apply visual chrome (button + window border + window icon) for current_mode.
+
+        Does NOT recreate tabs — that's done in _set_mode. Safe to call
+        from __init__ before any tabs exist.
+        """
         m = MODES[self.mode_idx]
         if hasattr(self, "mode_btn"):
             self.mode_btn.setText(f"{m['icon']}  {m['text']}")
@@ -1089,12 +2830,118 @@ class ArgusBrowser(QMainWindow):
         if idx >= 0:
             self.tab_bar.update_tab(idx, mode=m["id"])
 
+        # Mode-specific window icon — iris colour tracks active mode
+        # (blue Normal / deep-blue Privé / gold Coffre).
+        _icon_map = {
+            "normal":  "argus_normal.ico",
+            "private": "argus_private.ico",
+            "vault":   "argus_vault.ico",
+        }
+        _icon_file = (
+            Path(__file__).resolve().parent / "branding" / "argus"
+            / _icon_map.get(self.current_mode, "argus_normal.ico")
+        )
+        if _icon_file.exists():
+            self.setWindowIcon(QIcon(str(_icon_file)))
+
+    def _enter_vault_mode_gate(self) -> bool:
+        """Privileged-mode gate. Returns True if user passes all checks.
+
+        Sequence:
+            1. Show TOTP setup wizard if not already configured.
+            2. Run TOTP challenge.
+            3. Ask the arbiter to bless the action (advisory).
+        """
+        if HAVE_2FA:
+            try:
+                if not two_fa_is_setup():
+                    QMessageBox.information(
+                        self, "Argus — mode Coffre",
+                        "Le mode Coffre nécessite un second facteur (TOTP). "
+                        "On va d'abord configurer un nouveau secret.",
+                    )
+                    try:
+                        ok = bool(two_fa_setup_wizard(self))
+                    except Exception as e:
+                        QMessageBox.critical(self, "Argus — 2FA",
+                                             f"Échec configuration 2FA :\n{e}")
+                        return False
+                    if not ok:
+                        return False
+                try:
+                    challenge_ok = bool(two_fa_challenge(self))
+                except Exception as e:
+                    QMessageBox.critical(self, "Argus — 2FA",
+                                         f"Échec challenge 2FA :\n{e}")
+                    return False
+                if not challenge_ok:
+                    QMessageBox.warning(self, "Argus — 2FA",
+                                        "Code TOTP refusé. Mode Coffre annulé.")
+                    return False
+            except Exception:
+                # Defensive: if 2FA is broken, don't silently downgrade
+                # security. Refuse to enter vault mode.
+                QMessageBox.critical(self, "Argus — 2FA",
+                                     "Erreur 2FA imprévue. Mode Coffre annulé.")
+                return False
+        else:
+            # Module missing — surface a degraded warning but allow entry
+            # (the brief asks for graceful degradation).
+            QMessageBox.warning(
+                self, "Argus — 2FA indisponible",
+                "Le module argus_2fa est manquant. Le mode Coffre sera "
+                "activé sans second facteur.",
+            )
+
+        # Arbiter advisory check on vault entry.
+        if HAVE_ARBITER:
+            try:
+                view = self._current_view()
+                cur = view.url().toString() if view is not None else ""
+                decision = arbiter_decide("vault_mode_entry",
+                                           {"current_url": cur},
+                                           mode=self.current_mode)
+                if decision is not None and getattr(decision, "verdict", "allow") == "block":
+                    QMessageBox.critical(
+                        self, "Argus — bloqué",
+                        f"L'arbitre Argus a bloqué l'entrée Coffre :\n"
+                        f"{getattr(decision, 'reason', 'unspecified')}",
+                    )
+                    return False
+            except Exception:
+                # Best-effort: arbiter failure shouldn't block legitimate
+                # vault entry.
+                pass
+        return True
+
     # ── Settings dialog ───────────────────────────────────────
     def _open_settings(self):
+        # Dialog inherits the active app-wide theme; no per-widget stylesheet override.
         dlg = SettingsDialog(self.settings_mgr, self)
-        dlg.setStyleSheet(THEME_QSS)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._apply_display_settings()
+        # Either way, ensure the active theme is the persisted one
+        # (covers both Save and Cancel paths).
+        apply_theme(self.settings_mgr.get("theme") or DEFAULT_THEME)
+
+    # ── AI panel ──────────────────────────────────────────────
+    def _toggle_ai_panel(self):
+        if self.ai_panel.is_open:
+            self.ai_panel.collapse()
+        else:
+            self.ai_panel.expand()
+        # Reflect state in the dock button + persist preference.
+        self.ai_btn.setProperty("open", self.ai_panel.is_open)
+        self.ai_btn.style().unpolish(self.ai_btn)
+        self.ai_btn.style().polish(self.ai_btn)
+        self.settings_mgr.set("ai_panel_open", self.ai_panel.is_open)
+
+    def _current_page_info_for_ai(self) -> tuple[str, "QWebEngineView | None"]:
+        """Provide (url, view) for AIPanel context capture."""
+        view = self._current_view()
+        if view is None:
+            return ("", None)
+        return (view.url().toString(), view)
 
     def _apply_display_settings(self):
         s = self.settings_mgr
@@ -1152,6 +2999,437 @@ class ArgusBrowser(QMainWindow):
         except Exception as e:
             self.feed.push("bad", "NG", f"Échec lancement NetGuard: {e}", "FAIL", "")
 
+    # ── Profile builders / mode profile cache ─────────────────
+    def _configure_basic_profile(self, profile: QWebEngineProfile,
+                                 storage: str, cache: str,
+                                 cookie_policy: QWebEngineProfile.PersistentCookiesPolicy =
+                                 QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies):
+        """Plain configuration used when argus_sandbox is unavailable."""
+        Path(storage).mkdir(parents=True, exist_ok=True)
+        Path(cache).mkdir(parents=True, exist_ok=True)
+        profile.setPersistentStoragePath(storage)
+        profile.setCachePath(cache)
+        profile.setPersistentCookiesPolicy(cookie_policy)
+        s = profile.settings()
+        s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        s.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+
+    def _install_profile_scripts(self, profile: QWebEngineProfile):
+        """Inject form-submit interceptor + (optionally) anti-skimmer JS
+        into ``profile``. Idempotent — re-installing replaces by name."""
+        # Form-submit interceptor — always installed.
+        try:
+            scripts = profile.scripts()
+            existing = scripts.findScript("argus_form_intercept")
+            if not existing.isNull():
+                scripts.remove(existing)
+            s = QWebEngineScript()
+            s.setName("argus_form_intercept")
+            s.setSourceCode(FORM_SUBMIT_INTERCEPT_JS)
+            s.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+            s.setRunsOnSubFrames(True)
+            s.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            scripts.insert(s)
+        except Exception:
+            pass
+        # Anti-skimmer hardening from sandbox module (best-effort).
+        if HAVE_SANDBOX and install_anti_skimmer_script is not None:
+            try:
+                install_anti_skimmer_script(profile)
+            except Exception:
+                pass
+
+    def _wire_profile_downloads(self, profile: QWebEngineProfile):
+        """Connect the profile's downloadRequested signal exactly once.
+
+        Keeps a per-profile attribute ``_argus_dl_wired`` so we don't double-
+        connect when the same profile is re-handed to multiple tabs.
+        """
+        if getattr(profile, "_argus_dl_wired", False):
+            return
+        try:
+            profile.downloadRequested.connect(self._on_download_requested)
+            try:
+                setattr(profile, "_argus_dl_wired", True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _mode_profile_for(self, mode_id: str,
+                          current_url: str = "") -> QWebEngineProfile:
+        """Resolve (and lazily build) the profile for a given mode.
+
+        Vault profiles are scoped to the institution domain when possible
+        so cookies don't leak between banks; private profiles are off-the-
+        record (in-memory only).
+        """
+        # Normal is the persistent profile created in __init__.
+        if mode_id == "normal":
+            return self._mode_profiles["normal"]
+
+        # Private — one shared off-the-record profile is enough.
+        if mode_id == "private":
+            cached = self._mode_profiles.get("private")
+            if cached is not None:
+                return cached
+            if HAVE_SANDBOX and make_private_profile is not None:
+                try:
+                    p = make_private_profile()
+                    p.setParent(self)
+                except Exception:
+                    p = QWebEngineProfile(self)  # off-the-record (no name)
+            else:
+                p = QWebEngineProfile(self)  # off-the-record (no storage)
+            self._install_profile_scripts(p)
+            self._wire_profile_downloads(p)
+            self._mode_profiles["private"] = p
+            return p
+
+        # Vault — try to scope to the institution if we can detect one.
+        if mode_id == "vault":
+            allowed = self._domain_for_vault(current_url)
+            cache_key = f"vault::{allowed or '*'}"
+            cached = self._mode_profiles.get(cache_key)
+            if cached is not None:
+                return cached
+            if HAVE_SANDBOX and make_vault_profile is not None:
+                try:
+                    if allowed:
+                        try:
+                            p = make_vault_profile(allowed_domain=allowed)
+                        except TypeError:
+                            # Older sandbox signature without allowed_domain.
+                            p = make_vault_profile()
+                    else:
+                        p = make_vault_profile()
+                    p.setParent(self)
+                except Exception:
+                    p = QWebEngineProfile(self)
+            else:
+                # No sandbox — fall back to a fresh off-the-record profile so
+                # the user at least gets isolation from "normal" cookies.
+                p = QWebEngineProfile(self)
+            self._install_profile_scripts(p)
+            self._wire_profile_downloads(p)
+            self._mode_profiles[cache_key] = p
+            return p
+
+        # Unknown mode — return normal as a safe default.
+        return self._mode_profiles["normal"]
+
+    @staticmethod
+    def _domain_for_vault(url: str) -> str:
+        try:
+            host = urlparse(url).netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            # Take the eTLD+1 if obvious (banking domains rarely have
+            # multi-level public suffixes — keep it simple for V1).
+            return host or ""
+        except Exception:
+            return ""
+
+    # ── Vault auto-switch banner ──────────────────────────────
+    def _load_vault_always(self) -> set[str]:
+        if not VAULT_AUTO_SWITCH_FILE.exists():
+            return set()
+        try:
+            data = json.loads(VAULT_AUTO_SWITCH_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        if not isinstance(data, dict):
+            return set()
+        hosts = data.get("hosts")
+        if isinstance(hosts, list):
+            return {str(h).lower() for h in hosts if isinstance(h, str)}
+        return set()
+
+    def _save_vault_always(self):
+        try:
+            VAULT_AUTO_SWITCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            VAULT_AUTO_SWITCH_FILE.write_text(
+                json.dumps({"hosts": sorted(self._vault_always_hosts)},
+                           indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def _maybe_show_vault_banner(self, url_str: str):
+        if not url_str or self.current_mode == "vault":
+            self.vault_banner.hide()
+            return
+        if not HAVE_VAULT_DOMAINS:
+            return
+        try:
+            match = is_vault_domain(url_str)
+        except Exception:
+            match = None
+        if match is None:
+            self._banner_shown_host = ""
+            self.vault_banner.hide()
+            return
+        host = self._domain_for_vault(url_str)
+        # Auto-switch path (user previously clicked "Always" for this host).
+        if host and host in self._vault_always_hosts:
+            # Only auto-trigger once per host per nav.
+            if self._banner_shown_host != host:
+                self._banner_shown_host = host
+                # Defer one tick so the URL change finishes settling first.
+                QTimer.singleShot(0, lambda: self._set_mode("vault", source="auto"))
+            return
+        # Otherwise show the banner.
+        if self._banner_shown_host == host:
+            return
+        self._banner_shown_host = host
+        institution = getattr(match, "institution_name",
+                              getattr(match, "name", str(match)))
+        self.vault_banner.show_for(institution, host)
+
+    def _on_banner_switch(self, _institution: str):
+        self._set_mode("vault", source="banner")
+
+    def _on_banner_always(self, host: str):
+        if not host:
+            return
+        self._vault_always_hosts.add(host.lower())
+        self._save_vault_always()
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("vault_always_added", {"host": host.lower()})
+            except Exception:
+                pass
+        self._set_mode("vault", source="banner-always")
+
+    # ── Download sandbox ──────────────────────────────────────
+    def _on_download_requested(self, dl_request):
+        """Per-profile downloadRequested handler.
+
+        Routes the heuristic+arbiter decision through ``arbiter_decide_async``
+        and updates UI on the GUI thread by funnelling the callback through
+        QTimer.singleShot.
+        """
+        try:
+            # Filename / origin metadata for the heuristic.
+            try:
+                url = dl_request.url().toString()
+            except Exception:
+                url = ""
+            try:
+                filename = dl_request.downloadFileName() or ""
+            except Exception:
+                filename = ""
+            try:
+                origin_url = dl_request.page().url().toString()
+            except Exception:
+                origin_url = ""
+            ext = ""
+            if filename and "." in filename:
+                ext = "." + filename.rsplit(".", 1)[-1].lower()
+
+            ctx = {
+                "url": url, "filename": filename, "ext": ext,
+                "origin_url": origin_url, "mode": self.current_mode,
+            }
+        except Exception:
+            return
+
+        # Always log the download attempt to surveillance.
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("download", ctx)
+            except Exception:
+                pass
+
+        # If arbiter is unavailable, default-allow with a note in the feed.
+        if not HAVE_ARBITER:
+            self._handle_dl_decision_main(None, dl_request, ctx)
+            return
+
+        # Hand off to arbiter on a background thread.
+        def _cb(decision):
+            # Marshall to GUI thread.
+            QTimer.singleShot(0, lambda d=decision: self._handle_dl_decision_main(d, dl_request, ctx))
+        try:
+            arbiter_decide_async("download", ctx, _cb, mode=self.current_mode)
+        except Exception:
+            self._handle_dl_decision_main(None, dl_request, ctx)
+
+    def _handle_dl_decision_main(self, decision, dl_request, ctx: dict):
+        verdict = "allow"
+        reason = "no arbiter"
+        if decision is not None:
+            verdict = getattr(decision, "verdict", "allow") or "allow"
+            reason = getattr(decision, "reason", "") or ""
+
+        filename = ctx.get("filename") or "download.bin"
+        sandbox_path = self._sandbox_target_path(filename)
+
+        if verdict == "allow":
+            # Save into the sandbox folder by default — never user's Downloads.
+            try:
+                dl_request.setDownloadDirectory(str(DOWNLOADS_SANDBOX_DIR))
+                # PyQt6 also exposes setDownloadFileName on QWebEngineDownloadRequest.
+                try:
+                    dl_request.setDownloadFileName(sandbox_path.name)
+                except Exception:
+                    pass
+                dl_request.accept()
+            except Exception as e:
+                self._set_live_feed_arbiter_decision(
+                    "bad", f"Download failed: {e}", reason="dl-accept-failed",
+                )
+                return
+            self._set_live_feed_arbiter_decision(
+                "ok", f"Allowed: download {filename}", reason=reason or "ok",
+            )
+            return
+
+        if verdict == "warn":
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Argus — téléchargement risqué")
+            box.setText(
+                f"Argus signale un risque pour le téléchargement :\n\n"
+                f"  • Fichier : {filename}\n"
+                f"  • Source  : {ctx.get('origin_url', '')}\n\n"
+                f"Raison : {reason}"
+            )
+            cont = box.addButton("Continuer (sandbox)", QMessageBox.ButtonRole.AcceptRole)
+            cancel = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel)
+            box.exec()
+            if box.clickedButton() is cont:
+                try:
+                    dl_request.setDownloadDirectory(str(DOWNLOADS_SANDBOX_DIR))
+                    try:
+                        dl_request.setDownloadFileName(sandbox_path.name)
+                    except Exception:
+                        pass
+                    dl_request.accept()
+                except Exception:
+                    return
+                self._set_live_feed_arbiter_decision(
+                    "warn", f"User-overrode warn: {filename}", reason=reason,
+                )
+            else:
+                try:
+                    dl_request.cancel()
+                except Exception:
+                    pass
+                self._set_live_feed_arbiter_decision(
+                    "warn", f"Cancelled (warn): {filename}", reason=reason,
+                )
+            return
+
+        # block
+        try:
+            dl_request.cancel()
+        except Exception:
+            pass
+        QMessageBox.critical(
+            self, "Argus — téléchargement bloqué",
+            f"Argus a bloqué le téléchargement :\n\n"
+            f"  • Fichier : {filename}\n\n"
+            f"Raison : {reason}",
+        )
+        self._set_live_feed_arbiter_decision(
+            "bad", f"Blocked: download {filename}", reason=reason,
+        )
+
+    @staticmethod
+    def _sandbox_target_path(filename: str) -> Path:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe = "".join(c for c in filename if c.isalnum() or c in ("-", "_", ".")) or "download.bin"
+        return DOWNLOADS_SANDBOX_DIR / f"{ts}_{safe}"
+
+    # ── Print (Ctrl+P) ────────────────────────────────────────
+    def _print_current_page(self):
+        view = self._current_view()
+        if view is None:
+            return
+        printer = QPrinter()
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Argus — Imprimer")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        page = view.page()
+        try:
+            page.print(printer, lambda success: None)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Argus — impression",
+                f"Échec de l'impression :\n{e}",
+            )
+
+    # ── Form-submit JS bridge → Python ────────────────────────
+    def _on_form_submit_beacon(self, payload: str):
+        """Receive the JSON payload from FORM_SUBMIT_INTERCEPT_JS.
+
+        V1 scope: surveillance logging + arbiter advisory check (the
+        decision does NOT prevent the submit — JS already let the form
+        proceed by the time the console log fires). Future: replace the
+        passive console-log bridge with a synchronous QWebChannel that
+        can pause the submit pending arbiter verdict.
+        """
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        ctx = {
+            "action_url":   data.get("action_url", ""),
+            "method":       data.get("method", ""),
+            "fields_count": int(data.get("fields_count") or 0),
+            "has_password": bool(data.get("has_password")),
+            "has_cc":       bool(data.get("has_cc")),
+            "origin":       data.get("origin", ""),
+            "mode":         self.current_mode,
+        }
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("form_submit", ctx)
+            except Exception:
+                pass
+        # Advisory arbiter call — purely for the live feed.
+        if HAVE_ARBITER:
+            def _cb(decision):
+                if decision is None:
+                    return
+                verdict = getattr(decision, "verdict", "allow") or "allow"
+                reason = getattr(decision, "reason", "") or ""
+                kind = {"allow": "ok", "warn": "warn", "block": "bad"}.get(verdict, "info")
+                action = ctx.get("action_url", "")
+                short = action[:60] + "…" if len(action) > 60 else action
+                QTimer.singleShot(0, lambda: self._set_live_feed_arbiter_decision(
+                    kind, f"form_submit → {short}", reason=f"{verdict}: {reason}",
+                ))
+            try:
+                arbiter_decide_async("form_submit", ctx, _cb, mode=self.current_mode)
+            except Exception:
+                pass
+
+    # ── Live feed surveillance widget extension ──────────────
+    def _set_live_feed_arbiter_decision(self, kind: str, label: str,
+                                        reason: str = ""):
+        """Surface arbiter / surveillance highlights in the live feed.
+
+        ``kind`` ∈ {ok, warn, bad, info}. The existing LiveFeed.push API
+        is reused so the visual style stays consistent with HTTP rows.
+        """
+        if not hasattr(self, "feed"):
+            return
+        icon = {"ok": "✓", "warn": "⚠", "bad": "✗", "info": "ⓘ"}.get(kind, "·")
+        # Method column reused as a category tag for arbiter rows.
+        category = "GUARD"
+        line = f"{icon} {label}"
+        try:
+            self.feed.push(kind, category, line, reason or "—", "")
+        except Exception:
+            pass
+
     # ── Overlay positioning ───────────────────────────────────
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1163,12 +3441,52 @@ class ArgusBrowser(QMainWindow):
 
 
 def main():
+    # Windows: unique AppUserModelID so the taskbar groups Argus correctly
+    # and shows the .ico instead of falling back to the python.exe icon.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Argus.Cybersec.Workbench.1"
+            )
+        except Exception:
+            pass
+
     app = QApplication(sys.argv)
     app.setApplicationName("Argus")
+    app.setApplicationDisplayName("Argus — Cybersecurity Workbench")
     app.setOrganizationName("NetGuard")
     app.setStyle("Fusion")
+
+    # App-wide icon (taskbar / Alt-Tab / window title bar). Picked up by every
+    # window unless overridden. Mode-specific icon is set per-window in
+    # ArgusBrowser._apply_mode so it tracks the active mode live.
+    _argus_root = Path(__file__).resolve().parent
+    _argus_default_ico = _argus_root / "branding" / "argus" / "argus_normal.ico"
+    if _argus_default_ico.exists():
+        app.setWindowIcon(QIcon(str(_argus_default_ico)))
+
+    # Apply persisted theme as early as possible (before window construction)
+    # so any splash / dialog inherits the right palette from frame 1.
+    try:
+        prelim = SettingsManager(SETTINGS_FILE)
+        apply_theme(prelim.get("theme") or DEFAULT_THEME)
+    except Exception:
+        apply_theme(DEFAULT_THEME)
     win = ArgusBrowser()
     win.show()
+
+    # First-run onboarding — the dialog is responsible for calling
+    # mark_first_run_complete() when the user clicks Get Started.
+    if HAVE_ONBOARDING:
+        try:
+            if is_first_run():
+                # Show shortly after the main window paints so the dialog
+                # has somewhere to anchor + the user sees Argus' chrome.
+                QTimer.singleShot(150, lambda: show_first_run_dialog(parent=win))
+        except Exception:
+            pass
+
     sys.exit(app.exec())
 
 
