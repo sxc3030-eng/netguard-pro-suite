@@ -699,6 +699,20 @@ tr:hover td{background:var(--bg4)22}
           <div class="panel-resize"></div>
         </div>
 
+        <!-- Top Bandwidth (audit 2026-04-28) — qui mange ma bande passante + which app -->
+        <div class="grid-panel gs-4" data-panel="bandwidth" draggable="false">
+          <div class="panel-header">
+            <span class="panel-drag-handle">⠿</span>
+            <span class="panel-title">Top Bande passante</span>
+            <span style="font-size:10px;color:var(--text3)" id="dash-bw-total">— total</span>
+            <div class="panel-actions">
+              <button class="popout-btn" onclick="panelMinimize(this)" title="Réduire">─</button>
+            </div>
+          </div>
+          <div class="panel-body" id="dash-bandwidth-list" style="max-height:220px;overflow-y:auto"></div>
+          <div class="panel-resize"></div>
+        </div>
+
         <!-- Live IPs -->
         <div class="grid-panel gs-3" data-panel="liveips" draggable="false">
           <div class="panel-header">
@@ -933,6 +947,7 @@ tr:hover td{background:var(--bg4)22}
                 <th style="width:30px">#</th>
                 <th style="cursor:pointer" onclick="wsSortBy('t')">Time ⇅</th>
                 <th style="cursor:pointer" onclick="wsSortBy('src')">Source ⇅</th>
+                <th style="cursor:pointer" onclick="wsSortBy('process')" title="Local process owning this connection (psutil)">Process ⇅</th>
                 <th>Country</th>
                 <th style="cursor:pointer" onclick="wsSortBy('dst')">Destination ⇅</th>
                 <th>S.Port</th>
@@ -3296,6 +3311,7 @@ function renderPackets(pkts, tbodyId, limit) {
       <td style="color:var(--text3);font-size:10px">${i+1}</td>
       <td style="color:var(--text3)">${p.t||''}</td>
       <td class="${sc[p.status]||''}" style="cursor:pointer" onclick="event.stopPropagation();wsFilterIP('${p.src}')" title="Click to filter">${p.src||''}</td>
+      <td style="color:${p.process?'var(--purple)':'var(--text3)'};font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis" title="${p.process||'Unknown / external'}">${p.process||'—'}</td>
       <td style="color:var(--text3);font-size:10px">${p.location||p.country||''}</td>
       <td style="color:var(--text3)" onclick="event.stopPropagation();wsFilterIP('${p.dst}')" title="Click to filter">${p.dst||''}</td>
       <td style="color:var(--text3);font-size:10px">${p.sport||''}</td>
@@ -3306,7 +3322,7 @@ function renderPackets(pkts, tbodyId, limit) {
       <td class="${sc[p.status]||''}" style="font-size:10px">${sl[p.status]||''} ${p.status||''}</td>
       <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:10px">${p.reason||_wsInfoString(p)}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="12" class="empty-msg">No packets matching filter</td></tr>';
+  }).join('') || '<tr><td colspan="13" class="empty-msg">No packets matching filter</td></tr>';
 
   // Update stats bar
   const total = pkts.length;
