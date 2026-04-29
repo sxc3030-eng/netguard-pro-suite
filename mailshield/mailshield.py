@@ -455,7 +455,9 @@ class ContactBook:
 
     def add_contact(self, name, addr, phone="", company="", group="General", notes="", trusted=False):
         conn = self._conn()
-        color = f"#{hashlib.md5(addr.encode()).hexdigest()[:6]}"
+        # nosec B324 - MD5 used purely to derive a deterministic 6-char avatar tint
+        # from the email address. Not used for authentication or integrity.
+        color = f"#{hashlib.md5(addr.encode(), usedforsecurity=False).hexdigest()[:6]}"
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO contacts
@@ -1174,7 +1176,9 @@ class MailShieldEngine:
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
 
-                message_id = msg.get("Message-ID", f"<{hashlib.md5(raw[:500]).hexdigest()}>")
+                # nosec B324 - synthetic Message-ID fallback; MD5 used as
+                # non-cryptographic dedup key when the mail server omits the header.
+                message_id = msg.get("Message-ID", f"<{hashlib.md5(raw[:500], usedforsecurity=False).hexdigest()}>")
 
                 # Check if already in DB
                 existing = conn.execute("SELECT id FROM emails WHERE message_id = ?", (message_id,)).fetchone()

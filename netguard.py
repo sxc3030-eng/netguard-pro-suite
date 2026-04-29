@@ -2357,7 +2357,10 @@ def extract_ja3(raw_payload: bytes) -> str:
             "-".join(elliptic_curves),
             "-".join(ec_point_formats),
         ])
-        return hashlib.md5(ja3_str.encode()).hexdigest()
+        # nosec B324 - JA3 fingerprint is defined by the spec to use MD5
+        # (Salesforce JA3 standard). It is not a security primitive; it is
+        # an identifier used to match against KNOWN_BAD_JA3 lookup tables.
+        return hashlib.md5(ja3_str.encode(), usedforsecurity=False).hexdigest()
     except Exception:
         return ""
 

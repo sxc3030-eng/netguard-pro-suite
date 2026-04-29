@@ -694,32 +694,71 @@ def get_protocol_name(pkt) -> str:
         if pkt.haslayer(ARP):  return "ARP"
     return "OTHER"
 
+def _validate_ip_for_firewall(ip: str) -> Optional[str]:
+    """Return the validated IP string or None if it is not a real IPv4/IPv6 address.
+    Defends against shell-metacharacter injection by refusing anything that does
+    not parse as an IP through the standard library."""
+    try:
+        return str(ipaddress.ip_address(ip))
+    except (ValueError, TypeError):
+        log.error(f"[block_ip_os] Refused non-IP value: {ip!r}")
+        return None
+
+
 def block_ip_os(ip: str, reason: str):
     if ip in BLOCKED_IPS:
         return
-    BLOCKED_IPS.add(ip)
-    log.warning(f"[BLOCK] {ip} — {reason}")
+    safe_ip = _validate_ip_for_firewall(ip)
+    if safe_ip is None:
+        return
+    BLOCKED_IPS.add(safe_ip)
+    log.warning(f"[BLOCK] {safe_ip} — {reason}")
     if not CFG.can_block:
         return
+    import subprocess as _sp
     try:
         if IS_LINUX:
-            os.system(f"iptables -I INPUT -s {ip} -j DROP 2>/dev/null")
+            _sp.run(
+                ["iptables", "-I", "INPUT", "-s", safe_ip, "-j", "DROP"],
+                capture_output=True, timeout=10, check=False,
+            )
         elif IS_WINDOWS:
-            rule_name = f"NetGuard_Block_{ip.replace('.','_')}"
-            os.system(f'netsh advfirewall firewall add rule name="{rule_name}" dir=in action=block remoteip={ip} enable=yes')
+            rule_name = f"NetGuard_Block_{safe_ip.replace('.', '_').replace(':', '_')}"
+            _sp.run(
+                [
+                    "netsh", "advfirewall", "firewall", "add", "rule",
+                    f"name={rule_name}", "dir=in", "action=block",
+                    f"remoteip={safe_ip}", "enable=yes",
+                ],
+                capture_output=True, timeout=10, check=False,
+            )
     except Exception as e:
-        log.error(f"Erreur blocage OS pour {ip}: {e}")
+        log.error(f"Erreur blocage OS pour {safe_ip}: {e}")
+
 
 def unblock_ip_os(ip: str):
-    BLOCKED_IPS.discard(ip)
+    safe_ip = _validate_ip_for_firewall(ip)
+    if safe_ip is None:
+        return
+    BLOCKED_IPS.discard(safe_ip)
+    import subprocess as _sp
     try:
         if IS_LINUX:
-            os.system(f"iptables -D INPUT -s {ip} -j DROP 2>/dev/null")
+            _sp.run(
+                ["iptables", "-D", "INPUT", "-s", safe_ip, "-j", "DROP"],
+                capture_output=True, timeout=10, check=False,
+            )
         elif IS_WINDOWS:
-            rule_name = f"NetGuard_Block_{ip.replace('.','_')}"
-            os.system(f'netsh advfirewall firewall delete rule name="{rule_name}"')
+            rule_name = f"NetGuard_Block_{safe_ip.replace('.', '_').replace(':', '_')}"
+            _sp.run(
+                [
+                    "netsh", "advfirewall", "firewall", "delete", "rule",
+                    f"name={rule_name}",
+                ],
+                capture_output=True, timeout=10, check=False,
+            )
     except Exception as e:
-        log.error(f"Erreur déblocage OS pour {ip}: {e}")
+        log.error(f"Erreur déblocage OS pour {safe_ip}: {e}")
 
 def add_threat(src_ip: str, threat_type: str, description: str, severity: str, rule_key: str = None):
     country = get_country(src_ip) or ""
