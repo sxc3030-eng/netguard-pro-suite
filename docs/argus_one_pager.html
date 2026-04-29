@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Argus &mdash; Cybersecurity Workbench Browser</title>
+<style>
+  /* ---------- Reset + base ---------- */
+  *,
+  *::before,
+  *::after { box-sizing: border-box; }
+  html,
+  body { margin: 0; padding: 0; }
+  body {
+    background: #0a0e14;
+    color: #dcefff;
+    font-family: "Segoe UI", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.55;
+    font-size: 15px;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  a { color: #4d9fff; text-decoration: none; border-bottom: 1px dashed rgba(77, 159, 255, 0.4); }
+  a:hover { color: #9bd0ff; border-bottom-color: #9bd0ff; }
+
+  /* ---------- Layout shell ---------- */
+  .page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 56px 40px 80px;
+  }
+
+  /* ---------- Hero ---------- */
+  .hero {
+    text-align: center;
+    padding-bottom: 48px;
+    border-bottom: 1px solid rgba(77, 159, 255, 0.12);
+  }
+  .hero img.wordmark {
+    max-width: 560px;
+    width: 90%;
+    height: auto;
+    display: block;
+    margin: 0 auto 18px;
+    filter: drop-shadow(0 0 24px rgba(77, 159, 255, 0.18));
+  }
+  .hero .tagline {
+    font-size: 17px;
+    color: #6ef0ff;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin: 8px 0 4px;
+  }
+  .hero .tagline-fr {
+    font-size: 14px;
+    color: #b47dff;
+    letter-spacing: 2px;
+    margin-bottom: 24px;
+    font-style: italic;
+  }
+  .hero .lead {
+    max-width: 780px;
+    margin: 0 auto;
+    font-size: 16px;
+    color: #c2d4e8;
+  }
+  .hero .lead strong { color: #d4af37; }
+
+  /* ---------- Section common ---------- */
+  section { padding: 56px 0; border-bottom: 1px solid rgba(77, 159, 255, 0.08); }
+  section:last-of-type { border-bottom: none; }
+  .section-title {
+    font-size: 22px;
+    margin: 0 0 6px;
+    color: #dcefff;
+    letter-spacing: 1px;
+  }
+  .section-eyebrow {
+    color: #d4af37;
+    font-size: 11px;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .section-sub {
+    color: #8a9bb0;
+    margin: 0 0 28px;
+    font-size: 14px;
+  }
+
+  /* ---------- 3-pillar columns ---------- */
+  .pillars {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 22px;
+  }
+  .pillar {
+    background: linear-gradient(180deg, rgba(77, 159, 255, 0.06) 0%, rgba(10, 14, 20, 0) 100%);
+    border: 1px solid rgba(77, 159, 255, 0.14);
+    border-radius: 6px;
+    padding: 22px 20px;
+    position: relative;
+  }
+  .pillar .icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 14px;
+    font-weight: 700;
+    font-size: 18px;
+    color: #0a0e14;
+    background: linear-gradient(135deg, #4d9fff 0%, #b47dff 100%);
+  }
+  .pillar.gold .icon { background: linear-gradient(135deg, #d4af37 0%, #f1d27a 100%); }
+  .pillar.mint .icon { background: linear-gradient(135deg, #3dffb4 0%, #6ef0ff 100%); }
+  .pillar h3 {
+    margin: 0 0 6px;
+    font-size: 17px;
+    color: #dcefff;
+    letter-spacing: 0.5px;
+  }
+  .pillar .module {
+    font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+    font-size: 12px;
+    color: #6ef0ff;
+    margin-bottom: 10px;
+    letter-spacing: 0.5px;
+  }
+  .pillar p { margin: 0; color: #b8c8dc; font-size: 13.5px; }
+
+  /* ---------- Pricing ---------- */
+  .pricing {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 22px;
+  }
+  .tier {
+    background: #0e131c;
+    border: 1px solid rgba(77, 159, 255, 0.16);
+    border-radius: 6px;
+    padding: 26px 22px;
+    display: flex;
+    flex-direction: column;
+  }
+  .tier.featured {
+    border-color: rgba(212, 175, 55, 0.4);
+    background: linear-gradient(180deg, rgba(212, 175, 55, 0.08) 0%, rgba(14, 19, 28, 1) 60%);
+    position: relative;
+  }
+  .tier.featured::before {
+    content: "POPULAR";
+    position: absolute;
+    top: -10px;
+    right: 16px;
+    background: #d4af37;
+    color: #0a0e14;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    padding: 3px 10px;
+    border-radius: 3px;
+  }
+  .tier .tier-name {
+    font-size: 14px;
+    color: #6ef0ff;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .tier .tier-price {
+    font-size: 28px;
+    font-weight: 700;
+    color: #dcefff;
+    margin-bottom: 4px;
+  }
+  .tier .tier-price small {
+    font-size: 13px;
+    color: #8a9bb0;
+    font-weight: 400;
+  }
+  .tier .tier-price-sub {
+    color: #8a9bb0;
+    font-size: 12px;
+    margin-bottom: 18px;
+  }
+  .tier ul {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 18px;
+    flex-grow: 1;
+  }
+  .tier ul li {
+    padding: 6px 0 6px 22px;
+    position: relative;
+    font-size: 13.5px;
+    color: #c2d4e8;
+    border-bottom: 1px dashed rgba(77, 159, 255, 0.06);
+  }
+  .tier ul li:last-child { border-bottom: none; }
+  .tier ul li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 11px;
+    width: 12px;
+    height: 6px;
+    border-left: 2px solid #3dffb4;
+    border-bottom: 2px solid #3dffb4;
+    transform: rotate(-45deg);
+  }
+  .tier ul li.muted { color: #6a7c92; }
+  .tier ul li.muted::before {
+    border-color: #6a7c92;
+    opacity: 0.5;
+  }
+
+  /* ---------- Why Argus ---------- */
+  .why {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 22px;
+  }
+  .why-card {
+    border-left: 3px solid #d4af37;
+    padding: 6px 0 6px 18px;
+  }
+  .why-card h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    color: #d4af37;
+    letter-spacing: 0.5px;
+  }
+  .why-card p { margin: 0; color: #b8c8dc; font-size: 13.5px; }
+
+  /* ---------- Tech badges ---------- */
+  .badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    justify-content: center;
+  }
+  .badge {
+    background: rgba(77, 159, 255, 0.08);
+    border: 1px solid rgba(77, 159, 255, 0.22);
+    color: #9bd0ff;
+    padding: 6px 14px;
+    border-radius: 3px;
+    font-size: 12px;
+    letter-spacing: 1px;
+    font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  }
+  .badge.gold { background: rgba(212, 175, 55, 0.08); border-color: rgba(212, 175, 55, 0.3); color: #d4af37; }
+  .badge.mint { background: rgba(61, 255, 180, 0.08); border-color: rgba(61, 255, 180, 0.3); color: #3dffb4; }
+
+  /* ---------- Footer ---------- */
+  footer {
+    text-align: center;
+    color: #6a7c92;
+    font-size: 12px;
+    padding: 40px 0 0;
+    letter-spacing: 0.5px;
+  }
+  footer p { margin: 4px 0; }
+  footer a { color: #6ef0ff; }
+
+  /* ---------- Print ---------- */
+  @media print {
+    body { background: #fff; color: #1a2030; }
+    .page { padding: 24px; }
+    .pillar,
+    .tier,
+    .why-card { box-shadow: none; border-color: #ccd6e4; }
+    .hero img.wordmark { filter: none; }
+    section { padding: 24px 0; border-bottom-color: #e5edf6; }
+    .badge { background: #f4f7fb; border-color: #d8e1ee; color: #1a2030; }
+    a { color: #1e40af; }
+  }
+  @media (max-width: 760px) {
+    .pillars,
+    .pricing,
+    .why { grid-template-columns: 1fr; }
+    .page { padding: 32px 22px 56px; }
+  }
+</style>
+</head>
+<body>
+  <main class="page">
+
+    <!-- ============ HERO ============ -->
+    <header class="hero">
+      <img class="wordmark" src="../branding/argus/argus_wordmark.png" alt="Argus wordmark" />
+      <div class="tagline">Sees everything &middot; absolutely everything</div>
+      <div class="tagline-fr">Voit tout, absolument tout.</div>
+      <p class="lead">
+        Argus is a privacy-first, sandbox-first, surveillance-first browser
+        for cybersecurity professionals and power users. Real Chromium engine,
+        <strong>tamper-evident audit trail</strong>, BYOK AI arbiter, and a
+        future-proof plug-port for autonomous agents. Open-source under
+        <strong>GPL v3</strong>.
+      </p>
+    </header>
+
+    <!-- ============ THREE PILLARS ============ -->
+    <section>
+      <div class="section-eyebrow">Architecture</div>
+      <h2 class="section-title">Three pillars, one workbench.</h2>
+      <p class="section-sub">Each layer is independent. Disable any one of them and the rest still does its job.</p>
+
+      <div class="pillars">
+        <div class="pillar">
+          <div class="icon">S</div>
+          <h3>Sandbox</h3>
+          <div class="module">argus_sandbox</div>
+          <p>Per-mode profile directories, scoped cookies and storage, and
+             zero shared state between Normal, Priv&eacute;, and Coffre. The
+             cage is structural, not cosmetic.</p>
+        </div>
+        <div class="pillar mint">
+          <div class="icon">V</div>
+          <h3>Surveillance</h3>
+          <div class="module">argus_surveillance</div>
+          <p>HMAC-SHA256 chain over every browsing event. Tamper-evident
+             JSONL log, replay-resistant timestamps, chain-verify CLI. You
+             can audit yesterday.</p>
+        </div>
+        <div class="pillar gold">
+          <div class="icon">A</div>
+          <h3>Arbitrage</h3>
+          <div class="module">argus_arbiter</div>
+          <p>BYOK AI in the loop &mdash; Claude, GPT, Gemini, or local
+             Ollama. Verdicts (allow / warn / block) and confidence are
+             written to the audit chain alongside the request that
+             triggered them.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ PRICING ============ -->
+    <section>
+      <div class="section-eyebrow">Pricing</div>
+      <h2 class="section-title">Free to start. Pay when you scale.</h2>
+      <p class="section-sub">All pricing below is a placeholder for V1 launch &mdash; final amounts pending market validation.</p>
+
+      <div class="pricing">
+
+        <div class="tier">
+          <div class="tier-name">Free</div>
+          <div class="tier-price">$0</div>
+          <div class="tier-price-sub">forever, GPL v3</div>
+          <ul>
+            <li>Mode Normal + Priv&eacute;</li>
+            <li>BYOK Claude / OpenAI / Gemini</li>
+            <li>Surveillance HMAC chain</li>
+            <li>Mythos bus + tool gateway</li>
+            <li>In-process vault (AES-256-GCM)</li>
+            <li>GitHub community support</li>
+            <li class="muted">Mode Coffre (cosmetic only)</li>
+            <li class="muted">No SLA, no priority response</li>
+          </ul>
+        </div>
+
+        <div class="tier featured">
+          <div class="tier-name">Pro</div>
+          <div class="tier-price">$9&ndash;15<small> /mo</small></div>
+          <div class="tier-price-sub">individual professional</div>
+          <ul>
+            <li>Everything in Free</li>
+            <li>Mode Coffre with real isolation (V3)</li>
+            <li>AI session summary &amp; report</li>
+            <li>Forensic export (JSONL + signed PDF)</li>
+            <li>Vault gateway with binary whitelist</li>
+            <li>Priority bug response (72h SLA)</li>
+            <li>Early access to V2/V3 features</li>
+            <li>One commercial seat</li>
+          </ul>
+        </div>
+
+        <div class="tier">
+          <div class="tier-name">Enterprise</div>
+          <div class="tier-price">Custom</div>
+          <div class="tier-price-sub">teams &amp; regulated industries</div>
+          <ul>
+            <li>Everything in Pro</li>
+            <li>SAML / SSO integration</li>
+            <li>Central whitelist management</li>
+            <li>SIEM forwarding (Splunk, ELK, Sentinel)</li>
+            <li>Custom audit retention policy</li>
+            <li>Dedicated channel + named SLA</li>
+            <li>On-premise deployment guidance</li>
+            <li>Compliance attestations (on request)</li>
+          </ul>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============ WHY ARGUS ============ -->
+    <section>
+      <div class="section-eyebrow">Differentiators</div>
+      <h2 class="section-title">Why Argus.</h2>
+      <p class="section-sub">Four things you will not find together in any other browser today.</p>
+
+      <div class="why">
+        <div class="why-card">
+          <h4>Cyber-forensic by default</h4>
+          <p>Every browsing event lands in an HMAC-anchored chain you can
+             verify offline. Most browsers log nothing. Forensic browsers
+             cost five figures and lock you in.</p>
+        </div>
+        <div class="why-card">
+          <h4>AI-native, BYOK</h4>
+          <p>The arbiter is not a SaaS &mdash; you provide the key, you own
+             the prompt, your traffic never crosses our servers. Local
+             Ollama is a first-class option.</p>
+        </div>
+        <div class="why-card">
+          <h4>Vault Mode for banking</h4>
+          <p>Mode Coffre will (V3) enforce a domain whitelist, hardened
+             ciphers, and a per-form keystroke fence. The plumbing is
+             already in place; the policy ships next.</p>
+        </div>
+        <div class="why-card">
+          <h4>GPL v3 transparency</h4>
+          <p>Source on GitHub, including the cryptography choices,
+             threat model, and open gaps. No closed binaries shadowing
+             security claims you cannot inspect.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TECH STACK ============ -->
+    <section>
+      <div class="section-eyebrow">Tech stack</div>
+      <h2 class="section-title">Built on solid foundations.</h2>
+      <p class="section-sub">Conservative, vetted dependencies. No homegrown crypto.</p>
+
+      <div class="badges">
+        <span class="badge">Python 3.11+</span>
+        <span class="badge">PyQt6</span>
+        <span class="badge">QtWebEngine / Chromium</span>
+        <span class="badge mint">AES-256-GCM</span>
+        <span class="badge mint">HMAC-SHA256</span>
+        <span class="badge mint">DPAPI / PBKDF2</span>
+        <span class="badge">WebSocket Bus</span>
+        <span class="badge">REST Tool Gateway</span>
+        <span class="badge gold">GPL v3</span>
+      </div>
+    </section>
+
+    <!-- ============ FOOTER ============ -->
+    <footer>
+      <p>
+        <a href="https://github.com/sxc3030-eng/netguard-pro-suite">github.com/sxc3030-eng/netguard-pro-suite</a>
+        &nbsp;&middot;&nbsp; GPL v3.0 &nbsp;&middot;&nbsp; contact: TBD
+      </p>
+      <p>Copyright &copy; 2026 NetGuard Pro Suite contributors. Argus is part of the NetGuard suite.</p>
+    </footer>
+
+  </main>
+</body>
+</html>
