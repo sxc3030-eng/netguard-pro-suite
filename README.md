@@ -156,6 +156,64 @@ Ce projet est sous licence **GNU General Public License v3.0** — voir [LICENSE
 
 ---
 
+## 🦉 Argus Browser
+
+<!-- TODO: insert branding/argus/argus_wordmark.png once logo agent finishes -->
+
+**Argus** is the cybersecurity-focused browser bundled with the suite — a real Chromium engine (PyQt6 + QtWebEngine) wrapped with a top live-network feed, multi-tab dock, mode badges (Normal / Privé / Coffre), persistent sessions, and a one-click NetGuard launcher. Ship together with NetGuard for a self-contained workbench.
+
+```bash
+python argus_pyqt.py
+# or on Windows:
+LANCER_ARGUS_2.bat
+```
+
+> ⚠️ The Mode Privé / Coffre badges are **cosmetic in V1** — they change the window border colour but do not yet enforce stricter isolation. Real per-mode hardening lands in V3. See [SECURITY.md](SECURITY.md) for the honest breakdown.
+
+---
+
+## 🔑 Setup — providing secrets
+
+The suite reads secrets (Anthropic / OpenAI / Gemini API keys, threat-intel tokens, etc.) from three sources, in priority order:
+
+1. **Argus Vault UI** — encrypted at rest with AES-256-GCM + DPAPI / PBKDF2. Open Argus → Settings → API Keys.
+2. **`.env` file** at repo root — see `.env.example` for the variable names. Never commit `.env`; it is in `.gitignore`.
+3. **Operating system environment variables** — set `ANTHROPIC_API_KEY=...` etc. in your shell profile.
+
+A missing secret degrades the dependent feature gracefully (e.g. AI side panel disabled) rather than crashing the suite.
+
+---
+
+## 🛡️ Trust model
+
+We are explicit about which features are real security boundaries and which are still work-in-progress. Read [SECURITY.md](SECURITY.md) for the full threat model, including:
+
+- What we **do** protect against (encrypted vault, rate limiting, FIM HMAC chain, OS-level auto-block).
+- What we **do not** protect against yet (cosmetic browsing modes, no download sandbox, no certificate pinning).
+- Cryptography choices and their parameters.
+- How to report vulnerabilities (private GitHub Security Advisory).
+
+---
+
+## 🤝 Contributing — full guide
+
+Beyond the quick fork-and-PR loop above, see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+- Development environment setup.
+- Branch naming conventions (`feature/`, `fix/`, `docs/`, `security/`).
+- The pre-PR checklist (tests, no secrets, GPL v3 headers, type hints).
+- The DCO sign-off requirement (`git commit -s`).
+
+---
+
+## 📊 Build status
+
+![Tests](https://img.shields.io/github/actions/workflow/status/sxc3030-eng/netguard-pro-suite/tests.yml?label=Tests&style=flat-square)
+![Security](https://img.shields.io/github/actions/workflow/status/sxc3030-eng/netguard-pro-suite/security.yml?label=Security&style=flat-square)
+![License](https://img.shields.io/badge/License-GPL%20v3-green?style=flat-square)
+
+---
+
 <div align="center">
   Fait avec ❤️ par <a href="https://github.com/sxc3030-eng">sxc3030-eng</a>
 </div>

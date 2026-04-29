@@ -1,0 +1,23 @@
+# NetGuard / Argus / GeniA / Vinom suite — runtime requirements.
+# Pinned with `>=` only; concrete versions resolved at install time.
+
+# Core network engine
+scapy>=2.5.0
+websockets>=12.0
+
+# Crypto (vault, backups, license manager)
+cryptography>=42.0.0
+
+# Argus PyQt browser
+PyQt6>=6.6.0
+PyQt6-WebEngine>=6.6.0
+
+# Branding / icon generators
+pillow>=10.0.0
+numpy>=1.24.0
+
+# HTTP / API clients
+requests>=2.31.0
+
+# Windows-only — installed by the CI matrix conditionally
+pywin32>=306; sys_platform == "win32"

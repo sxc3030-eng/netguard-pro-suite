@@ -1,0 +1,16 @@
+# Dev-only dependencies for the NetGuard / Argus suite.
+#
+# These are NOT required at runtime — they cover testing, linting,
+# security scanning, and Qt-aware test fixtures. Install with:
+#     pip install -r requirements-dev.txt
+#
+# Production runtime deps live in requirements.txt at the repo root.
+
+# Test framework + helpers
+pytest>=7.4
+pytest-mock>=3.12
+pytest-qt>=4.2  # only needed when running the PyQt6 GUI tests
+
+# Security scanners
+bandit>=1.7      # static analysis for common Python security issues
+pip-audit>=2.6   # CVE check against the installed dependency set
