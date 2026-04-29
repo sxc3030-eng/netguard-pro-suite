@@ -83,3 +83,5 @@ geoip/GeoLite2-*.mmdb
 # License signing keys (NEVER commit the private key)
 tools/keys/
 *.priv
+argus_data/
+argus_cache/
