@@ -41,7 +41,27 @@ FLUSH_WAIT = 0.3
 
 @pytest.fixture(autouse=True)
 def _isolated_root(tmp_path, monkeypatch):
-    """Redirect storage and reset module state per test."""
+    """Redirect storage and reset module state per test.
+
+    Ordering note (load-bearing): we MUST tear down any pre-existing writer
+    thread *before* redirecting ``ARGUS_SURVEILLANCE_ROOT``. Otherwise, a
+    writer that was started by an earlier test (e.g. an indirect
+    ``surveil_log_event`` call from ``argus_arbiter`` / ``argus_mythos_gateway``
+    test files that don't opt into this fixture) will flush its pending
+    events into our brand-new ``tmp_path`` during shutdown — creating
+    ``tmp_path/surveillance/`` and contaminating exports before the test
+    body even runs.
+    """
+    # 1. Drain any leaked writer first, while env vars still point wherever
+    #    they were. This forces stale flushes to land in the OLD location
+    #    (typically the repo's argus_data/) rather than our tmp_path.
+    if argus_surveillance._STATE.initialized:
+        argus_surveillance._shutdown()
+    # Hard reset of module state so no stale key / queue / last_hash
+    # bleeds into the next test.
+    argus_surveillance._STATE = argus_surveillance._State()
+
+    # 2. Now redirect storage to tmp_path for this test only.
     monkeypatch.setenv("ARGUS_SURVEILLANCE_ROOT", str(tmp_path))
     # Vault path also redirected so vault_get/vault_set lands in tmp.
     monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
@@ -51,18 +71,14 @@ def _isolated_root(tmp_path, monkeypatch):
         argus_surveillance, "FLUSH_INTERVAL_SECONDS", 0.1, raising=True
     )
 
-    # Force fresh module-level state. We can't simply reload because
-    # atexit handlers from previous reloads stay registered; instead,
-    # rebuild the _State container in place.
+    yield tmp_path
+
+    # 3. Tear down the writer thread before the next test redirects paths.
+    #    We do this with the env var still pointing at tmp_path so the
+    #    final flush lands here (and gets cleaned up with tmp_path).
     if argus_surveillance._STATE.initialized:
         argus_surveillance._shutdown()
     argus_surveillance._STATE = argus_surveillance._State()
-
-    yield tmp_path
-
-    # Tear down the writer thread before the next test redirects paths.
-    if argus_surveillance._STATE.initialized:
-        argus_surveillance._shutdown()
 
 
 def _wait_for_flush(extra: float = 0.0) -> None:

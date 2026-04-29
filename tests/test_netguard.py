@@ -350,7 +350,18 @@ class TestTraceroute:
 
     def test_traceroute_returns_hop_list(self, monkeypatch):
         """When scapy.sr returns a fake answer, _traceroute must shape
-        it into ``{ok: True, target, hops: [...]}``."""
+        it into ``{ok: True, target, hops: [...]}``.
+
+        Hermeticity note: ``_traceroute`` does ``from scapy.all import sr,
+        IP, ICMP`` at call time. Because conftest installs MagicMock objects
+        in ``sys.modules`` for the entire scapy namespace, that inner import
+        resolves through ``sys.modules['scapy.all']`` — so we patch ``sr``
+        directly on that object (NOT on ``import scapy.all as _scapy_all``,
+        which under the MagicMock parent resolves to a *different* auto-attr
+        than ``sys.modules['scapy.all']``). Patching the wrong object means
+        the inner import sees the MagicMock-default ``sr``, which returns a
+        MagicMock that fails the ``ans, unans = sr(...)`` unpack.
+        """
         if not netguard.HAS_SCAPY:
             pytest.skip("scapy not installed in this environment")
 
@@ -371,16 +382,24 @@ class TestTraceroute:
                 self.time = 1.05
 
         def fake_sr(probes, timeout=3, verbose=0):
+            # Deterministic 1-hop trace: the target answers on TTL 1.
+            # ``_traceroute`` truncates after the first ``is_target`` match.
             ans = [(_FakeSent(1), _FakeRecv(target))]
-            return ans, []
+            unans = []
+            return ans, unans
 
-        # Patch in scapy.all so the inner ``from scapy.all import sr`` resolves to ours.
-        import scapy.all as _scapy_all
-        monkeypatch.setattr(_scapy_all, "sr", fake_sr, raising=False)
+        # Patch ``sr`` on ``sys.modules['scapy.all']`` directly. The inner
+        # ``from scapy.all import sr`` inside ``_traceroute`` resolves
+        # ``getattr(sys.modules['scapy.all'], 'sr')`` — so this is the
+        # attribute that actually matters.
+        import sys as _sys
+        scapy_all_mod = _sys.modules["scapy.all"]
+        monkeypatch.setattr(scapy_all_mod, "sr", fake_sr, raising=False)
 
-        # Avoid hitting the geo-lookup chain.
-        monkeypatch.setattr(netguard, "_fetch_city_async", lambda ip: None,
-                            raising=False)
+        # Avoid hitting the geo-lookup chain (which would try real I/O).
+        monkeypatch.setattr(
+            netguard, "_fetch_city_async", lambda ip: None, raising=False
+        )
 
         result = netguard._traceroute(target, max_hops=5)
         assert result["ok"] is True
