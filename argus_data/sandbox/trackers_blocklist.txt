@@ -1,0 +1,261 @@
+# Argus tracker blocklist — seed file (V1)
+#
+# Copyright (C) 2026 NetGuard Pro Suite contributors
+# Licensed under GNU General Public License v3 or later.
+# This file is shipped with Argus as the default tracker blocklist.
+#
+# Source attribution
+# ------------------
+# Hand-curated by the Argus authors from publicly-known tracker /
+# advertising / analytics domains. NO content was copied from a
+# copyrighted blocklist (uBlock Origin, EasyList, Disconnect.me).
+# Selection is based on common knowledge of the ad-tech ecosystem
+# (DSPs, SSPs, fingerprinters, session replay vendors). Each entry is
+# a registrable domain or a well-known tracker subdomain.
+#
+# Format
+# ------
+# - One domain per line (no protocol, no path).
+# - Lines starting with # are comments.
+# - Blank lines are ignored.
+# - Matching is suffix-based: "doubleclick.net" matches
+#   "stats.g.doubleclick.net".
+#
+# Maintenance
+# -----------
+# To update: append a domain on its own line. Keep grouped by category
+# for readability. Run `python -c "import argus_sandbox; \
+#   print(len(argus_sandbox.get_tracker_blocklist()))"` to verify.
+
+# ─────────────────────────────────────────────────────────────────
+# Google ad / analytics infrastructure
+# ─────────────────────────────────────────────────────────────────
+doubleclick.net
+googletagmanager.com
+googletagservices.com
+googleadservices.com
+googlesyndication.com
+google-analytics.com
+googleanalytics.com
+g.doubleclick.net
+stats.g.doubleclick.net
+adservice.google.com
+adservice.google.ca
+adservice.google.co.uk
+adservice.google.fr
+googleoptimize.com
+ampproject.org
+
+# ─────────────────────────────────────────────────────────────────
+# Facebook / Meta tracking (pixels, social plugins)
+# ─────────────────────────────────────────────────────────────────
+connect.facebook.net
+connect.facebook.com
+www.facebook.com/tr
+graph.facebook.com/v17.0/track
+analytics.facebook.com
+business.facebook.com/tr
+pixel.facebook.com
+fbcdn-creative-a.akamaihd.net
+
+# ─────────────────────────────────────────────────────────────────
+# Twitter / X tracking
+# ─────────────────────────────────────────────────────────────────
+analytics.twitter.com
+ads-twitter.com
+ads-api.twitter.com
+static.ads-twitter.com
+t.co
+
+# ─────────────────────────────────────────────────────────────────
+# LinkedIn / Microsoft / Bing trackers
+# ─────────────────────────────────────────────────────────────────
+px.ads.linkedin.com
+analytics.linkedin.com
+bat.bing.com
+clarity.ms
+c.bing.com
+
+# ─────────────────────────────────────────────────────────────────
+# TikTok
+# ─────────────────────────────────────────────────────────────────
+analytics.tiktok.com
+business-api.tiktok.com
+ads.tiktok.com
+
+# ─────────────────────────────────────────────────────────────────
+# Pinterest / Reddit / Snap
+# ─────────────────────────────────────────────────────────────────
+ct.pinterest.com
+analytics.pinterest.com
+events.redditmedia.com
+sc-static.net
+tr.snapchat.com
+
+# ─────────────────────────────────────────────────────────────────
+# Programmatic ad exchanges / DSPs / SSPs
+# ─────────────────────────────────────────────────────────────────
+adnxs.com
+adnxs-simple.com
+criteo.com
+criteo.net
+casalemedia.com
+rubiconproject.com
+pubmatic.com
+openx.net
+openx.com
+indexww.com
+spotxchange.com
+adform.com
+adform.net
+yieldmo.com
+sharethrough.com
+33across.com
+turn.com
+mediamath.com
+tribalfusion.com
+exelator.com
+
+# ─────────────────────────────────────────────────────────────────
+# Content recommendation / native ads
+# ─────────────────────────────────────────────────────────────────
+taboola.com
+trc.taboola.com
+outbrain.com
+revcontent.com
+mgid.com
+zergnet.com
+
+# ─────────────────────────────────────────────────────────────────
+# Audience measurement / panel
+# ─────────────────────────────────────────────────────────────────
+scorecardresearch.com
+quantserve.com
+quantcast.com
+nielsen.com
+imrworldwide.com
+comscore.com
+chartbeat.com
+chartbeat.net
+parsely.com
+
+# ─────────────────────────────────────────────────────────────────
+# Session replay / heatmaps / behavior recording
+# ─────────────────────────────────────────────────────────────────
+hotjar.com
+fullstory.com
+fullstory.net
+crazyegg.com
+mouseflow.com
+luckyorange.com
+inspectlet.com
+clicktale.com
+clicktale.net
+sessioncam.com
+smartlook.com
+contentsquare.net
+decibelinsight.net
+
+# ─────────────────────────────────────────────────────────────────
+# Marketing automation / customer data platforms
+# ─────────────────────────────────────────────────────────────────
+mxpnl.com
+mixpanel.com
+segment.com
+segment.io
+api.segment.io
+amplitude.com
+api.amplitude.com
+heap.io
+heapanalytics.com
+cdn.heapanalytics.com
+intercom.io
+intercom.com
+api.intercom.io
+braze.com
+mparticle.com
+api.mparticle.com
+tealiumiq.com
+adobedtm.com
+demdex.net
+omtrdc.net
+2o7.net
+sc.omtrdc.net
+
+# ─────────────────────────────────────────────────────────────────
+# A/B testing / personalization
+# ─────────────────────────────────────────────────────────────────
+optimizely.com
+cdn.optimizely.com
+visualwebsiteoptimizer.com
+dev.visualwebsiteoptimizer.com
+abtasty.com
+splitsignal.com
+
+# ─────────────────────────────────────────────────────────────────
+# Email / CRM / web tracking pixels
+# ─────────────────────────────────────────────────────────────────
+mc.yandex.ru
+mc.yandex.com
+top-fwz1.mail.ru
+hubspot.com
+js.hs-scripts.com
+js.hsforms.net
+track.hubspot.com
+forms.hubspot.com
+hsforms.com
+marketo.com
+mktoresp.com
+pardot.com
+salesforceliveagent.com
+braintreegateway.com
+exacttarget.com
+
+# ─────────────────────────────────────────────────────────────────
+# Fingerprinting / anti-fraud (some legitimate, but tracker-grade)
+# ─────────────────────────────────────────────────────────────────
+fingerprintjs.com
+fpjs.io
+mathtag.com
+agkn.com
+bidswitch.net
+
+# ─────────────────────────────────────────────────────────────────
+# CDN-based ad delivery (only the ad subdomains, not the CDN root)
+# ─────────────────────────────────────────────────────────────────
+ads.yahoo.com
+analytics.yahoo.com
+sp.analytics.yahoo.com
+b.scorecardresearch.com
+ads.adsymptotic.com
+ads.linkedin.com
+ad.atdmt.com
+log.outbrain.com
+
+# ─────────────────────────────────────────────────────────────────
+# Misc tracking / spam telemetry
+# ─────────────────────────────────────────────────────────────────
+cxense.com
+cxpublic.com
+vidible.tv
+yieldlab.net
+adition.com
+zedo.com
+sitemeter.com
+statcounter.com
+histats.com
+freelogs.com
+freelancecounter.com
+clicky.com
+extremetracking.com
+ip-track.net
+
+# ─────────────────────────────────────────────────────────────────
+# Russian / Chinese / regional analytics
+# ─────────────────────────────────────────────────────────────────
+yandex.ru/metrica
+metrika.yandex.ru
+counter.yadro.ru
+hm.baidu.com
+log.umeng.com
+talkingdata.com

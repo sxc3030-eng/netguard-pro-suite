@@ -83,5 +83,12 @@ geoip/GeoLite2-*.mmdb
 # License signing keys (NEVER commit the private key)
 tools/keys/
 *.priv
-argus_data/
+# Argus runtime data — ignore everything under argus_data/ EXCEPT the
+# sandbox/ seed dir (default-shipped tracker blocklist). The negation
+# below only works because we ignore CONTENTS via /* (not the dir
+# itself). Re-include the sandbox seed file explicitly.
+argus_data/*
+!argus_data/sandbox/
+argus_data/sandbox/*
+!argus_data/sandbox/trackers_blocklist.txt
 argus_cache/
