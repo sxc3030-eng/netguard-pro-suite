@@ -9,6 +9,7 @@ Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 import asyncio
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import argparse
 import time
 import threading
@@ -254,6 +255,72 @@ def get_geo_info(ip: str) -> dict:
     # Essayer l'API ipapi.co en arrière-plan (non bloquant)
     _geo_city_cache[ip] = result
     return result
+
+# ── App identification (which local process owns each connection) ─────────
+# Refreshes psutil.net_connections() periodically and caches a fast
+# (ip, port) -> "process_name (pid)" lookup. Cheap to call from the packet
+# handler hot path because all the work happens once per refresh.
+_CONN_CACHE: dict = {}  # ((laddr_ip, laddr_port), (raddr_ip, raddr_port)) -> "name (pid)"
+_CONN_CACHE_TS: float = 0.0
+_CONN_CACHE_LOCK = threading.Lock()
+_CONN_CACHE_TTL = 1.0  # seconds — re-enumerate at most once per second
+
+try:
+    import psutil as _psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
+
+def _refresh_conn_cache(force: bool = False):
+    """Rebuild the (laddr,raddr)->process map from psutil.net_connections().
+    Skips if cache is fresh (< _CONN_CACHE_TTL old). Thread-safe."""
+    global _CONN_CACHE, _CONN_CACHE_TS
+    if not _HAS_PSUTIL:
+        return
+    now = time.time()
+    if not force and (now - _CONN_CACHE_TS) < _CONN_CACHE_TTL:
+        return
+    with _CONN_CACHE_LOCK:
+        if not force and (time.time() - _CONN_CACHE_TS) < _CONN_CACHE_TTL:
+            return  # double-check after acquiring lock
+        new_cache: dict = {}
+        try:
+            for conn in _psutil.net_connections(kind="inet"):
+                if not conn.laddr or not conn.pid:
+                    continue
+                try:
+                    proc = _psutil.Process(conn.pid)
+                    pname = proc.name()
+                except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                    pname = "?"
+                label = f"{pname} ({conn.pid})"
+                la = (conn.laddr.ip, conn.laddr.port)
+                if conn.raddr:
+                    ra = (conn.raddr.ip, conn.raddr.port)
+                    new_cache[(la, ra)] = label
+                    new_cache[(ra, la)] = label  # bidirectional lookup
+                else:
+                    new_cache[(la, None)] = label  # listening socket
+        except Exception as e:
+            log.debug(f"[APPID] psutil.net_connections failed: {e}")
+        _CONN_CACHE = new_cache
+        _CONN_CACHE_TS = time.time()
+
+
+def process_for_packet(src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> str:
+    """Return 'process_name (pid)' for a captured packet, or '' if unknown.
+    Uses a 1-second cache to keep the packet hot path cheap."""
+    if not _HAS_PSUTIL:
+        return ""
+    _refresh_conn_cache()
+    if not _CONN_CACHE:
+        return ""
+    # Try outbound first (we are src), then inbound (we are dst)
+    return (_CONN_CACHE.get(((src_ip, src_port), (dst_ip, dst_port)))
+            or _CONN_CACHE.get(((dst_ip, dst_port), (src_ip, src_port)))
+            or "")
+
 
 def _traceroute(target_ip: str, max_hops: int = 30) -> dict:
     """Trace the network path to target_ip via scapy ICMP probes. Returns ordered hops with geo data.
@@ -635,6 +702,10 @@ class NetState:
         # so chatty IPs (CDN, Claude API) don't starve quiet/new IPs.
         self.ip_recent_packets     = defaultdict(lambda: deque(maxlen=4))
         self.ip_first_seen_ts      = {}  # ip -> first time we ever saw it (for "new IP priority")
+        # Bandwidth + app identification (cumulative session counters)
+        self.bytes_per_ip          = defaultdict(int)        # ip -> total bytes seen this session
+        self.bytes_per_ip_per_sec  = defaultdict(lambda: deque(maxlen=60))  # ip -> [(ts, bytes)] last 60s
+        self.process_per_ip        = {}                      # ip -> "chrome.exe (1234)" or similar (last seen)
         self.geo_hits              = defaultdict(int)
         self.proto_stats           = defaultdict(int)
         self.traffic_history       = deque(maxlen=60)
@@ -671,7 +742,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(CFG.log_file, encoding="utf-8"),
+        RotatingFileHandler(
+            CFG.log_file,
+            maxBytes=5 * 1024 * 1024,   # 5 MB
+            backupCount=3,
+            encoding="utf-8",
+        ),
         logging.StreamHandler(sys.stdout),
     ]
 )
@@ -3326,6 +3402,17 @@ def analyze_packet(pkt):
                     country_code = special
 
         _now_ms = int(time.time() * 1000)
+        # Bandwidth tracker — bytes per IP per second (rolling window)
+        STATE.bytes_per_ip[src_ip] += pkt_len
+        STATE.bytes_per_ip[dst_ip] += pkt_len
+        STATE.bytes_per_ip_per_sec[src_ip].append((_now_ms, pkt_len))
+        # App identification — which local process owns this connection
+        process_label = process_for_packet(src_ip, src_port, dst_ip, dst_port)
+        if process_label:
+            # Remember which process talks to this remote IP (most useful for non-private IPs)
+            non_private = src_ip if not is_private(src_ip) else (dst_ip if not is_private(dst_ip) else "")
+            if non_private:
+                STATE.process_per_ip[non_private] = process_label
         _pkt_entry = {
             "t":        datetime.now().strftime("%H:%M:%S"),
             "ts_ms":    _now_ms,  # numeric sort key (replaces fragile HH:MM:SS sort)
@@ -3338,6 +3425,7 @@ def analyze_packet(pkt):
             "location": location,
             "lat":      lat,
             "lon":      lon,
+            "process":  process_label,  # NEW — "chrome.exe (1234)" or "" if unknown
         }
         STATE.recent_packets.appendleft(_pkt_entry)
         # Per-IP ring buffer: each IP keeps its own 4 newest packets. Chatty IPs
@@ -3435,6 +3523,16 @@ def _packets_for_state_msg(_unused_deque, total_limit: int = 400, stale_seconds:
     return out[:total_limit]
 
 
+def _group_ips_by_process(ip_to_proc: dict) -> dict:
+    """Inverse map: process_label -> [ip, ip, ...]"""
+    out: dict = {}
+    for ip, proc in ip_to_proc.items():
+        if not proc:
+            continue
+        out.setdefault(proc, []).append(ip)
+    return out
+
+
 def build_state_message() -> dict:
     with STATE.lock:
         conns_count = sum(len(v) for v in STATE.active_conns.values())
@@ -3483,6 +3581,25 @@ def build_state_message() -> dict:
                 for k, v in sorted(STATE.geo_hits.items(), key=lambda x: -x[1])
                 if k in _COUNTRY_COORDS
             ],
+            # ── App-id + bandwidth (audit 2026-04-28 missing-features fix) ──
+            # Top 15 IPs by total bytes seen this session, decorated with their owning process.
+            "top_bandwidth_ips": [
+                {
+                    "ip":      ip,
+                    "bytes":   bytes_count,
+                    "process": STATE.process_per_ip.get(ip, ""),
+                    "country": _geo_city_cache.get(ip, {}).get("country") or get_country(ip) or "",
+                }
+                for ip, bytes_count in sorted(STATE.bytes_per_ip.items(), key=lambda x: -x[1])[:15]
+                if not is_private(ip)
+            ],
+            # Process → list of remote IPs it talks to (for the "what is using my net" panel)
+            "process_summary": (lambda: (
+                lambda by_proc: [
+                    {"process": p, "ips": ips[:10], "ip_count": len(ips)}
+                    for p, ips in sorted(by_proc.items(), key=lambda kv: -len(kv[1]))[:20]
+                ]
+            )(_group_ips_by_process(STATE.process_per_ip)))(),
             # v1.9.0
             "ip_risk_scores": dict(list(sorted(STATE.ip_risk_scores.items(), key=lambda x: -x[1]))[:20]),
             "ip_intel": {ip: STATE.ip_intel[ip] for ip in list(STATE.ip_intel.keys())[:50]},
