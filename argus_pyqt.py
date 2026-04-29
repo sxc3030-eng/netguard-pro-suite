@@ -27,7 +27,8 @@ from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QComboBox, QPushButton, QLabel, QStackedWidget, QFrame,
-    QSizePolicy, QScrollArea, QMenu,
+    QSizePolicy, QScrollArea, QMenu, QDialog, QCheckBox, QFormLayout,
+    QDialogButtonBox, QGroupBox,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
@@ -39,6 +40,15 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "argus_data"
 CACHE_DIR = ROOT / "argus_cache"
 FAVS_FILE = DATA_DIR / "favorites.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+
+DEFAULT_SETTINGS = {
+    "show_live_feed":   True,
+    "show_favs":        True,
+    "show_url_top":     True,
+    "show_url_bottom":  True,
+    "show_search_row":  True,
+}
 
 SEARCH_ENGINES = [
     ("DuckDuckGo",  "https://duckduckgo.com/?q={q}"),
@@ -258,10 +268,136 @@ QPushButton.fav[broken="true"] { color: #ff4d6a; border: 1px dashed #ff4d6a; opa
 
 QWidget#root[mode="vault"]   { border: 2px solid #d4af37; }
 QWidget#root[mode="private"] { border: 1px solid #4d9fff; }
+
+/* ── Top URL strip (just above tab bar, optional) ── */
+QFrame#topUrlStrip {
+    background: rgba(15, 18, 22, 200);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+QLabel#topUrlText {
+    color: #c8ccd6;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-size: 11px;
+    background: transparent;
+    padding: 2px 8px;
+}
+
+/* ── Spinner (loading indicator, right of URL bars) ── */
+QLabel#spinner, QLabel#topSpinner {
+    color: #4d9fff;
+    font-size: 14px;
+    background: transparent;
+    padding: 0 4px;
+    min-width: 16px;
+}
+
+/* ── Settings dialog ── */
+QDialog#settingsDialog {
+    background: #14181f;
+    color: #e8eaf0;
+}
+QDialog#settingsDialog QGroupBox {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 10px 6px 6px 6px;
+    color: #4d9fff;
+    font-weight: 600;
+    font-size: 12px;
+}
+QDialog#settingsDialog QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    background: #14181f;
+}
+QDialog#settingsDialog QCheckBox {
+    color: #c8ccd6;
+    font-size: 12px;
+    padding: 4px 6px;
+    spacing: 8px;
+}
+QDialog#settingsDialog QCheckBox::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid #4d9fff;
+    border-radius: 3px;
+    background: #1a1f28;
+}
+QDialog#settingsDialog QCheckBox::indicator:checked {
+    background: #4d9fff;
+    border-color: #4d9fff;
+}
+QDialog#settingsDialog QPushButton {
+    background: #1a1f28;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #e8eaf0;
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}
+QDialog#settingsDialog QPushButton:hover { border-color: #4d9fff; color: #4d9fff; }
+QDialog#settingsDialog QPushButton:default { background: #4d9fff; color: white; border-color: #4d9fff; }
+
 """
 
 
 # ── Persistence ──────────────────────────────────────────────────────────
+class SettingsManager:
+    """Layout/UX preferences persisted between sessions."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.data = dict(DEFAULT_SETTINGS)
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            self._save()
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
+        except Exception:
+            pass
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def get(self, key: str, default=None):
+        return self.data.get(key, default if default is not None else DEFAULT_SETTINGS.get(key))
+
+    def set(self, key: str, value):
+        self.data[key] = value
+        self._save()
+
+
+class Spinner(QLabel):
+    """Tiny braille animation, started on page-load, stopped on finished."""
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    def __init__(self, name: str = "spinner"):
+        super().__init__()
+        self.setObjectName(name)
+        self.frame = 0
+        self.setText("")
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.setFixedWidth(20)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def _tick(self):
+        self.frame = (self.frame + 1) % len(self.FRAMES)
+        self.setText(self.FRAMES[self.frame])
+
+    def start(self):
+        if not self.timer.isActive():
+            self.timer.start(85)
+
+    def stop(self):
+        self.timer.stop()
+        self.setText("")
+
+
 class FavoritesManager:
     def __init__(self, path: Path):
         self.path = path
@@ -323,6 +459,70 @@ class FavoritesManager:
                 f["broken"] = broken
                 self._save()
                 return
+
+
+# ── Settings dialog ──────────────────────────────────────────────────────
+class SettingsDialog(QDialog):
+    def __init__(self, settings_mgr: SettingsManager, parent=None):
+        super().__init__(parent)
+        self.settings_mgr = settings_mgr
+        self.setObjectName("settingsDialog")
+        self.setWindowTitle("Argus — Paramètres d'affichage")
+        self.resize(440, 380)
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        title = QLabel("Affichage des modules")
+        title.setStyleSheet("color:#e8eaf0; font-size:15px; font-weight:600; margin-bottom:6px;")
+        v.addWidget(title)
+
+        # Group: Top
+        gb_top = QGroupBox("Haut de la fenêtre")
+        gl_top = QVBoxLayout(gb_top)
+        self.cb_feed = QCheckBox("Live feed (lignes de code / requêtes réseau)")
+        self.cb_feed.setChecked(settings_mgr.get("show_live_feed"))
+        self.cb_url_top = QCheckBox("Barre URL en haut (juste au-dessus des onglets)")
+        self.cb_url_top.setChecked(settings_mgr.get("show_url_top"))
+        gl_top.addWidget(self.cb_feed)
+        gl_top.addWidget(self.cb_url_top)
+        v.addWidget(gb_top)
+
+        # Group: Bottom
+        gb_bot = QGroupBox("Bas de la fenêtre (dock)")
+        gl_bot = QVBoxLayout(gb_bot)
+        self.cb_url_bottom = QCheckBox("Barre URL + cadenas")
+        self.cb_url_bottom.setChecked(settings_mgr.get("show_url_bottom"))
+        self.cb_search = QCheckBox("Barre de recherche (moteur + champ)")
+        self.cb_search.setChecked(settings_mgr.get("show_search_row"))
+        self.cb_favs = QCheckBox("Favoris + boutons (mode, NetGuard, +tab)")
+        self.cb_favs.setChecked(settings_mgr.get("show_favs"))
+        gl_bot.addWidget(self.cb_url_bottom)
+        gl_bot.addWidget(self.cb_search)
+        gl_bot.addWidget(self.cb_favs)
+        v.addWidget(gb_bot)
+
+        v.addStretch(1)
+
+        # Buttons
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("Annuler")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Appliquer")
+        ok.setDefault(True)
+        ok.clicked.connect(self._apply)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        v.addLayout(btns)
+
+    def _apply(self):
+        self.settings_mgr.set("show_live_feed", self.cb_feed.isChecked())
+        self.settings_mgr.set("show_url_top",   self.cb_url_top.isChecked())
+        self.settings_mgr.set("show_url_bottom",self.cb_url_bottom.isChecked())
+        self.settings_mgr.set("show_search_row",self.cb_search.isChecked())
+        self.settings_mgr.set("show_favs",      self.cb_favs.isChecked())
+        self.accept()
 
 
 # ── Live feed ────────────────────────────────────────────────────────────
@@ -467,6 +667,7 @@ class ArgusBrowser(QMainWindow):
         self.dev_tools_container = None
         self.tab_pages: list[QWebEngineView] = []
         self.favs_mgr = FavoritesManager(FAVS_FILE)
+        self.settings_mgr = SettingsManager(SETTINGS_FILE)
 
         # ── Profile (persistent — sessions survive restart) ──
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -496,6 +697,21 @@ class ArgusBrowser(QMainWindow):
         self.feed = LiveFeed()
         v.addWidget(self.feed)
 
+        # Top URL strip (optional) — shows current URL + a spinner on the right
+        self.top_url_strip = QFrame()
+        self.top_url_strip.setObjectName("topUrlStrip")
+        self.top_url_strip.setFixedHeight(26)
+        tu_layout = QHBoxLayout(self.top_url_strip)
+        tu_layout.setContentsMargins(14, 2, 8, 2)
+        tu_layout.setSpacing(6)
+        self.top_url_text = QLabel("https://duckduckgo.com")
+        self.top_url_text.setObjectName("topUrlText")
+        self.top_url_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.top_spinner = Spinner("topSpinner")
+        tu_layout.addWidget(self.top_url_text, 1)
+        tu_layout.addWidget(self.top_spinner)
+        v.addWidget(self.top_url_strip)
+
         self.tab_bar = TabBar()
         self.tab_bar.tab_clicked.connect(self._on_tab_clicked)
         self.tab_bar.tab_close_requested.connect(self._on_tab_close)
@@ -520,6 +736,9 @@ class ArgusBrowser(QMainWindow):
         # First tab
         self._open_new_tab("https://duckduckgo.com")
 
+        # Apply persisted display settings
+        self._apply_display_settings()
+
         # Hotkeys
         QShortcut(QKeySequence("F12"), self, activated=self._toggle_devtools)
         QShortcut(QKeySequence("Ctrl+L"), self, activated=lambda: self.search.setFocus())
@@ -530,6 +749,7 @@ class ArgusBrowser(QMainWindow):
         QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self._open_new_tab("https://duckduckgo.com"))
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self._on_tab_close(self.pages_stack.currentIndex()))
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self._toggle_favorite_current)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
 
     # ── Build helpers ─────────────────────────────────────────
     def _build_dock(self) -> QFrame:
@@ -554,13 +774,17 @@ class ArgusBrowser(QMainWindow):
         info_btn = QPushButton("ⓘ")
         info_btn.setProperty("class", "dockBtn")
         info_btn.setToolTip("Cert details / JA3 / IP server")
+        # Spinner — animates while a page is loading, sits on the right of the URL bar
+        self.bottom_spinner = Spinner("spinner")
         gear_btn = QPushButton("⚙")
         gear_btn.setProperty("class", "dockBtn")
         gear_btn.setToolTip("Page settings")
         h1.addWidget(self.lock_label)
         h1.addWidget(self.url_display, 1)
+        h1.addWidget(self.bottom_spinner)
         h1.addWidget(info_btn)
         h1.addWidget(gear_btn)
+        self.row_https = row1
 
         # Row 2 — Engine + Search + ★ favorite button
         row2 = QFrame()
@@ -585,6 +809,7 @@ class ArgusBrowser(QMainWindow):
         h2.addWidget(self.engine)
         h2.addWidget(self.search, 1)
         h2.addWidget(self.star_btn)
+        self.row_search = row2
 
         # Row 3 — Settings + Favs (dynamic) + F12 + New Tab
         row3 = QFrame()
@@ -595,6 +820,7 @@ class ArgusBrowser(QMainWindow):
         settings_btn = QPushButton("⚙")
         settings_btn.setProperty("class", "dockBtn")
         settings_btn.setToolTip("Settings (Ctrl+,)")
+        settings_btn.clicked.connect(self._open_settings)
 
         self.favs_bar = QFrame()
         self.favs_bar.setObjectName("favsBar")
@@ -629,6 +855,7 @@ class ArgusBrowser(QMainWindow):
         h3.addWidget(self.mode_btn)
         h3.addWidget(self.ng_btn)
         h3.addWidget(new_tab_btn)
+        self.row_actions = row3
 
         v.addWidget(row1); v.addWidget(row2); v.addWidget(row3)
         return dock
@@ -672,6 +899,8 @@ class ArgusBrowser(QMainWindow):
         view.setPage(page)
         view.urlChanged.connect(lambda u, v=view: self._on_view_url_changed(v, u))
         view.titleChanged.connect(lambda t, v=view: self._on_view_title_changed(v, t))
+        view.loadStarted.connect(lambda v=view: self._on_load_started(v))
+        view.loadFinished.connect(lambda _ok, v=view: self._on_load_finished(v))
         view.setUrl(QUrl(url))
         self.tab_pages.append(view)
         idx = self.pages_stack.addWidget(view)
@@ -702,6 +931,12 @@ class ArgusBrowser(QMainWindow):
         self.tab_bar.set_active(idx)
         view = self.tab_pages[idx]
         self._sync_url_display(view.url().toString())
+        # Sync spinner state (tab still loading?)
+        try:
+            loading = view.page().isLoading() if hasattr(view.page(), "isLoading") else False
+        except Exception:
+            loading = False
+        self._set_spinning(loading)
 
     def _current_view(self) -> QWebEngineView | None:
         idx = self.pages_stack.currentIndex()
@@ -728,6 +963,8 @@ class ArgusBrowser(QMainWindow):
 
     def _sync_url_display(self, url_str: str):
         self.url_display.setText(url_str)
+        if hasattr(self, "top_url_text"):
+            self.top_url_text.setText(url_str)
         if url_str.startswith("https://"):
             self.lock_label.setText("🔒")
             self.lock_label.setProperty("level", "ok")
@@ -740,6 +977,26 @@ class ArgusBrowser(QMainWindow):
         self.lock_label.style().unpolish(self.lock_label)
         self.lock_label.style().polish(self.lock_label)
         self._update_star_btn()
+
+    def _on_load_started(self, view):
+        if view is self._current_view():
+            self._set_spinning(True)
+
+    def _on_load_finished(self, view):
+        if view is self._current_view():
+            self._set_spinning(False)
+
+    def _set_spinning(self, on: bool):
+        if not hasattr(self, "bottom_spinner"):
+            return
+        if on:
+            self.bottom_spinner.start()
+            if hasattr(self, "top_spinner"):
+                self.top_spinner.start()
+        else:
+            self.bottom_spinner.stop()
+            if hasattr(self, "top_spinner"):
+                self.top_spinner.stop()
 
     def _on_request(self, method: str, url: str):
         kind = "info"
@@ -831,6 +1088,26 @@ class ArgusBrowser(QMainWindow):
         idx = self.pages_stack.currentIndex()
         if idx >= 0:
             self.tab_bar.update_tab(idx, mode=m["id"])
+
+    # ── Settings dialog ───────────────────────────────────────
+    def _open_settings(self):
+        dlg = SettingsDialog(self.settings_mgr, self)
+        dlg.setStyleSheet(THEME_QSS)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_display_settings()
+
+    def _apply_display_settings(self):
+        s = self.settings_mgr
+        if hasattr(self, "feed"):
+            self.feed.setVisible(s.get("show_live_feed"))
+        if hasattr(self, "top_url_strip"):
+            self.top_url_strip.setVisible(s.get("show_url_top"))
+        if hasattr(self, "row_https"):
+            self.row_https.setVisible(s.get("show_url_bottom"))
+        if hasattr(self, "row_search"):
+            self.row_search.setVisible(s.get("show_search_row"))
+        if hasattr(self, "row_actions"):
+            self.row_actions.setVisible(s.get("show_favs"))
 
     # ── NetGuard backend control ──────────────────────────────
     def _check_netguard_status(self):
