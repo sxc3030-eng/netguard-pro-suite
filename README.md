@@ -159,3 +159,11 @@ Ce projet est sous licence **GNU General Public License v3.0** — voir [LICENSE
 <div align="center">
   Fait avec ❤️ par <a href="https://github.com/sxc3030-eng">sxc3030-eng</a>
 </div>
+
+---
+
+### Method
+
+Architecture-first, AI-paired. Designed and shipped over **2 weeks in March 2026** with **Claude (Opus 4.6)** as paired implementation and audit partner. Each commit is cross-audited: code review, dependency vulnerability scan, threat-model check on the detection rules and OS-level blocking layer (iptables / netsh).
+
+---
