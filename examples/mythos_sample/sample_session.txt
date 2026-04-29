@@ -1,0 +1,89 @@
+======================================================================
+ Mythos Sample Plugin -- Argus Integration Protocol V1
+======================================================================
+
+[init] token discovered: fddee296...9568 (64 chars)
+[bus] 2026-04-29T02:55:18.248227+00:00 #0 _meta/hello {"protocol":"1.0"}
+[bus] connected -> subscribed to 3 topics: surveillance/event, arbiter/decision, mode/switched
+
+--- GET /tools ----------------------------------------------------
+[gw]  protocol=1.0  tools_registered=11
+      - query_history: Return recent surveillance events (read-only).
+      - query_arbiter_decisions: Return recent arbiter decisions (read-only).
+      - query_stats: Return aggregate surveillance + bus + gateway counters.
+      - set_mode [approval]: Switch Argus browser mode (normal | private | vault).
+      - block_url [approval]: Add a URL pattern to the user blocklist.
+      - unblock_url [approval]: Remove a URL pattern from the user blocklist.
+      - run_arbiter: Re-run the arbiter on a context (read-only, no side effects).
+      - clear_history [approval] [irreversible]: Wipe surveillance events for a given date (irreversible).
+      - export_audit: Export surveillance events as JSONL.
+      - request_screenshot [approval]: Capture a screenshot of the current Argus tab.
+      - notify_user: Push a non-modal toast notification in the Argus UI.
+
+--- POST /tools/query_stats --------------------------------------
+[bus] 2026-04-29T02:55:18.746547+00:00 #1 surveillance/event {"tag":"evt-0","src":"demo"}
+[bus] 2026-04-29T02:55:18.746586+00:00 #2 arbiter/decision {"verdict":"allow","reason":"demo"}
+[bus] 2026-04-29T02:55:18.746593+00:00 #3 mode/switched {"from":"normal","to":"private"}
+[bus] 2026-04-29T02:55:19.446831+00:00 #4 surveillance/event {"tag":"evt-1","src":"demo"}
+[bus] 2026-04-29T02:55:19.446867+00:00 #5 arbiter/decision {"verdict":"allow","reason":"demo"}
+[bus] 2026-04-29T02:55:19.446872+00:00 #6 mode/switched {"from":"normal","to":"private"}
+[bus] 2026-04-29T02:55:20.147370+00:00 #7 surveillance/event {"tag":"evt-2","src":"demo"}
+[bus] 2026-04-29T02:55:20.147403+00:00 #8 arbiter/decision {"verdict":"allow","reason":"demo"}
+[bus] 2026-04-29T02:55:20.147407+00:00 #9 mode/switched {"from":"normal","to":"private"}
+[gw]  query_stats -> 200 ok  decision=fb5cd325 sig=0c68323794694f1e
+      {
+        "status": "ok",
+        "surveillance": {
+          "total_events": 0,
+          "oldest_iso": null,
+          "newest_iso": null,
+          "by_type": {},
+          "disk_bytes": 0
+        },
+        "bus": {
+          "running": true,
+          "connected_clients": 1,
+          "events_published": 9,
+          "events_dropped": 0,
+          "topic_counts": {
+            "surveillance/event": 3,
+            "arbiter/decision": 3,
+            "mode/switched": 3
+          },
+          "queue_depth": 0,
+          "host": "127.0.0.1",
+          "port": 59271
+        },
+        "gateway": {
+          "invocations": 1,
+          "rejected": 0,
+          "errors": 0,
+          "tools_registered": 11
+        }
+      }
+
+--- POST /tools/notify_user --------------------------------------
+[gw]  notify_user -> 200 ok  decision=0a1298c6 sig=8dcc8848a761fc67
+      {
+        "status": "stubbed",
+        "tool": "notify_user",
+        "params": {
+          "message": "Hello from Mythos sample",
+          "level": "info"
+        },
+        "ts_iso": "2026-04-29T02:55:23.432890+00:00"
+      }
+
+--- POST /tools/set_mode (approval gate) -------------------------
+[gw]  set_mode requires approval; with no UI registered the gateway returns 403 immediately (fail-closed).
+[gw]  set_mode -> 403 approval_rejected (verified) decision=300dae2d sig=bb145d362bd95e00
+
+--- POST /tools/clear_history (approval + irreversible) ----------
+[gw]  clear_history -> 403 approval_rejected (verified) decision=a91db6f7 sig=10f9c68a203933fc
+
+--- Listening on bus for 4s (Ctrl-C to stop) ---
+[heartbeat] 2026-04-29T02:55:27.477796+00:00  events_received=10
+
+======================================================================
+ Summary: 10 bus events received, gateway reached at http://127.0.0.1:59272
+======================================================================
