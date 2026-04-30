@@ -3420,7 +3420,11 @@ class ArgusBrowser(QMainWindow):
     def _build_dock(self) -> QFrame:
         dock = QFrame()
         dock.setObjectName("dock")
-        dock.setFixedHeight(120)
+        # 156px = 52 per row, enough for emoji buttons (🛡 🤖 ✂ ⚙) which
+        # need ~40px content height (ascender+descender) after margins.
+        # Was 120 = 40/row = clipped row3 (user reported "on perd des icon
+        # en bas" on 2026-04-29 with screenshot showing partial bottom row).
+        dock.setFixedHeight(156)
         v = QVBoxLayout(dock)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
