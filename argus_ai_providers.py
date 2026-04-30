@@ -48,17 +48,301 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 
 # ── Settings I/O ─────────────────────────────────────────────────────────
 
 DEFAULT_SETTINGS_PATH = Path(__file__).resolve().parent / "argus_data" / "ai_settings.json"
+DEFAULT_VAULT_ROOT = Path(__file__).resolve().parent / "argus_data" / "vault"
+
+
+# ── Secret Vault hookup ──────────────────────────────────────────────────
+# The vault is loaded lazily so the import of this module stays cheap and
+# tests that don't touch vault behaviour aren't forced to install
+# argon2-cffi / pywin32 / keyring. ``_VAULT_AVAILABLE`` reflects whether
+# ``secret_vault`` could be imported AND its required runtime deps are
+# present (argon2-cffi + keyring). The vault module itself uses
+# soft-imports so it loads even when those deps are missing — checking
+# the module-level ``_HAS_ARGON2`` / ``_HAS_KEYRING`` flags is what tells
+# us unlocking can actually succeed. Without both, the dialog falls back
+# to plaintext mode with a banner instead of popping a master-password
+# prompt that would just fail.
+try:
+    import secret_vault as _secret_vault_mod  # noqa: F401
+    _VAULT_AVAILABLE = bool(
+        getattr(_secret_vault_mod, "_HAS_ARGON2", False)
+        and getattr(_secret_vault_mod, "_HAS_KEYRING", False)
+    )
+except Exception:
+    _secret_vault_mod = None  # type: ignore[assignment]
+    _VAULT_AVAILABLE = False
+
+_vault_singleton: Optional[Any] = None
+_vault_lock = threading.Lock()
+
+
+def _vault_name(provider: str) -> str:
+    """Vault key name convention: ``argus.<provider>.api_key``.
+
+    The vault enforces ``[A-Za-z0-9_.\\-]{1,128}`` for names; ``argus``
+    namespaces the entry so a future GeniA / FORGE module can co-exist in
+    the same vault file without colliding.
+    """
+    return f"argus.{provider}.api_key"
+
+
+def get_vault() -> Optional[Any]:
+    """Return the lazy process-wide ``SecretVault`` instance.
+
+    Returns ``None`` when the vault module is unimportable so callers can
+    branch into the degraded plaintext path. The vault root is always
+    ``argus_data/vault/`` unless overridden via ``SECRET_VAULT_ROOT``
+    (which the vault module honours natively).
+    """
+    global _vault_singleton
+    if not _VAULT_AVAILABLE or _secret_vault_mod is None:
+        return None
+    with _vault_lock:
+        if _vault_singleton is None:
+            try:
+                _vault_singleton = _secret_vault_mod.SecretVault(
+                    vault_root=DEFAULT_VAULT_ROOT,
+                )
+            except Exception:
+                # Construction failure (e.g. argon2 missing under strict
+                # check) — surface as "no vault" so the dialog degrades.
+                return None
+        return _vault_singleton
+
+
+def _reset_vault_singleton() -> None:
+    """Drop the cached vault — used by tests that swap roots between cases."""
+    global _vault_singleton
+    with _vault_lock:
+        if _vault_singleton is not None:
+            try:
+                _vault_singleton.lock()
+            except Exception:
+                pass
+        _vault_singleton = None
+
+
+def vault_initialized() -> bool:
+    """True iff a vault file already exists. Does not unlock."""
+    v = get_vault()
+    if v is None:
+        return False
+    try:
+        return bool(v.exists())
+    except Exception:
+        return False
+
+
+def is_vault_unlocked() -> bool:
+    """True iff the vault is currently unlocked (in this process)."""
+    v = get_vault()
+    if v is None:
+        return False
+    try:
+        return bool(v.is_unlocked())
+    except Exception:
+        return False
+
+
+def unlock_vault(master: str) -> bool:
+    """Try to unlock the vault. Returns False on bad master / missing
+    deps / corrupted file. Never raises — the caller surfaces a UI error.
+    """
+    v = get_vault()
+    if v is None:
+        return False
+    try:
+        if not v.exists():
+            return False
+        v.unlock(master)
+        return True
+    except Exception:
+        return False
+
+
+def init_vault(master: str) -> bool:
+    """Create a new vault under the configured root. Returns True on
+    success. Raises nothing — the dialog inspects ``vault_initialized()``
+    and shows a clear error if False is returned.
+    """
+    v = get_vault()
+    if v is None:
+        return False
+    try:
+        v.init(master)
+        return True
+    except Exception:
+        return False
+
+
+def lock_vault() -> None:
+    """Force-lock the vault. Idempotent."""
+    v = get_vault()
+    if v is None:
+        return
+    try:
+        v.lock()
+    except Exception:
+        pass
+
+
+def secret_exists(name: str) -> bool:
+    """True iff a secret with this vault-name exists. Requires unlock."""
+    v = get_vault()
+    if v is None or not is_vault_unlocked():
+        return False
+    try:
+        for entry in v.list():
+            if entry.get("name") == name:
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def get_secret(name: str) -> Optional[str]:
+    """Return the secret named ``name`` from the vault, or ``None`` if
+    the vault is missing / locked / the entry doesn't exist.
+
+    Never raises so a temporary backend hiccup just degrades to "no key
+    configured" rather than crashing the AI panel.
+    """
+    v = get_vault()
+    if v is None:
+        return None
+    try:
+        if not v.is_unlocked():
+            return None
+        return v.get(name)
+    except Exception:
+        return None
+
+
+def set_secret(name: str, value: str) -> bool:
+    """Persist ``value`` under ``name`` in the vault. Returns True on
+    success. Caller must have already unlocked.
+    """
+    v = get_vault()
+    if v is None:
+        return False
+    try:
+        if not v.is_unlocked():
+            return False
+        v.set(name, value, metadata={"source": "argus.ai_settings"})
+        return True
+    except Exception:
+        return False
+
+
+def get_provider_key(provider: str) -> Optional[str]:
+    """Lookup the per-provider API key for ``provider``.
+
+    Resolution order:
+
+    1. Environment variable (env wins so headless / CI setups keep working).
+    2. Vault entry ``argus.<provider>.api_key`` (when unlocked).
+    3. Plaintext key persisted in ``ai_settings.json`` under
+       ``providers[provider].api_key``. This branch is the fallback for
+       boxes with no vault deps — once the vault is initialized the
+       migration moves the keys out and this branch returns None.
+    """
+    prov = PROVIDERS.get(provider)
+    if prov is not None:
+        for env in prov.env_keys:
+            v = os.environ.get(env)
+            if v and v.strip():
+                return v.strip()
+    s = get_secret(_vault_name(provider))
+    if isinstance(s, str) and s.strip():
+        return s.strip()
+    settings = load_settings()
+    plain = (
+        ((settings.get("providers") or {}).get(provider) or {})
+        .get("api_key")
+    )
+    return plain.strip() if isinstance(plain, str) and plain.strip() else None
+
+
+def save_provider_key(provider: str, key: str) -> bool:
+    """Persist ``key`` for ``provider`` into the vault. Returns False if
+    the vault isn't available or unlocked — the dialog will fall back to
+    plaintext storage and show a warning banner in that case.
+    """
+    return set_secret(_vault_name(provider), key)
+
+
+def migrate_ai_settings_to_vault(path: Optional[Path] = None) -> int:
+    """Move plaintext API keys out of ``ai_settings.json`` and into the
+    vault. Returns the number of keys migrated.
+
+    Idempotent. Safe to call on every dialog open. Requires the vault to
+    be unlocked already; returns 0 otherwise so the caller doesn't block
+    the UI on missed unlocks.
+
+    The original JSON file is rewritten with a backup at
+    ``<path>.pre-vault.bak`` (only on first migration) and the
+    ``api_key`` field is replaced with ``"api_key_in_vault": true``.
+    """
+    if not is_vault_unlocked():
+        return 0
+    p = Path(path) if path else DEFAULT_SETTINGS_PATH
+    if not p.exists():
+        return 0
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    providers = data.get("providers", {}) if isinstance(data, dict) else {}
+    if not isinstance(providers, dict):
+        return 0
+
+    placeholders = {
+        "sk-ant-REPLACE-ME",
+        "sk-REPLACE-ME",
+        "AIza-REPLACE-ME",
+        "",
+    }
+    migrated = 0
+    for prov_name, prov_cfg in list(providers.items()):
+        if not isinstance(prov_cfg, dict):
+            continue
+        key = prov_cfg.get("api_key", "")
+        if prov_cfg.get("api_key_in_vault") is True and not key:
+            continue
+        if not isinstance(key, str) or key.strip() == "" or key in placeholders:
+            continue
+        if save_provider_key(prov_name, key.strip()):
+            prov_cfg.pop("api_key", None)
+            prov_cfg["api_key_in_vault"] = True
+            migrated += 1
+
+    if migrated > 0:
+        backup = p.with_suffix(p.suffix + ".pre-vault.bak")
+        try:
+            if not backup.exists():
+                backup.write_bytes(p.read_bytes())
+        except OSError:
+            pass
+        try:
+            p.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    return migrated
 
 
 def load_settings(path: Optional[Path] = None) -> dict:
@@ -107,7 +391,10 @@ def has_any_api_key(settings: Optional[dict] = None) -> bool:
     This is what the AI panel uses to decide between direct-BYOK and the
     legacy ``netguard_ai_server.py`` HTTP backend. Environment variables
     (``ANTHROPIC_API_KEY`` etc.) also count as "configured" so existing
-    headless setups keep working.
+    headless setups keep working. After the vault hookup the vault is
+    also consulted (if unlocked) so a freshly-migrated install isn't
+    forced back through the legacy server when its keys live in the
+    vault and not in the JSON.
     """
     s = settings if settings is not None else load_settings()
     for env_keys in (
@@ -119,11 +406,17 @@ def has_any_api_key(settings: Optional[dict] = None) -> bool:
             if os.environ.get(k):
                 return True
     providers = s.get("providers", {}) or {}
-    for prov in providers.values():
+    for prov_name, prov in providers.items():
         if isinstance(prov, dict):
             key = prov.get("api_key")
             if isinstance(key, str) and key.strip():
                 return True
+            # Even if the JSON only has a "api_key_in_vault: true"
+            # marker, count that as "configured" so the panel uses
+            # direct-BYOK when the vault is currently unlocked.
+            if prov.get("api_key_in_vault") is True and is_vault_unlocked():
+                if secret_exists(_vault_name(prov_name)):
+                    return True
     return False
 
 
@@ -167,16 +460,28 @@ class ArgusProvider(ABC):
     # Resolution helpers ----------------------------------------------------
 
     def get_api_key(self, settings: dict) -> Optional[str]:
-        """Resolve API key: env var first, then settings JSON. The env-var
-        path matches netguard_ai_server.py so the same keys work in both
-        contexts."""
+        """Resolve API key: env var → settings JSON → vault.
+
+        Order matters: env vars win for headless / CI use. Settings JSON
+        comes next for backward compatibility with installs that haven't
+        migrated to the vault yet. The vault is consulted last so a
+        locked vault (or missing vault deps) silently falls through to
+        the JSON path. The env-var path matches netguard_ai_server.py so
+        the same keys work in both contexts.
+        """
         for env in self.env_keys:
             v = os.environ.get(env)
             if v and v.strip():
                 return v.strip()
         prov = (settings.get("providers") or {}).get(self.name) or {}
         k = prov.get("api_key")
-        return k.strip() if isinstance(k, str) and k.strip() else None
+        if isinstance(k, str) and k.strip():
+            return k.strip()
+        # Vault fallback (unlocked + has entry).
+        secret = get_secret(_vault_name(self.name))
+        if isinstance(secret, str) and secret.strip():
+            return secret.strip()
+        return None
 
     def get_model(self, settings: dict) -> str:
         prov = (settings.get("providers") or {}).get(self.name) or {}

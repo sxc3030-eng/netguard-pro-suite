@@ -176,11 +176,11 @@ LANCER_ARGUS_2.bat
 
 The suite reads secrets (Anthropic / OpenAI / Gemini API keys, threat-intel tokens, etc.) from three sources, in priority order:
 
-1. **Argus Vault UI** — encrypted at rest with AES-256-GCM + DPAPI / PBKDF2. Open Argus → Settings → API Keys.
+1. **Secret Vault** — triple-encryption at rest (Layer 1: DPAPI · Layer 2: Windows Credential Manager blind key · Layer 3: Argon2id master password). Per-secret AES-GCM with AAD anti-swap, append-only audit log, auto-lock on idle. Open Argus → AI panel → ⚙ → Settings, or NetGuard dashboard → Settings → Secret Vault. See [docs/secret_vault_spec.md](docs/secret_vault_spec.md) for the full threat model + architecture.
 2. **`.env` file** at repo root — see `.env.example` for the variable names. Never commit `.env`; it is in `.gitignore`.
 3. **Operating system environment variables** — set `ANTHROPIC_API_KEY=...` etc. in your shell profile.
 
-A missing secret degrades the dependent feature gracefully (e.g. AI side panel disabled) rather than crashing the suite.
+A missing secret degrades the dependent feature gracefully (e.g. AI side panel disabled) rather than crashing the suite. If the vault dependencies (`pywin32`, `keyring`, `argon2-cffi`) are not installed, the suite falls back to reading plaintext from `.env` or env vars and warns in the UI.
 
 ---
 
@@ -188,7 +188,7 @@ A missing secret degrades the dependent feature gracefully (e.g. AI side panel d
 
 We are explicit about which features are real security boundaries and which are still work-in-progress. Read [SECURITY.md](SECURITY.md) for the full threat model, including:
 
-- What we **do** protect against (encrypted vault, rate limiting, FIM HMAC chain, OS-level auto-block).
+- What we **do** protect against (triple-encryption Secret Vault DPAPI+Keychain+Argon2id, WebSocket auth + Origin check, scrypt password hashing, Ed25519 license signature, rate limiting, FIM HMAC chain, OS-level auto-block, rogue Npcap consumer detector).
 - What we **do not** protect against yet (cosmetic browsing modes, no download sandbox, no certificate pinning).
 - Cryptography choices and their parameters.
 - How to report vulnerabilities (private GitHub Security Advisory).

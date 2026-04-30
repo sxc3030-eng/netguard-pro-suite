@@ -1841,6 +1841,31 @@ tr:hover td{background:var(--bg4)22}
     <button class="btn" onclick="saveApiKeys()" data-t="intel_save_keys">💾 Sauvegarder les clés</button>
   </div>
 
+  <!-- ═══ Secret Vault — encrypts the keys above + Discord/Telegram tokens ═ -->
+  <div class="card" style="margin-bottom:16px" id="vault-card">
+    <h3>🔐 Secret Vault</h3>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">
+      Triple-encrypted store (DPAPI + Keychain + Argon2id) for API keys and webhook tokens.
+      Encrypted with a master password — nothing on disk in plaintext when active.
+    </div>
+    <div id="vault-status-line" style="font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+      <span id="vault-badge" class="badge">…</span>
+      <span id="vault-detail" style="color:var(--text2)"></span>
+    </div>
+    <div id="vault-deps-warn" style="display:none;font-size:12px;color:var(--amber);margin-bottom:10px"></div>
+    <div id="vault-secrets-list" style="display:none;font-size:12px;color:var(--text2);margin-bottom:10px"></div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm" id="btn-vault-init" onclick="vaultInit()" style="display:none">⊕ Initialize vault</button>
+      <button class="btn btn-sm" id="btn-vault-unlock" onclick="vaultUnlock()" style="display:none">🔓 Unlock</button>
+      <button class="btn btn-sm" id="btn-vault-lock" onclick="vaultLock()" style="display:none">🔒 Lock</button>
+      <button class="btn btn-sm" id="btn-vault-migrate" onclick="vaultMigrate()" style="display:none">⇄ Migrate plaintext keys → vault</button>
+      <button class="btn btn-sm" id="btn-vault-change-master" onclick="vaultChangeMaster()" style="display:none">🔑 Change master</button>
+      <button class="btn btn-sm" onclick="vaultRefresh()">🔄 Refresh</button>
+    </div>
+    <div id="vault-msg" style="font-size:12px;margin-top:8px;color:var(--text3)"></div>
+  </div>
+
   <div class="metrics-row" style="margin-bottom:16px">
     <div class="metric-card"><div class="metric-value" id="m-vt-cache">0</div><div class="metric-label">VT Cache</div></div>
     <div class="metric-card"><div class="metric-value" id="m-otx-ioc">0</div><div class="metric-label">OTX IOCs</div></div>
@@ -2531,6 +2556,24 @@ function handleMsg(msg) {
     document.getElementById('wg-peer-config-modal').style.display = 'block';
   }
   else if (msg.type === 'wg_config_saved') { showToast('WireGuard config saved', '#00c853'); }
+  // ── Secret Vault handlers ─────────────────────────────────────────────
+  else if (msg.type === 'vault_status') { renderVaultStatus(msg); }
+  else if (msg.type === 'vault_init_result') { vaultMsg(msg, 'Vault initialized'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_unlock_result') { vaultMsg(msg, 'Vault unlocked'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_lock_result') { vaultMsg(msg, 'Vault locked'); vaultRefresh(); }
+  else if (msg.type === 'vault_set_secret_result') { vaultMsg(msg, 'Secret saved to vault'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_change_master_result') { vaultMsg(msg, 'Master password changed'); }
+  else if (msg.type === 'vault_migrate_result') {
+    if (msg.ok) {
+      showToast(`Migrated ${msg.count} secret(s) into vault`, '#00c853');
+      const el = document.getElementById('vault-msg');
+      if (el) { el.style.color = 'var(--green)'; el.textContent = msg.count + ' secret(s) moved into vault: ' + (msg.migrated || []).join(', '); }
+      vaultRefresh();
+    } else {
+      const el = document.getElementById('vault-msg');
+      if (el) { el.style.color = 'var(--red)'; el.textContent = 'Migration failed: ' + (msg.error || 'unknown') + (msg.detail ? ' — ' + msg.detail : ''); }
+    }
+  }
 }
 
 function showToast(msg, color) {
@@ -4728,6 +4771,157 @@ function saveApiKeys() {
   });
   showToast('API keys saved', '#00c853');
 }
+
+// ═══ Secret Vault — UI helpers ════════════════════════════════════════════
+
+function vaultMsg(msg, okText) {
+  const el = document.getElementById('vault-msg');
+  if (!el) return;
+  if (msg.ok) {
+    el.style.color = 'var(--green)';
+    el.textContent = okText;
+  } else {
+    el.style.color = 'var(--red)';
+    el.textContent = (msg.error || 'failed') + (msg.detail ? ' — ' + msg.detail : '');
+  }
+}
+
+function renderVaultStatus(msg) {
+  const badge = document.getElementById('vault-badge');
+  const detail = document.getElementById('vault-detail');
+  const deps = document.getElementById('vault-deps-warn');
+  const list = document.getElementById('vault-secrets-list');
+  const btnInit = document.getElementById('btn-vault-init');
+  const btnUnlock = document.getElementById('btn-vault-unlock');
+  const btnLock = document.getElementById('btn-vault-lock');
+  const btnMigrate = document.getElementById('btn-vault-migrate');
+  const btnChange = document.getElementById('btn-vault-change-master');
+  if (!badge || !detail) return;
+
+  // Hide everything by default; we'll re-enable per-state below.
+  btnInit.style.display = 'none';
+  btnUnlock.style.display = 'none';
+  btnLock.style.display = 'none';
+  btnMigrate.style.display = 'none';
+  btnChange.style.display = 'none';
+  deps.style.display = 'none';
+  list.style.display = 'none';
+
+  if (!msg.available) {
+    badge.textContent = 'Unavailable';
+    badge.className = 'badge badge-red';
+    if (msg.deps_missing && msg.deps_missing.length) {
+      deps.style.display = 'block';
+      deps.textContent = 'Missing dependencies: ' + msg.deps_missing.map(esc).join(', ') +
+        '. Install with: pip install ' + msg.deps_missing.map(esc).join(' ');
+      detail.textContent = 'Encryption disabled — secrets stored as plaintext.';
+    } else {
+      detail.textContent = 'Vault module unreachable.';
+    }
+    return;
+  }
+
+  if (!msg.initialized) {
+    badge.textContent = 'Not initialized';
+    badge.className = 'badge badge-amber';
+    detail.textContent = 'Choose a master password and create the vault.';
+    btnInit.style.display = 'inline-block';
+    if (msg.plaintext_keys && msg.plaintext_keys.length) {
+      btnMigrate.style.display = 'inline-block';
+      btnMigrate.title = 'Will move ' + msg.plaintext_keys.length + ' plaintext secret(s) into the vault on creation';
+    }
+    return;
+  }
+
+  if (!msg.unlocked) {
+    badge.textContent = 'Locked';
+    badge.className = 'badge badge-amber';
+    detail.textContent = 'Unlock to read or write secrets.';
+    btnUnlock.style.display = 'inline-block';
+    return;
+  }
+
+  badge.textContent = 'Unlocked';
+  badge.className = 'badge badge-green';
+  detail.textContent = (msg.secret_names && msg.secret_names.length || 0) + ' secret(s) stored';
+  btnLock.style.display = 'inline-block';
+  btnChange.style.display = 'inline-block';
+
+  if (msg.plaintext_keys && msg.plaintext_keys.length) {
+    btnMigrate.style.display = 'inline-block';
+    btnMigrate.title = 'Move ' + msg.plaintext_keys.length + ' plaintext key(s) from settings into vault';
+  }
+
+  if (msg.secret_names && msg.secret_names.length) {
+    list.style.display = 'block';
+    list.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Stored secrets (names only):</div>' +
+      msg.secret_names.map(n => '<div>✓ ' + esc(n) + '</div>').join('');
+  }
+}
+
+function vaultRefresh() {
+  sendCmd({ cmd: 'vault_status' });
+}
+
+function vaultInit() {
+  const m = prompt('Choose a master password (8+ characters).\nIf you forget this password, the secrets cannot be recovered.');
+  if (m == null) return;
+  if (m.length < 8) { showToast('Master password must be at least 8 characters', 'var(--red)'); return; }
+  const m2 = prompt('Confirm master password:');
+  if (m2 == null) return;
+  if (m !== m2) { showToast('Passwords do not match', 'var(--red)'); return; }
+  sendCmd({ cmd: 'vault_init', master: m });
+}
+
+function vaultUnlock() {
+  const m = prompt('Enter master password to unlock the vault:');
+  if (m == null) return;
+  sendCmd({ cmd: 'vault_unlock', master: m });
+}
+
+function vaultLock() {
+  sendCmd({ cmd: 'vault_lock' });
+}
+
+function vaultChangeMaster() {
+  const old = prompt('Current master password:');
+  if (old == null) return;
+  const nw = prompt('New master password (8+ characters):');
+  if (nw == null) return;
+  if (nw.length < 8) { showToast('New password must be at least 8 characters', 'var(--red)'); return; }
+  const nw2 = prompt('Confirm new master password:');
+  if (nw2 == null) return;
+  if (nw !== nw2) { showToast('Passwords do not match', 'var(--red)'); return; }
+  sendCmd({ cmd: 'vault_change_master', old: old, new: nw });
+}
+
+function vaultMigrate() {
+  // If vault not yet initialised, the backend will demand a master password.
+  // Best-effort: prompt only if user might need it. We send empty master and
+  // let the backend either (a) use the unlocked vault or (b) reject with a
+  // clear "master required" error that surfaces in vault-msg.
+  let master = '';
+  // Heuristic: ask the user if they want to set up a master now.
+  if (!confirm('Migrate plaintext API keys/webhooks from settings into the vault?\nIf the vault has not been initialized yet, you will be asked for a master password next.')) return;
+  // Send first; if "master required" comes back, prompt and retry.
+  sendCmd({ cmd: 'vault_migrate', master: master });
+  // Lightweight retry: if migration fails because master is required, prompt.
+  setTimeout(() => {
+    const el = document.getElementById('vault-msg');
+    if (el && el.textContent && el.textContent.toLowerCase().includes('master required')) {
+      const m = prompt('Choose a master password to create the vault (8+ characters):');
+      if (m && m.length >= 8) sendCmd({ cmd: 'vault_migrate', master: m });
+    }
+  }, 600);
+}
+
+// Auto-refresh vault status when the Threat Intel tab is opened.
+(function _wireVaultAutoRefresh() {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Refresh once after auth is established (state arrives shortly after).
+    setTimeout(vaultRefresh, 1500);
+  });
+})();
 
 function lookupIOC() {
   const val = document.getElementById('ioc-lookup-input').value.trim();

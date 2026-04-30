@@ -59,6 +59,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QGroupBox, QTextBrowser, QTextEdit, QTabWidget,
     QFileDialog, QMessageBox, QSplashScreen, QListWidget, QListWidgetItem,
     QPlainTextEdit, QHeaderView, QTableWidget, QTableWidgetItem, QMenuBar,
+    QInputDialog,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
@@ -3306,35 +3307,72 @@ class AIPanel(QFrame):
 
 # ── AI BYOK settings dialog ──────────────────────────────────────────────
 class AISettingsDialog(QDialog):
-    """Per-provider API key + model entry. Persists to
-    ``argus_data/ai_settings.json`` via ``argus_ai_providers.save_settings``.
+    """Per-provider API key + model entry. Persists models + default
+    provider to ``argus_data/ai_settings.json`` and API keys to the
+    encrypted Secret Vault (``argus_data/vault/``) when available.
 
     Layout: one tab per provider (Claude / GPT / Gemini), each with an
     API key line edit (echo masked) and a model combo seeded from the
     provider's ``models`` list. Plus a "Default provider" combo at the
     top so the user can switch which one the panel actually uses.
 
-    No verification round-trip — entering a bogus key just fails on
-    the next message with the provider's own error string in the chat.
-    Better than blocking the dialog on a network call the user might
-    not even need (e.g. they're configuring two keys at once).
+    Vault hookup
+    ------------
+    On open the dialog inspects vault state and asks for either a
+    master-password setup (first run) or an unlock (returning user). On
+    save, API keys go to the vault and the JSON file only carries
+    non-secret settings + an ``api_key_in_vault: true`` marker. If the
+    vault module / its native deps are missing, a banner warns the user
+    and the dialog falls back to plaintext storage so the workflow is
+    never blocked.
+
+    No verification round-trip on the API key itself — entering a bogus
+    key just fails on the next message with the provider's own error
+    string in the chat. Better than blocking the dialog on a network
+    call the user might not even need (e.g. they're configuring two
+    keys at once).
     """
+
+    # Sentinel returned by the master-password prompt to signal "user
+    # cancelled, don't pop another dialog".
+    _CANCELLED = object()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Argus AI — Clés API & modèles")
         self.setObjectName("aiSettingsDialog")
-        self.resize(520, 360)
+        self.resize(540, 420)
         # Load current settings — empty dict if none saved yet.
         self._settings = (_ai_providers.load_settings()
                            if HAVE_AI_PROVIDERS else {})
         # Per-provider widgets we'll read on accept.
         self._key_edits: dict[str, QLineEdit] = {}
         self._model_combos: dict[str, QComboBox] = {}
+        # Tracks whether the vault is reachable AND unlocked for this
+        # session of the dialog. Set during _gate_vault().
+        self._vault_ready: bool = False
+        self._vault_warning_label = None
+        # Suppress modal prompts during automated tests (set via
+        # ``AISettingsDialog._suppress_vault_prompts = True``). Tests still
+        # exercise the underlying gate logic via direct method calls.
+        self._suppress_prompts = bool(
+            getattr(type(self), "_suppress_vault_prompts", False)
+        )
 
         v = QVBoxLayout(self)
         v.setContentsMargins(12, 12, 12, 12)
         v.setSpacing(8)
+
+        # Banner (vault warning slot — populated by _gate_vault).
+        self._banner = QLabel("")
+        self._banner.setWordWrap(True)
+        self._banner.setStyleSheet(
+            "QLabel { background: #3a2a14; color: #f5d57a; "
+            "border: 1px solid #6a4a1c; border-radius: 4px; "
+            "padding: 6px 10px; font-size: 12px; }"
+        )
+        self._banner.hide()
+        v.addWidget(self._banner)
 
         # Default provider row
         top = QHBoxLayout()
@@ -3367,14 +3405,222 @@ class AISettingsDialog(QDialog):
             tabs.addTab(disabled, "Indisponible")
         v.addWidget(tabs, 1)
 
-        # Buttons
+        # Lock-vault row + Save/Cancel
+        btn_row = QHBoxLayout()
+        self._lock_btn = QPushButton("Verrouiller le coffre")
+        self._lock_btn.setToolTip(
+            "Re-verrouille immédiatement le Secret Vault. "
+            "Le prochain accès demandera à nouveau le mot de passe maître."
+        )
+        self._lock_btn.clicked.connect(self._lock_vault_clicked)
+        btn_row.addWidget(self._lock_btn)
+        btn_row.addStretch(1)
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
         btns.accepted.connect(self._save_and_close)
         btns.rejected.connect(self.reject)
-        v.addWidget(btns)
+        btn_row.addWidget(btns)
+        v.addLayout(btn_row)
+
+        # Run vault gating + migration AFTER widgets exist so the banner
+        # and per-tab placeholders can reflect the discovered state.
+        # Wrapped in try/except so a vault hiccup never blocks the dialog
+        # from opening at all.
+        try:
+            self._gate_vault()
+            self._refresh_key_placeholders()
+        except Exception:
+            self._show_vault_warning(
+                "Vault indisponible — les clés seront stockées en clair."
+            )
+
+    # ------------------------------------------------------------------ #
+    # Vault gating
+    # ------------------------------------------------------------------ #
+
+    def _show_vault_warning(self, msg: str) -> None:
+        """Surface a banner above the tabs so the user sees that we're
+        in plaintext mode for any reason."""
+        self._banner.setText("⚠ " + msg)
+        self._banner.show()
+
+    def _gate_vault(self) -> None:
+        """Configure ``self._vault_ready`` based on vault availability,
+        prompting the user to set up or unlock the vault as needed.
+
+        States:
+
+        * Vault module unimportable / deps missing → banner + plaintext
+          fallback. No prompt.
+        * Vault not initialized → "Set up Secret Vault" prompt. On
+          success we hold the vault unlocked for this dialog.
+        * Vault initialized + locked → "Unlock vault" prompt. On wrong
+          master we re-prompt up to 3 times then surface a banner.
+        * Vault unlocked already → migrate plaintext keys + ready.
+        """
+        if not HAVE_AI_PROVIDERS or _ai_providers is None:
+            self._show_vault_warning(
+                "Module argus_ai_providers indisponible — clés en clair."
+            )
+            return
+        if not getattr(_ai_providers, "_VAULT_AVAILABLE", False):
+            self._show_vault_warning(
+                "Coffre chiffré indisponible (manque pywin32 / keyring / "
+                "argon2-cffi). Installe-les avec: "
+                "pip install pywin32 keyring argon2-cffi. "
+                "Les clés sont stockées en clair pour l'instant."
+            )
+            return
+
+        # Already unlocked? Just migrate + go.
+        if _ai_providers.is_vault_unlocked():
+            self._vault_ready = True
+            self._post_unlock_migrate()
+            return
+
+        if self._suppress_prompts:
+            # Tests handle the master-password flow directly; don't pop
+            # modals here.
+            return
+
+        if not _ai_providers.vault_initialized():
+            ok = self._prompt_init_vault()
+            if ok:
+                self._vault_ready = True
+                self._post_unlock_migrate()
+            else:
+                self._show_vault_warning(
+                    "Coffre non initialisé — clés en clair pour cette session."
+                )
+            return
+
+        # Initialized but locked — ask for master.
+        ok = self._prompt_unlock_vault()
+        if ok:
+            self._vault_ready = True
+            self._post_unlock_migrate()
+        else:
+            self._show_vault_warning(
+                "Coffre verrouillé — clés en clair pour cette session."
+            )
+
+    def _post_unlock_migrate(self) -> None:
+        """Pull any leftover plaintext keys out of ai_settings.json."""
+        try:
+            n = _ai_providers.migrate_ai_settings_to_vault()
+            if n > 0:
+                # Reload settings so the dialog reflects the migrated
+                # state (api_key gone, api_key_in_vault: true).
+                self._settings = _ai_providers.load_settings()
+        except Exception:
+            pass
+
+    def _prompt_init_vault(self) -> bool:
+        """Show two password dialogs (set + confirm). Returns True on
+        successful init."""
+        pw1, ok1 = QInputDialog.getText(
+            self,
+            "Configurer le coffre",
+            "Premier lancement : choisis un mot de passe maître pour le "
+            "coffre chiffré.\nCe mot de passe protège tes clés API. "
+            "Il n'est pas récupérable.",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok1 or not pw1:
+            return False
+        if len(pw1) < 8:
+            QMessageBox.warning(
+                self,
+                "Mot de passe trop court",
+                "Utilise un mot de passe d'au moins 8 caractères.",
+            )
+            return False
+        pw2, ok2 = QInputDialog.getText(
+            self,
+            "Confirmer",
+            "Re-saisis le mot de passe maître :",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok2 or pw2 != pw1:
+            QMessageBox.warning(
+                self,
+                "Mots de passe différents",
+                "Les deux saisies ne correspondent pas. Annulé.",
+            )
+            return False
+        try:
+            ok = _ai_providers.init_vault(pw1)
+        except Exception:
+            ok = False
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "Échec de l'initialisation",
+                "Impossible de créer le coffre. Vérifie que les modules "
+                "pywin32 / keyring / argon2-cffi sont installés.",
+            )
+        return ok
+
+    def _prompt_unlock_vault(self) -> bool:
+        for attempt in range(3):
+            pw, ok = QInputDialog.getText(
+                self,
+                "Déverrouiller le coffre",
+                "Saisis le mot de passe maître du coffre :",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok:
+                return False
+            if pw and _ai_providers.unlock_vault(pw):
+                return True
+            if attempt < 2:
+                QMessageBox.warning(
+                    self,
+                    "Mauvais mot de passe",
+                    "Mot de passe incorrect. Réessaie.",
+                )
+        return False
+
+    def _lock_vault_clicked(self) -> None:
+        if HAVE_AI_PROVIDERS and _ai_providers is not None:
+            try:
+                _ai_providers.lock_vault()
+            except Exception:
+                pass
+        self._vault_ready = False
+        self._show_vault_warning(
+            "Coffre verrouillé. Les nouvelles clés seront en clair "
+            "jusqu'à la prochaine ouverture."
+        )
+        self._refresh_key_placeholders()
+
+    def _refresh_key_placeholders(self) -> None:
+        """Update each tab's API-key placeholder + tooltip to reflect
+        whether a key is currently saved (vault entry or plaintext)."""
+        if not HAVE_AI_PROVIDERS or _ai_providers is None:
+            return
+        for name, edit in self._key_edits.items():
+            in_vault = (
+                self._vault_ready
+                and _ai_providers.secret_exists(_ai_providers._vault_name(name))
+            )
+            prov_settings = (
+                (self._settings.get("providers") or {}).get(name, {}) or {}
+            )
+            plaintext_key = prov_settings.get("api_key", "")
+            has_plain = isinstance(plaintext_key, str) and plaintext_key.strip()
+            if in_vault:
+                edit.setPlaceholderText(
+                    "•••••• (sauvegardé dans le coffre — laisse vide pour conserver)"
+                )
+            elif has_plain:
+                edit.setPlaceholderText(
+                    "•••••• (déjà configuré en clair — laisse vide pour conserver)"
+                )
+            else:
+                edit.setPlaceholderText("Colle la clé API ici")
 
     def _make_provider_tab(self, name: str) -> QWidget:
         provider = _ai_providers.PROVIDERS.get(name)
@@ -3386,7 +3632,9 @@ class AISettingsDialog(QDialog):
 
         # API key — masked. We DO NOT pre-fill the actual key for safety;
         # show a placeholder when one already exists so the user knows
-        # they don't need to re-enter it. New value overrides.
+        # they don't need to re-enter it. New value overrides. The
+        # placeholder is finalised by _refresh_key_placeholders once
+        # vault gating has run.
         key_edit = QLineEdit()
         key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         existing_key = prov_settings.get("api_key") if isinstance(prov_settings, dict) else None
@@ -3441,7 +3689,16 @@ class AISettingsDialog(QDialog):
             slot = providers.setdefault(name, {})
             new_key = edit.text().strip()
             if new_key:
-                slot["api_key"] = new_key
+                if self._vault_ready and _ai_providers.save_provider_key(name, new_key):
+                    # Stored in the vault — strip any legacy plaintext
+                    # field and mark the slot.
+                    slot.pop("api_key", None)
+                    slot["api_key_in_vault"] = True
+                else:
+                    # Vault unavailable / locked → degraded plaintext
+                    # path. The banner already warned the user.
+                    slot["api_key"] = new_key
+                    slot.pop("api_key_in_vault", None)
             # else: leave existing key untouched (placeholder told the user
             # an empty input means "keep current")
             model_combo = self._model_combos.get(name)

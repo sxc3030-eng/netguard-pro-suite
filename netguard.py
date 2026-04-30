@@ -171,6 +171,155 @@ class Config:
 
 CFG = Config()
 
+
+# ─── Secret Vault integration ─────────────────────────────────────────────
+# All long-lived API tokens / webhooks live inside ``secret_vault`` rather
+# than ``netguard_settings.json``. The vault is a process-wide lazy
+# singleton so we only construct one. ``False`` is a sentinel meaning "we
+# tried and the dependencies are missing — degrade gracefully".
+
+_VAULT = None  # type: ignore[var-annotated]
+_VAULT_INIT_LOCK = threading.Lock()
+_VAULT_LOCKED_WARNED = False  # one-shot warning when reads hit a locked vault
+
+# Map of "settings.json key" -> "vault secret name". The dashboard / WS
+# layer uses the vault name; legacy code paths can still ask by settings
+# key via ``get_secret(vault_name, fallback_settings_key=...)``.
+VAULT_SECRET_NAMES = {
+    "virustotal_api_key":   "netguard.virustotal.api_key",
+    "otx_api_key":          "netguard.otx.api_key",
+    "abuseipdb_api_key":    "netguard.abuseipdb.api_key",
+    "discord_webhook_url":  "netguard.discord.webhook_url",
+    "telegram_bot_token":   "netguard.telegram.bot_token",
+}
+
+# Brute-force throttle on vault_unlock — 3 attempts per 30s, then 5 min lock.
+_VAULT_UNLOCK_ATTEMPTS: list = []      # list of monotonic timestamps
+_VAULT_UNLOCK_BLOCKED_UNTIL: float = 0.0
+_VAULT_UNLOCK_WINDOW   = 30.0
+_VAULT_UNLOCK_MAX      = 3
+_VAULT_UNLOCK_PENALTY  = 300.0
+_VAULT_RL_LOCK = threading.Lock()
+
+
+def _get_vault():
+    """Return the process-wide ``SecretVault`` instance, or ``None`` if the
+    optional dependencies are missing.
+
+    The first call constructs the vault. Construction is cheap (no I/O) so
+    even a missing-deps build only logs a single warning.
+    """
+    global _VAULT
+    if _VAULT is not None:
+        return _VAULT if _VAULT is not False else None
+    with _VAULT_INIT_LOCK:
+        if _VAULT is None:
+            try:
+                from secret_vault import SecretVault
+                _VAULT = SecretVault()
+            except Exception as e:  # pragma: no cover - defensive
+                try:
+                    log.warning("[VAULT] unavailable: %s — using plaintext fallback", e)
+                except Exception:
+                    pass
+                _VAULT = False
+    return _VAULT if _VAULT is not False else None
+
+
+def _vault_deps_missing():
+    """List of missing optional packages. Used by ``vault_status`` so the
+    UI can prompt the user with an actionable message."""
+    missing = []
+    try:
+        import secret_vault as _sv
+    except Exception:
+        return ["secret_vault"]
+    if not getattr(_sv, "_HAS_ARGON2", False):
+        missing.append("argon2-cffi")
+    if not getattr(_sv, "_HAS_KEYRING", False):
+        missing.append("keyring")
+    # pywin32 / DPAPI is degradable, not required — only flag on Windows.
+    if IS_WINDOWS and not getattr(_sv, "_HAS_DPAPI", False):
+        missing.append("pywin32")
+    return missing
+
+
+def get_secret(name: str, fallback_settings_key=None):
+    """Unified secret lookup.
+
+    Lookup order:
+      1. If the vault is initialized AND unlocked, return its value (which
+         may legitimately be ``None`` — treat that as "no secret stored").
+      2. If the vault is initialized but locked, return ``None`` and log a
+         one-shot warning (subsequent calls are silent until next unlock).
+      3. If the vault is unavailable (deps missing or never initialized)
+         and ``fallback_settings_key`` is provided, return ``CFG``'s
+         current attribute value for that key — that path keeps existing
+         clean installs working without forcing a vault.
+
+    Note: a stored secret of empty string is treated like "no secret" —
+    the caller's existing ``if not key`` guards continue to work.
+    """
+    global _VAULT_LOCKED_WARNED
+    v = _get_vault()
+    if v is not None:
+        try:
+            if v.exists():
+                if v.is_unlocked():
+                    val = v.get(name)
+                    if val:
+                        return val
+                else:
+                    if not _VAULT_LOCKED_WARNED:
+                        try:
+                            log.warning("[VAULT] locked — secret '%s' not retrievable until unlock", name)
+                        except Exception:
+                            pass
+                        _VAULT_LOCKED_WARNED = True
+                    return None
+        except Exception as e:  # defensive: never raise from a hot path
+            try:
+                log.debug("[VAULT] get(%s) failed: %s", name, e)
+            except Exception:
+                pass
+    # Fallback to plaintext config — only when vault is unavailable / not init.
+    if fallback_settings_key is not None:
+        return getattr(CFG, fallback_settings_key, None) or None
+    return None
+
+
+def _vault_unlock_throttle_check():
+    """Return ``(allowed, reason)``. Caller must NOT call ``vault.unlock``
+    if ``allowed`` is False."""
+    now = time.monotonic()
+    with _VAULT_RL_LOCK:
+        global _VAULT_UNLOCK_BLOCKED_UNTIL
+        if now < _VAULT_UNLOCK_BLOCKED_UNTIL:
+            wait = int(_VAULT_UNLOCK_BLOCKED_UNTIL - now)
+            return False, f"too many failures, locked for {wait}s"
+        # purge old attempts
+        cutoff = now - _VAULT_UNLOCK_WINDOW
+        _VAULT_UNLOCK_ATTEMPTS[:] = [t for t in _VAULT_UNLOCK_ATTEMPTS if t > cutoff]
+        return True, ""
+
+
+def _vault_unlock_record_failure():
+    now = time.monotonic()
+    global _VAULT_UNLOCK_BLOCKED_UNTIL
+    with _VAULT_RL_LOCK:
+        _VAULT_UNLOCK_ATTEMPTS.append(now)
+        cutoff = now - _VAULT_UNLOCK_WINDOW
+        _VAULT_UNLOCK_ATTEMPTS[:] = [t for t in _VAULT_UNLOCK_ATTEMPTS if t > cutoff]
+        if len(_VAULT_UNLOCK_ATTEMPTS) >= _VAULT_UNLOCK_MAX:
+            _VAULT_UNLOCK_BLOCKED_UNTIL = now + _VAULT_UNLOCK_PENALTY
+            _VAULT_UNLOCK_ATTEMPTS.clear()
+
+
+def _vault_unlock_record_success():
+    with _VAULT_RL_LOCK:
+        _VAULT_UNLOCK_ATTEMPTS.clear()
+
+
 RULES = {
     "block_port_scan":   {"enabled": True,  "label": "Bloquer scan de ports",  "hits": 0},
     "block_ssh_external":{"enabled": True,  "label": "Bloquer SSH externe",    "hits": 0},
@@ -2213,7 +2362,8 @@ def _schedule_feed_refresh():
 
 def _vt_check_ip(ip: str):
     """Vérifie une IP sur VirusTotal (thread)"""
-    if not CFG.virustotal_enabled or not CFG.virustotal_api_key:
+    vt_key = get_secret("netguard.virustotal.api_key", "virustotal_api_key")
+    if not CFG.virustotal_enabled or not vt_key:
         return
     # Rate limiting: 4 req/min
     now = time.time()
@@ -2226,7 +2376,7 @@ def _vt_check_ip(ip: str):
     try:
         url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
         req = urllib.request.Request(url, headers={
-            "x-apikey": CFG.virustotal_api_key,
+            "x-apikey": vt_key,
             "User-Agent": "NetGuard-Pro/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=10)
@@ -2255,12 +2405,13 @@ def _vt_check_ip(ip: str):
 def _otx_fetch_pulses():
     """Récupère les IOC depuis AlienVault OTX (thread)"""
     global OTX_IOC_IPS, OTX_IOC_DOMAINS
-    if not CFG.otx_enabled or not CFG.otx_api_key:
+    otx_key = get_secret("netguard.otx.api_key", "otx_api_key")
+    if not CFG.otx_enabled or not otx_key:
         return
     try:
         url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50"
         req = urllib.request.Request(url, headers={
-            "X-OTX-API-KEY": CFG.otx_api_key,
+            "X-OTX-API-KEY": otx_key,
             "User-Agent": "NetGuard-Pro/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=15)
@@ -2283,12 +2434,13 @@ def _otx_fetch_pulses():
 
 def _abuseipdb_check(ip: str):
     """Vérifie une IP sur AbuseIPDB"""
-    if not CFG.abuseipdb_enabled or not CFG.abuseipdb_api_key:
+    abuse_key = get_secret("netguard.abuseipdb.api_key", "abuseipdb_api_key")
+    if not CFG.abuseipdb_enabled or not abuse_key:
         return
     try:
         url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
         req = urllib.request.Request(url, headers={
-            "Key": CFG.abuseipdb_api_key,
+            "Key": abuse_key,
             "Accept": "application/json",
         })
         resp = urllib.request.urlopen(req, timeout=10)
@@ -2318,7 +2470,8 @@ def ioc_match_ip(ip: str) -> list:
 # ─── v3.0 — Active Response ──────────────────────────────────────────────
 def _send_discord_alert(threat: dict):
     """Envoie une alerte Discord via webhook (thread)"""
-    if not CFG.discord_enabled or not CFG.discord_webhook_url:
+    discord_url = get_secret("netguard.discord.webhook_url", "discord_webhook_url")
+    if not CFG.discord_enabled or not discord_url:
         return
     key = f"discord:{threat.get('src_ip', '')}"
     now = time.time()
@@ -2341,7 +2494,7 @@ def _send_discord_alert(threat: dict):
                 "timestamp": threat.get("timestamp", datetime.now().isoformat()),
             }]
         }).encode()
-        req = urllib.request.Request(CFG.discord_webhook_url, data=payload,
+        req = urllib.request.Request(discord_url, data=payload,
             headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=5)
         STATE.webhook_log.appendleft({
@@ -2356,7 +2509,8 @@ def _send_discord_alert(threat: dict):
 
 def _send_telegram_alert(threat: dict):
     """Envoie une alerte Telegram via Bot API (thread)"""
-    if not CFG.telegram_enabled or not CFG.telegram_bot_token or not CFG.telegram_chat_id:
+    tg_token = get_secret("netguard.telegram.bot_token", "telegram_bot_token")
+    if not CFG.telegram_enabled or not tg_token or not CFG.telegram_chat_id:
         return
     key = f"telegram:{threat.get('src_ip', '')}"
     now = time.time()
@@ -2377,7 +2531,7 @@ def _send_telegram_alert(threat: dict):
             "text": text,
             "parse_mode": "HTML",
         }).encode()
-        url = f"https://api.telegram.org/bot{CFG.telegram_bot_token}/sendMessage"
+        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
         req = urllib.request.Request(url, data=payload,
             headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=5)
@@ -3286,7 +3440,7 @@ async def start_honeypots():
     log.info(f"[HONEYPOT] {len(HONEYPOT_SERVERS)} services honeypot démarrés")
 
 async def handle_ws_command(ws, msg: dict):
-    global CLIENTS
+    global CLIENTS, _VAULT_LOCKED_WARNED
     cmd = msg.get("cmd")
 
     if cmd == "get_state":
@@ -3516,17 +3670,47 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Threat Intelligence ───────────────────────────────────────────────
     elif cmd == "set_api_keys":
+        # Write to vault when available + unlocked; otherwise fall back to CFG.
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
         if "vt_key" in msg:
-            CFG.virustotal_api_key = msg["vt_key"]
-            CFG.virustotal_enabled = bool(msg["vt_key"])
+            val = msg["vt_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.virustotal.api_key", val)
+                    CFG.virustotal_api_key = ""  # never keep a duplicate plaintext
+                except Exception as e:
+                    log.warning("[VAULT] set vt_key failed: %s", e)
+                    CFG.virustotal_api_key = val
+            else:
+                CFG.virustotal_api_key = val
+            CFG.virustotal_enabled = bool(val)
         if "otx_key" in msg:
-            CFG.otx_api_key = msg["otx_key"]
-            CFG.otx_enabled = bool(msg["otx_key"])
+            val = msg["otx_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.otx.api_key", val)
+                    CFG.otx_api_key = ""
+                except Exception as e:
+                    log.warning("[VAULT] set otx_key failed: %s", e)
+                    CFG.otx_api_key = val
+            else:
+                CFG.otx_api_key = val
+            CFG.otx_enabled = bool(val)
         if "abuseipdb_key" in msg:
-            CFG.abuseipdb_api_key = msg["abuseipdb_key"]
-            CFG.abuseipdb_enabled = bool(msg["abuseipdb_key"])
+            val = msg["abuseipdb_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.abuseipdb.api_key", val)
+                    CFG.abuseipdb_api_key = ""
+                except Exception as e:
+                    log.warning("[VAULT] set abuseipdb_key failed: %s", e)
+                    CFG.abuseipdb_api_key = val
+            else:
+                CFG.abuseipdb_api_key = val
+            CFG.abuseipdb_enabled = bool(val)
         save_settings()
-        await ws.send(json.dumps({"type": "api_keys_saved", "vt": CFG.virustotal_enabled, "otx": CFG.otx_enabled, "abuseipdb": CFG.abuseipdb_enabled}))
+        await ws.send(json.dumps({"type": "api_keys_saved", "vt": CFG.virustotal_enabled, "otx": CFG.otx_enabled, "abuseipdb": CFG.abuseipdb_enabled, "vault_used": vault_writable}))
     elif cmd == "toggle_virustotal":
         CFG.virustotal_enabled = not CFG.virustotal_enabled
         await ws.send(json.dumps({"type": "vt_toggled", "enabled": CFG.virustotal_enabled}))
@@ -3557,28 +3741,219 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Active Response ───────────────────────────────────────────────────
     elif cmd == "set_discord_webhook":
-        CFG.discord_webhook_url = msg.get("url", "")
-        CFG.discord_enabled = bool(CFG.discord_webhook_url)
+        url = msg.get("url", "")
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if vault_writable and url:
+            try:
+                v.set("netguard.discord.webhook_url", url)
+                CFG.discord_webhook_url = ""
+            except Exception as e:
+                log.warning("[VAULT] set discord webhook failed: %s", e)
+                CFG.discord_webhook_url = url
+        else:
+            CFG.discord_webhook_url = url
+        CFG.discord_enabled = bool(url)
         if "min_severity" in msg:
             CFG.discord_min_severity = msg["min_severity"]
         save_settings()
-        await ws.send(json.dumps({"type": "discord_saved", "enabled": CFG.discord_enabled}))
+        await ws.send(json.dumps({"type": "discord_saved", "enabled": CFG.discord_enabled, "vault_used": vault_writable}))
     elif cmd == "test_discord":
         test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_discord_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "discord_test_sent"}))
     elif cmd == "set_telegram":
-        CFG.telegram_bot_token = msg.get("token", "")
-        CFG.telegram_chat_id = msg.get("chat_id", "")
-        CFG.telegram_enabled = bool(CFG.telegram_bot_token and CFG.telegram_chat_id)
+        token = msg.get("token", "")
+        chat_id = msg.get("chat_id", "")
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if vault_writable and token:
+            try:
+                v.set("netguard.telegram.bot_token", token)
+                CFG.telegram_bot_token = ""
+            except Exception as e:
+                log.warning("[VAULT] set telegram token failed: %s", e)
+                CFG.telegram_bot_token = token
+        else:
+            CFG.telegram_bot_token = token
+        CFG.telegram_chat_id = chat_id
+        CFG.telegram_enabled = bool(token and chat_id)
         if "min_severity" in msg:
             CFG.telegram_min_severity = msg["min_severity"]
         save_settings()
-        await ws.send(json.dumps({"type": "telegram_saved", "enabled": CFG.telegram_enabled}))
+        await ws.send(json.dumps({"type": "telegram_saved", "enabled": CFG.telegram_enabled, "vault_used": vault_writable}))
     elif cmd == "test_telegram":
         test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_telegram_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "telegram_test_sent"}))
+
+    # ── Secret Vault ──────────────────────────────────────────────────────
+    elif cmd == "vault_status":
+        v = _get_vault()
+        # ``deps_missing`` is informational — surface to UI so users get an
+        # actionable hint to install pywin32/keyring/argon2-cffi. The vault
+        # is "available" iff we have a usable object (it's the construction
+        # path that catches missing deps and degrades to the False sentinel).
+        deps_missing = _vault_deps_missing() if v is None else []
+        available = bool(v)
+        initialized = bool(v and v.exists())
+        unlocked = bool(v and initialized and v.is_unlocked())
+        # Surface which CFG keys still hold plaintext secrets so the UI can
+        # offer to migrate them.
+        plaintext_keys = []
+        for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+            if getattr(CFG, cfg_key, ""):
+                plaintext_keys.append(cfg_key)
+        # Names already in vault (without ever exposing values).
+        vault_names = []
+        if unlocked:
+            try:
+                vault_names = [e.get("name") for e in v.list()]
+            except Exception:
+                vault_names = []
+        await ws.send(json.dumps({
+            "type": "vault_status",
+            "available": available,
+            "initialized": initialized,
+            "unlocked": unlocked,
+            "deps_missing": deps_missing,
+            "plaintext_keys": plaintext_keys,
+            "secret_names": vault_names,
+        }))
+    elif cmd == "vault_init":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "vault unavailable"}))
+        elif v.exists():
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "already initialized"}))
+        elif not master or len(master) < 8:
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "master must be at least 8 characters"}))
+        else:
+            try:
+                v.init(master)
+                _VAULT_LOCKED_WARNED = False
+                await ws.send(json.dumps({"type": "vault_init_result", "ok": True}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_unlock":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "vault unavailable"}))
+        elif not v.exists():
+            await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "not initialized"}))
+        else:
+            allowed, reason = _vault_unlock_throttle_check()
+            if not allowed:
+                await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "throttled", "detail": reason}))
+            else:
+                try:
+                    v.unlock(master)
+                    _vault_unlock_record_success()
+                    _VAULT_LOCKED_WARNED = False
+                    await ws.send(json.dumps({"type": "vault_unlock_result", "ok": True}))
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_lock":
+        v = _get_vault()
+        if v and v.exists():
+            try:
+                v.lock()
+            except Exception as e:
+                log.debug("[VAULT] lock error: %s", e)
+        await ws.send(json.dumps({"type": "vault_lock_result", "ok": True}))
+    elif cmd == "vault_set_secret":
+        name = msg.get("name", "")
+        value = msg.get("value", "")
+        v = _get_vault()
+        if not v or not v.exists():
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "vault not initialized"}))
+        elif not v.is_unlocked():
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "vault locked"}))
+        elif not name or not value:
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "name and value required"}))
+        else:
+            try:
+                v.set(name, value)
+                # If this is a known secret, also strip the matching CFG plaintext
+                # so save_settings() doesn't write it back to disk.
+                for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+                    if vault_name == name:
+                        setattr(CFG, cfg_key, "")
+                save_settings()
+                await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": True, "name": name}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_change_master":
+        old = msg.get("old", "")
+        new = msg.get("new", "")
+        v = _get_vault()
+        if not v or not v.exists():
+            await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "vault not initialized"}))
+        elif not new or len(new) < 8:
+            await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "new master must be at least 8 characters"}))
+        else:
+            allowed, reason = _vault_unlock_throttle_check()
+            if not allowed:
+                await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "throttled", "detail": reason}))
+            else:
+                try:
+                    v.change_master(old, new)
+                    _vault_unlock_record_success()
+                    await ws.send(json.dumps({"type": "vault_change_master_result", "ok": True}))
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_migrate":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "vault unavailable"}))
+        else:
+            # Ensure unlocked (or initialise on first run).
+            if not v.exists():
+                if not master or len(master) < 8:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "master required for first init (>=8 chars)"}))
+                    return
+                try:
+                    v.init(master)
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": str(type(e).__name__)}))
+                    return
+            elif not v.is_unlocked():
+                allowed, reason = _vault_unlock_throttle_check()
+                if not allowed:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "throttled", "detail": reason}))
+                    return
+                try:
+                    v.unlock(master)
+                    _vault_unlock_record_success()
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": str(type(e).__name__)}))
+                    return
+
+            # Move every plaintext secret found in CFG into the vault.
+            migrated = []
+            for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+                val = getattr(CFG, cfg_key, "")
+                if not val:
+                    continue
+                try:
+                    v.set(vault_name, val)
+                    setattr(CFG, cfg_key, "")
+                    migrated.append(cfg_key)
+                except Exception as e:
+                    log.warning("[VAULT] migrate %s failed: %s", cfg_key, e)
+            if migrated:
+                try:
+                    save_settings()
+                except Exception as e:
+                    log.warning("[VAULT] save_settings after migrate failed: %s", e)
+            await ws.send(json.dumps({"type": "vault_migrate_result", "ok": True, "migrated": migrated, "count": len(migrated)}))
+
     elif cmd == "isolate_device":
         ip = msg.get("ip", "")
         if ip:

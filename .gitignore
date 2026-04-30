@@ -1,6 +1,8 @@
 # Logs NetGuard
 netguard.log
 *.log
+*.log.[0-9]
+*.log.[0-9][0-9]
 
 # Python
 __pycache__/
