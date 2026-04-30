@@ -61,7 +61,7 @@ datas = []
 # All branding assets (icons, splash, wordmarks, i18n strings JSONs).
 # We deliberately drop Python helpers (_canvas_icon.py, _generate_argus.py)
 # and Markdown notes — those are dev-time tools, not runtime data.
-_BRANDING_RUNTIME_EXTS = {".ico", ".png", ".svg", ".json"}
+_BRANDING_RUNTIME_EXTS = {".ico", ".png", ".svg", ".json", ".html"}
 if BRANDING_DIR.is_dir():
     for entry in BRANDING_DIR.iterdir():
         if entry.is_file() and entry.suffix.lower() in _BRANDING_RUNTIME_EXTS:
@@ -86,6 +86,7 @@ hidden_argus_modules = [
     "argus_vault",
     "argus_vault_gateway",
     "argus_vault_client",
+    "argus_vault_manifests",
     "argus_sandbox",
     "argus_surveillance",
     "argus_arbiter",
@@ -95,6 +96,7 @@ hidden_argus_modules = [
     "argus_i18n",
     "argus_mythos_bus",
     "argus_mythos_gateway",
+    "argus_updater",
     "config",
 ]
 

@@ -13,8 +13,9 @@ venv/
 .env
 *.egg-info/
 dist/
-build/
-# but track the Argus PyInstaller spec
+build/*
+# but track the Argus PyInstaller spec (negation only works if parent dir
+# is not fully excluded — that's why build/* + !build/Argus.spec, not build/)
 !build/Argus.spec
 
 # Profiler artifacts (regenerable cProfile output)
