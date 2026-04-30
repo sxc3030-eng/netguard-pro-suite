@@ -593,10 +593,28 @@ QPushButton.dockBtn {{
     border: 1px solid transparent;
     border-radius: 6px;
     padding: 6px 10px;
-    font-size: 13px;
+    font-size: 14px;
     min-width: 32px;
 }}
-QPushButton.dockBtn:hover {{ color: {accent}; background: {surface}; border-color: {border}; }}
+QPushButton.dockBtn:hover {{
+    color: {accent};
+    background: {surface};
+    border-color: {accent};
+}}
+QPushButton.dockBtn:pressed {{
+    background: {accent};
+    color: {bg};
+    border-color: {accent};
+}}
+QPushButton#ngBtn:hover, QPushButton#aiBtn:hover, QPushButton#modeBtn:hover,
+QPushButton#starBtn:hover {{
+    border-color: {accent};
+    color: {accent};
+}}
+QPushButton#ngBtn:pressed, QPushButton#aiBtn:pressed, QPushButton#modeBtn:pressed {{
+    background: {accent};
+    color: {bg};
+}}
 QPushButton.dockBtn[primary="true"] {{ color: {accent}; }}
 QPushButton#starBtn {{ font-size: 16px; color: #ffb347; }}
 QPushButton#starBtn[saved="true"] {{ color: #ffd700; }}
@@ -2401,7 +2419,7 @@ class AIPanel(QFrame):
         input_row.setSpacing(6)
         self.input = QTextEdit()
         self.input.setObjectName("aiInput")
-        self.input.setPlaceholderText("Pose une question…  (Ctrl+Enter pour envoyer)")
+        self.input.setPlaceholderText("Pose une question…  (Enter envoie · Shift+Enter pour nouvelle ligne)")
         # ~3 lines @ 12pt ≈ 60px
         self.input.setFixedHeight(60)
         self.input.setAcceptRichText(False)
@@ -2445,10 +2463,15 @@ class AIPanel(QFrame):
 
     # ── UX behaviour ────────────────────────────────────────────────
     def eventFilter(self, obj, event):
+        # Enter (no modifier)  → send
+        # Shift+Enter           → newline (default QTextEdit behavior, fall through)
+        # Ctrl+Enter            → also send (kept for muscle memory)
         if obj is self.input and event.type() == event.Type.KeyPress:
             mods = event.modifiers()
-            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) \
-                    and (mods & Qt.KeyboardModifier.ControlModifier):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    return False  # let the default insert a newline
+                # Plain Enter or Ctrl+Enter → send
                 self._send_clicked()
                 return True
         return super().eventFilter(obj, event)
