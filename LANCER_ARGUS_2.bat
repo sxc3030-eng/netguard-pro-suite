@@ -2,18 +2,15 @@
 REM Argus 2.0 — Cybersecurity Workbench (PyQt6 + QtWebEngine)
 REM Sandbox-first browser with Claude arbitrage + surveillance built-in
 REM Sister product to Mythos (Greek mythology naming)
+REM
+REM NOTE: NetGuard backend is NOT auto-started anymore. Argus runs
+REM standalone — the live feed will simply be empty until the user
+REM explicitly launches NetGuard via the 🛡 button in dock row 3.
+REM This avoids the netguard.py "enter your key" prompt firing every
+REM launch, which was friction for users who only want the browser.
 
 cd /d "%~dp0"
 title Argus — Cybersecurity Workbench
-
-REM Ensure NetGuard backend is running (background) so live feed has data
-REM and Argus can reach the AI server at localhost:8770.
-tasklist /FI "IMAGENAME eq python.exe" 2>NUL | findstr /C:"python.exe" >NUL
-if errorlevel 1 (
-    echo NetGuard backend not detected — starting it in background...
-    start "" /B pythonw netguard.py
-    timeout /t 2 /nobreak >NUL
-)
 
 REM Launch Argus via pythonw (no console window — Python's QIcon takes over
 REM in the taskbar). Errors written to argus_data\launch_error.log.

@@ -2915,7 +2915,25 @@ class ArgusBrowser(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Argus 2.0 — NetGuard Cybersecurity Browser")
-        self.resize(1400, 900)
+
+        # Adapt to actual usable area (excludes Windows taskbar / macOS dock /
+        # Linux WM panels). Without this the window can extend past the
+        # taskbar and clip the bottom dock row.
+        try:
+            screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen is not None else None
+        except Exception:
+            avail = None
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            target_w = min(1400, max(960, avail.width() - 40))
+            target_h = min(900, max(640, avail.height() - 40))
+            self.resize(target_w, target_h)
+            self.move(
+                avail.x() + (avail.width() - target_w) // 2,
+                avail.y() + (avail.height() - target_h) // 2,
+            )
+        else:
+            self.resize(1400, 900)
 
         self.mode_idx = 0
         # Track current mode by name (separate from the cycling index so vault
