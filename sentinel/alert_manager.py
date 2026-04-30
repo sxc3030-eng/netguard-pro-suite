@@ -24,6 +24,15 @@ import logging
 import threading
 from collections import defaultdict
 
+try:
+    # Lazy access to the shared SecretVault. Falls back to plaintext
+    # settings when the vault is unavailable / locked, so existing
+    # clean installs and missing-deps builds keep working.
+    from vault_helpers import get_secret as _vault_get_secret
+except Exception:  # pragma: no cover - vault_helpers always ships with the suite
+    def _vault_get_secret(name, fallback=None):  # type: ignore
+        return fallback
+
 logger = logging.getLogger("SentinelOS.AlertManager")
 
 
@@ -104,16 +113,41 @@ class AlertManager:
 
         lang = self.settings.get("language", "fr")
 
-        # Send to Telegram
-        telegram_token = self.settings.get("telegram_bot_token", "")
-        telegram_chat = self.settings.get("telegram_chat_id", "")
+        # Send to Telegram — vault-aware (vault wins over plaintext settings).
+        telegram_token = _vault_get_secret(
+            "sentinel.telegram.bot_token",
+            self.settings.get("telegram_bot_token", ""),
+        )
+        telegram_chat = _vault_get_secret(
+            "sentinel.telegram.chat_id",
+            self.settings.get("telegram_chat_id", ""),
+        )
         if telegram_token and telegram_chat:
             self._send_telegram(alerts, telegram_token, telegram_chat, lang)
 
-        # Send to Discord
-        discord_webhook = self.settings.get("discord_webhook_url", "")
+        # Send to Discord — vault-aware webhook URL.
+        discord_webhook = _vault_get_secret(
+            "sentinel.discord.webhook",
+            self.settings.get("discord_webhook_url", ""),
+        )
         if discord_webhook:
             self._send_discord(alerts, discord_webhook, lang)
+
+        # Send to Slack (vault-only — no legacy plaintext field).
+        slack_webhook = _vault_get_secret(
+            "sentinel.slack.webhook",
+            self.settings.get("slack_webhook_url", ""),
+        )
+        if slack_webhook:
+            self._send_slack(alerts, slack_webhook, lang)
+
+        # Send to Microsoft Teams (vault-only — no legacy plaintext field).
+        teams_webhook = _vault_get_secret(
+            "sentinel.teams.webhook",
+            self.settings.get("teams_webhook_url", ""),
+        )
+        if teams_webhook:
+            self._send_teams(alerts, teams_webhook, lang)
 
         # Log
         for a in alerts:
@@ -208,14 +242,123 @@ class AlertManager:
         except Exception as e:
             logger.error(f"[AlertManager] Discord send error: {e}")
 
+    def _send_slack(self, alerts: list, webhook_url: str, lang: str):
+        """Send alerts via Slack incoming webhook (Block Kit)."""
+        try:
+            import requests
+        except ImportError:
+            logger.warning("[AlertManager] requests not installed, cannot send Slack")
+            return
+
+        title = "SentinelOS Alert" if lang == "en" else "Alerte SentinelOS"
+        blocks: list = [{
+            "type": "header",
+            "text": {"type": "plain_text", "text": f":shield: {title}"},
+        }]
+        for a in alerts[:10]:
+            data = a["data"] or {}
+            msg = data.get("message", a["channel"])
+            sev = a["severity"].upper()
+            emoji = ":rotating_light:" if a["severity"] == "critical" else ":warning:"
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"{emoji} *{a['source']}* — {msg}\n`{a['channel']}` — {sev}",
+                },
+            })
+        if len(alerts) > 10:
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": f"_+{len(alerts) - 10} more alert(s)..._",
+                }],
+            })
+
+        try:
+            resp = requests.post(webhook_url, json={"blocks": blocks}, timeout=10)
+            if resp.status_code in (200, 204):
+                logger.info(f"[AlertManager] Slack: sent {len(alerts)} alerts")
+            else:
+                logger.error(f"[AlertManager] Slack error: {resp.status_code}")
+        except Exception as e:
+            logger.error(f"[AlertManager] Slack send error: {e}")
+
+    def _send_teams(self, alerts: list, webhook_url: str, lang: str):
+        """Send alerts via Microsoft Teams incoming webhook (MessageCard)."""
+        try:
+            import requests
+        except ImportError:
+            logger.warning("[AlertManager] requests not installed, cannot send Teams")
+            return
+
+        title = "SentinelOS Alert" if lang == "en" else "Alerte SentinelOS"
+        critical = any(a["severity"] == "critical" for a in alerts)
+        theme_color = "E74C3C" if critical else "F39C12"
+
+        sections = []
+        for a in alerts[:10]:
+            data = a["data"] or {}
+            msg = data.get("message", a["channel"])
+            sev = a["severity"].upper()
+            sections.append({
+                "activityTitle": f"**{a['source']}** — {sev}",
+                "activitySubtitle": a["channel"],
+                "text": msg,
+            })
+
+        card = {
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": title,
+            "themeColor": theme_color,
+            "title": title,
+            "sections": sections,
+        }
+        try:
+            resp = requests.post(webhook_url, json=card, timeout=10)
+            if resp.status_code in (200, 204):
+                logger.info(f"[AlertManager] Teams: sent {len(alerts)} alerts")
+            else:
+                logger.error(f"[AlertManager] Teams error: {resp.status_code}")
+        except Exception as e:
+            logger.error(f"[AlertManager] Teams send error: {e}")
+
     # --- API Methods --------------------------------------------------
 
     def get_config(self) -> dict:
-        """Get alert configuration (safe — no tokens exposed)."""
+        """Get alert configuration (safe — no tokens exposed).
+
+        Reports a channel as configured if EITHER the vault holds the
+        secret OR the legacy plaintext settings field is non-empty.
+        """
+        tg_token = _vault_get_secret(
+            "sentinel.telegram.bot_token",
+            self.settings.get("telegram_bot_token", ""),
+        )
+        tg_chat = _vault_get_secret(
+            "sentinel.telegram.chat_id",
+            self.settings.get("telegram_chat_id", ""),
+        )
+        discord_webhook = _vault_get_secret(
+            "sentinel.discord.webhook",
+            self.settings.get("discord_webhook_url", ""),
+        )
+        slack_webhook = _vault_get_secret(
+            "sentinel.slack.webhook",
+            self.settings.get("slack_webhook_url", ""),
+        )
+        teams_webhook = _vault_get_secret(
+            "sentinel.teams.webhook",
+            self.settings.get("teams_webhook_url", ""),
+        )
         return {
-            "telegram_configured": bool(self.settings.get("telegram_bot_token")),
-            "telegram_chat_id": self.settings.get("telegram_chat_id", "")[:4] + "..." if self.settings.get("telegram_chat_id") else "",
-            "discord_configured": bool(self.settings.get("discord_webhook_url")),
+            "telegram_configured": bool(tg_token),
+            "telegram_chat_id": (tg_chat[:4] + "...") if tg_chat else "",
+            "discord_configured": bool(discord_webhook),
+            "slack_configured": bool(slack_webhook),
+            "teams_configured": bool(teams_webhook),
             "cooldown_seconds": self._cooldown_seconds,
             "batch_interval": self._batch_interval,
         }
@@ -235,9 +378,15 @@ class AlertManager:
         logger.info("[AlertManager] Configuration updated")
 
     def test_telegram(self) -> bool:
-        """Send a test message to Telegram."""
-        token = self.settings.get("telegram_bot_token", "")
-        chat_id = self.settings.get("telegram_chat_id", "")
+        """Send a test message to Telegram (vault-aware)."""
+        token = _vault_get_secret(
+            "sentinel.telegram.bot_token",
+            self.settings.get("telegram_bot_token", ""),
+        )
+        chat_id = _vault_get_secret(
+            "sentinel.telegram.chat_id",
+            self.settings.get("telegram_chat_id", ""),
+        )
         if not token or not chat_id:
             return False
         try:
@@ -252,8 +401,11 @@ class AlertManager:
             return False
 
     def test_discord(self) -> bool:
-        """Send a test message to Discord."""
-        url = self.settings.get("discord_webhook_url", "")
+        """Send a test message to Discord (vault-aware)."""
+        url = _vault_get_secret(
+            "sentinel.discord.webhook",
+            self.settings.get("discord_webhook_url", ""),
+        )
         if not url:
             return False
         try:
@@ -261,6 +413,50 @@ class AlertManager:
             resp = requests.post(
                 url,
                 json={"content": "🛡️ SentinelOS — Test alert OK!"},
+                timeout=10,
+            )
+            return resp.status_code in (200, 204)
+        except Exception:
+            return False
+
+    def test_slack(self) -> bool:
+        """Send a test message to Slack (vault-aware)."""
+        url = _vault_get_secret(
+            "sentinel.slack.webhook",
+            self.settings.get("slack_webhook_url", ""),
+        )
+        if not url:
+            return False
+        try:
+            import requests
+            resp = requests.post(
+                url,
+                json={"text": ":shield: SentinelOS — Test alert OK!"},
+                timeout=10,
+            )
+            return resp.status_code in (200, 204)
+        except Exception:
+            return False
+
+    def test_teams(self) -> bool:
+        """Send a test message to Microsoft Teams (vault-aware)."""
+        url = _vault_get_secret(
+            "sentinel.teams.webhook",
+            self.settings.get("teams_webhook_url", ""),
+        )
+        if not url:
+            return False
+        try:
+            import requests
+            resp = requests.post(
+                url,
+                json={
+                    "@type": "MessageCard",
+                    "@context": "https://schema.org/extensions",
+                    "summary": "SentinelOS test",
+                    "themeColor": "3DFFB4",
+                    "title": "SentinelOS — Test alert OK!",
+                },
                 timeout=10,
             )
             return resp.status_code in (200, 204)

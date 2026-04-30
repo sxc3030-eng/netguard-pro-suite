@@ -195,6 +195,26 @@ We are explicit about which features are real security boundaries and which are 
 
 ---
 
+## 📚 Documentation
+
+End-user guides live in `docs/`. Newcomers should read in this order:
+
+| Étape | Guide | À lire si... |
+|-------|-------|--------------|
+| 1 | [docs/getting_started.md](docs/getting_started.md) | Tu installes pour la première fois |
+| 2 | [docs/secret_vault_user_guide.md](docs/secret_vault_user_guide.md) | Tu vas utiliser des clés API (Claude, GPT, Gemini, threat-intel) |
+| 3 | [docs/ai_assistant_user_guide.md](docs/ai_assistant_user_guide.md) | Tu veux activer le panneau IA dans Argus |
+| 4 | [docs/license_activation_guide.md](docs/license_activation_guide.md) | Tu as acheté Pro et tu veux activer ta licence |
+| 5 | [docs/troubleshooting.md](docs/troubleshooting.md) | Quelque chose ne marche pas |
+
+Specs techniques :
+- [docs/secret_vault_spec.md](docs/secret_vault_spec.md) — threat model + architecture du Vault (pour devs / auditeurs)
+- [docs/SECURITY_AUDIT_2026-04-29.md](docs/SECURITY_AUDIT_2026-04-29.md) — dernier audit interne
+- [docs/PERFORMANCE_2026-04-29.md](docs/PERFORMANCE_2026-04-29.md) — profil performance
+- [docs/MYTHOS_PROTOCOL.md](docs/MYTHOS_PROTOCOL.md) — protocole Mythos (sandbox AI agent)
+
+---
+
 ## 🤝 Contributing — full guide
 
 Beyond the quick fork-and-PR loop above, see [CONTRIBUTING.md](CONTRIBUTING.md) for:

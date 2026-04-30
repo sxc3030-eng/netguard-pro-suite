@@ -53,6 +53,11 @@ from agent_bus import AgentBus
 from playbook_engine import PlaybookEngine
 from threat_intel import ThreatIntelFeed
 from alert_manager import AlertManager
+from vault_helpers import (
+    get_secret as _vault_get_secret,
+    migrate_to_vault as _vault_migrate_settings,
+    SENTINEL_VAULT_KEYS,
+)
 
 # ===========================================================================
 # CONFIGURATION
@@ -178,6 +183,28 @@ def save_settings(settings: dict):
 
 
 SETTINGS = load_settings()
+
+
+def migrate_to_vault() -> tuple[list[str], int]:
+    """Move every plaintext alert-channel secret in ``sentinel_settings.json``
+    into the shared :class:`SecretVault`.
+
+    Caller is responsible for ensuring the vault is unlocked first
+    (typically via the ``vault_migrate`` WS command on
+    ``netguard.py`` which handles the suite-wide master-password
+    dance). Returns ``(migrated_keys, count)`` — empty result is normal
+    when nothing needs migrating.
+
+    The settings file is rewritten with the plaintext values stripped
+    and a ``.pre-vault.bak`` backup is left next to it. The in-memory
+    :data:`SETTINGS` dict is also updated so a running Cortex picks up
+    the change without needing a restart.
+    """
+    return _vault_migrate_settings(
+        SETTINGS,
+        settings_path=Path(SETTINGS_FILE),
+        save_callback=lambda: save_settings(SETTINGS),
+    )
 
 
 # ===========================================================================
@@ -1796,10 +1823,15 @@ def main():
     # Phase 3 components
     playbook_engine = PlaybookEngine(bus, connectors)
     threat_intel = ThreatIntelFeed(bus)
+    # AlertManager itself is vault-aware (it calls vault_helpers.get_secret
+    # with these settings as fallback). We just pass the legacy plaintext
+    # fields so a clean install with no vault keeps working unchanged.
     alert_settings = {
         "telegram_bot_token": SETTINGS.get("telegram_bot_token", ""),
         "telegram_chat_id": SETTINGS.get("telegram_chat_id", ""),
         "discord_webhook_url": SETTINGS.get("discord_webhook_url", ""),
+        "slack_webhook_url": SETTINGS.get("slack_webhook_url", ""),
+        "teams_webhook_url": SETTINGS.get("teams_webhook_url", ""),
         "language": SETTINGS.get("language", "fr"),
     }
     alert_mgr = AlertManager(bus, alert_settings)

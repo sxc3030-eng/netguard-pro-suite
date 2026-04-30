@@ -2227,6 +2227,19 @@ tr:hover td{background:var(--bg4)22}
     </div>
   </div>
 
+  <!-- ══ License & Devices (multi-PC seat manager 2026-04-30) ══ -->
+  <div class="card" id="license-card" style="padding:16px;margin-bottom:16px;border-color:#5b8cff33">
+    <h3 style="color:#5b8cff;margin:0 0 8px 0">🔑 Licence</h3>
+    <div id="license-summary" style="font-size:13px;color:var(--text2);line-height:1.7">
+      <div style="opacity:.6">Chargement de l'etat de la licence...</div>
+    </div>
+    <div id="license-devices" style="margin-top:14px"></div>
+    <div style="font-size:11px;color:var(--text3);margin-top:10px">
+      Astuce : votre licence Pro autorise jusqu'a 5 PCs. Liberez une place en
+      cliquant sur "Deactivate" pour la reutiliser sur une autre machine.
+    </div>
+  </div>
+
   <div class="card" style="padding:16px;border-color:var(--green)33">
     <h3 style="color:var(--green)" data-t="support_about_title">ℹ️ About NetGuard Pro v4.0</h3>
     <div style="font-size:12px;color:var(--text2);line-height:1.8;margin-top:8px" data-t="support_about_desc">
@@ -2479,6 +2492,15 @@ function handleMsg(msg) {
   } else if (msg.type === 'npcap_consumers') {
     renderNpcapConsumers(msg.consumers || []);
 
+  } else if (msg.type === 'license_status') {
+    renderLicenseStatus(msg);
+  } else if (msg.type === 'license_device_deactivated') {
+    if (msg.ok) {
+      showToast('Device deactivated. A seat is now free.', 'var(--green)');
+      sendCmd({cmd:'license_status'});
+    } else {
+      showToast('Deactivation failed: ' + (msg.error || 'unknown'), 'var(--red)');
+    }
   } else if (msg.type === 'record_started' || msg.type === 'record_stopped') {
     sendCmd({cmd:'get_state'});
   } else if (msg.type === 'record_list') {
@@ -3765,6 +3787,99 @@ function showTab(id, navEl) {
   if (id === 'audit') loadAudit();
   // v4.0 — Backup auto-load (rest trimmed 2026-04-30)
   if (id === 'backup') backupRefresh();
+  // 2026-04-30 — License status load
+  if (id === 'support') sendCmd({cmd:'license_status'});
+}
+
+// ── License multi-PC manager (2026-04-30) ──────────────────────────────────
+function renderLicenseStatus(msg) {
+  const sumEl = document.getElementById('license-summary');
+  const devEl = document.getElementById('license-devices');
+  if (!sumEl || !devEl) return;
+  if (!msg.available) {
+    sumEl.innerHTML = '<div style="color:var(--text3)">Licence: '
+      + (msg.error || 'indisponible') + '</div>';
+    devEl.innerHTML = '';
+    return;
+  }
+  const fmtDate = s => {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleDateString(); } catch (e) { return s; }
+  };
+  const tier  = (msg.tier || '—').toUpperCase();
+  const plan  = (msg.plan || '—').toUpperCase();
+  const used  = msg.seats_used || 0;
+  const max   = msg.max_seats || 0;
+  const pct   = max > 0 ? Math.round(100 * used / max) : 0;
+  const expColor = (() => {
+    if (!msg.expires_at) return 'var(--text2)';
+    const d = (new Date(msg.expires_at) - Date.now()) / 86400000;
+    if (d < 0) return 'var(--red)';
+    if (d < 30) return '#ffb347';
+    return 'var(--green)';
+  })();
+  const seatBar = max > 0
+    ? `<div style="margin:6px 0;background:var(--bg4);border-radius:4px;height:8px;overflow:hidden">
+         <div style="background:${used>=max?'var(--red)':'#5b8cff'};height:100%;width:${pct}%"></div>
+       </div>`
+    : '';
+  let html = '';
+  if (msg.trial) {
+    html += `<div>Mode: <b>Essai</b> — ${msg.trial_days_left} jour(s) restant(s)</div>`;
+  } else if (msg.expired) {
+    html += `<div style="color:var(--red)">Essai expire — passez a NetGuard Pro</div>`;
+  } else {
+    html += `<div>Tier: <b>${tier}</b> | Plan: <b>${plan}</b></div>`;
+    html += `<div>Sieges: <b>${used} / ${max}</b> ${seatBar}</div>`;
+    html += `<div>Expire le: <span style="color:${expColor}"><b>${fmtDate(msg.expires_at)}</b></span></div>`;
+    if (msg.license_id) {
+      html += `<div style="font-size:11px;color:var(--text3);margin-top:4px">License ID: ${msg.license_id}</div>`;
+    }
+  }
+  if (msg.seat_exhausted && msg.seat_error) {
+    html += `<div style="margin-top:8px;padding:8px;background:#7a1818;border-radius:6px;color:#fff">
+              ⚠ ${msg.seat_error}</div>`;
+  }
+  sumEl.innerHTML = html;
+
+  const devices = Array.isArray(msg.devices) ? msg.devices : [];
+  if (!devices.length) {
+    devEl.innerHTML = '<div style="font-size:12px;color:var(--text3);margin-top:8px">Aucun appareil active.</div>';
+    return;
+  }
+  let dev = '<div style="font-weight:600;margin-bottom:6px">Appareils actives</div>';
+  dev += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  dev += '<tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border)">'
+       + '<th style="padding:6px 4px">Hostname</th>'
+       + '<th style="padding:6px 4px">Empreinte</th>'
+       + '<th style="padding:6px 4px">Activee</th>'
+       + '<th style="padding:6px 4px">Vue</th>'
+       + '<th style="padding:6px 4px">Action</th></tr>';
+  devices.forEach(d => {
+    const safe = (d.fingerprint || '').replace(/[^0-9a-fA-F]/g,'').slice(0, 64);
+    const me = d.this_machine
+      ? '<span style="color:#5b8cff;font-weight:600">(cette machine)</span>' : '';
+    dev += `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 4px">${(d.hostname||'?')} ${me}</td>
+              <td style="padding:6px 4px;font-family:monospace">${d.fingerprint_short||''}</td>
+              <td style="padding:6px 4px">${fmtDate(d.activated_at)}</td>
+              <td style="padding:6px 4px">${fmtDate(d.last_seen)}</td>
+              <td style="padding:6px 4px">
+                <button class="btn" style="padding:4px 10px;font-size:11px;background:var(--red);color:#fff"
+                  onclick="licenseDeactivateDevice('${safe}', ${d.this_machine?1:0})">Deactivate</button>
+              </td>
+            </tr>`;
+  });
+  dev += '</table>';
+  devEl.innerHTML = dev;
+}
+
+function licenseDeactivateDevice(fingerprint, isMe) {
+  const msg = isMe
+    ? "Desactiver CETTE machine ? L'application repassera en mode trial/free."
+    : "Liberer la place de cet appareil ?";
+  if (!confirm(msg)) return;
+  sendCmd({cmd: 'license_deactivate_device', fingerprint: fingerprint});
 }
 
 // ── Lang ───────────────────────────────────────────────────────────────────

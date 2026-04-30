@@ -9,6 +9,19 @@ websockets>=12.0
 cryptography>=42.0.0
 bcrypt>=4.1.0
 
+# Secret Vault (triple-encryption: DPAPI + Keychain + Argon2id)
+# All three are *optional* — vault degrades gracefully to plaintext fallback
+# if any are missing (UI banner shows the install hint).
+keyring>=24.0.0           # Layer 2: Windows Credential Manager / macOS Keychain / Linux Secret Service
+argon2-cffi>=23.1.0       # Layer 3: Argon2id master password KDF (memory-hard)
+
+# Process & connection inspection (app-identification per packet,
+# bandwidth tracking per IP, rogue Npcap consumer detector)
+psutil>=5.9.0
+
+# Mode Fantôme (system tray icon + balloon notifications)
+pystray>=0.19.0
+
 # Secret resolver (config.py)
 python-dotenv>=1.0.0
 

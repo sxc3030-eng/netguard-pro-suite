@@ -7,6 +7,7 @@ Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
 
 import asyncio
+import importlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -31,12 +32,41 @@ import base64
 
 # License manager
 try:
-    from license_manager import init_license, has_feature, get_trial_banner
+    from license_manager import (
+        init_license, has_feature, get_trial_banner,
+        LicenseManager, LicenseSeatExhaustedError, LicenseError,
+    )
     LICENSE = init_license()
+    # Multi-PC validation: only triggers if a real Ed25519 license is present.
+    # Trial/free users skip this entirely (no license_key in netguard_license.json).
+    LICENSE_SEAT_EXHAUSTED = False
+    LICENSE_SEAT_ERROR = ""
+    try:
+        _lm_state = LicenseManager().validate(auto_activate=True)
+        LICENSE.update({
+            "plan": _lm_state.get("plan"),
+            "max_seats": _lm_state.get("max_seats"),
+            "seats_used": _lm_state.get("seats_used"),
+            "license_id": _lm_state.get("license_id"),
+            "fingerprint": _lm_state.get("fingerprint"),
+            "fingerprint_short": _lm_state.get("fingerprint_short"),
+        })
+    except LicenseSeatExhaustedError as e:
+        LICENSE_SEAT_EXHAUSTED = True
+        LICENSE_SEAT_ERROR = str(e)
+        print(f"[LICENSE] {e}")
+    except LicenseError:
+        # No multi-PC license active (trial, free, or legacy single-PC) — fine.
+        pass
 except Exception:
     LICENSE = {"tier": "trial", "features": [], "trial": True, "trial_days_left": 30, "expired": False}
+    LICENSE_SEAT_EXHAUSTED = False
+    LICENSE_SEAT_ERROR = ""
     def has_feature(f): return True
     def get_trial_banner(): return ""
+    LicenseManager = None
+    LicenseSeatExhaustedError = Exception
+    LicenseError = Exception
 
 # Fix pythonw (no console) — redirect None stdout/stderr to devnull
 if sys.stdout is None:
@@ -286,6 +316,68 @@ def get_secret(name: str, fallback_settings_key=None):
     if fallback_settings_key is not None:
         return getattr(CFG, fallback_settings_key, None) or None
     return None
+
+
+def _run_sister_module_migrations() -> dict:
+    """Walk Sentinel + MailShield + any other suite module that exposes
+    a ``migrate_to_vault()`` callable and run each migration in turn.
+
+    Each module's directory is added to ``sys.path`` before the import
+    so the ``from foo import bar`` paths inside that module resolve as
+    they would when launched standalone (cortex.py and mailshield.py
+    both rely on this).
+
+    Returns a per-module dict suitable for embedding in a WS reply::
+
+        {
+            "sentinel":   {"migrated": [...], "count": N},
+            "mailshield": {"error": "VaultLockedError"},
+        }
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    targets = (
+        # (display_name, sub-dir, module-name)
+        ("sentinel",   "sentinel",   "cortex"),
+        ("mailshield", "mailshield", "mailshield"),
+    )
+    out: dict = {}
+    for display_name, subdir, module_name in targets:
+        mod_dir = os.path.join(base_dir, subdir)
+        added = False
+        try:
+            if mod_dir not in sys.path:
+                sys.path.insert(0, mod_dir)
+                added = True
+            try:
+                mod = importlib.import_module(module_name)
+            except Exception as e:
+                log.warning("[VAULT] sister %s import failed: %s",
+                            display_name, type(e).__name__)
+                out[display_name] = {"error": f"import:{type(e).__name__}"}
+                continue
+            fn = getattr(mod, "migrate_to_vault", None)
+            if not callable(fn):
+                out[display_name] = {"error": "no migrate_to_vault hook"}
+                continue
+            try:
+                m_keys, m_count = fn()
+                out[display_name] = {
+                    "migrated": list(m_keys),
+                    "count": int(m_count),
+                }
+            except Exception as e:
+                log.warning("[VAULT] sister %s migrate failed: %s",
+                            display_name, type(e).__name__)
+                out[display_name] = {"error": str(type(e).__name__)}
+        finally:
+            # Best-effort cleanup. We only remove what we added; leaving
+            # legitimately-imported paths alone.
+            if added:
+                try:
+                    sys.path.remove(mod_dir)
+                except ValueError:
+                    pass
+    return out
 
 
 def _vault_unlock_throttle_check():
@@ -3952,7 +4044,23 @@ async def handle_ws_command(ws, msg: dict):
                     save_settings()
                 except Exception as e:
                     log.warning("[VAULT] save_settings after migrate failed: %s", e)
-            await ws.send(json.dumps({"type": "vault_migrate_result", "ok": True, "migrated": migrated, "count": len(migrated)}))
+
+            # ── Sister modules ──────────────────────────────────────────
+            # The vault is now unlocked. Walk Sentinel + MailShield (and
+            # any other suite modules that registered a migrate hook) and
+            # let each move their own plaintext secrets in. Each module
+            # exposes a top-level ``migrate_to_vault()`` returning
+            # ``(migrated_keys: list, count: int)`` — failures are logged
+            # and never fail the netguard side of the migration.
+            module_migrations = _run_sister_module_migrations()
+
+            await ws.send(json.dumps({
+                "type": "vault_migrate_result",
+                "ok": True,
+                "migrated": migrated,
+                "count": len(migrated),
+                "modules": module_migrations,
+            }))
 
     elif cmd == "isolate_device":
         ip = msg.get("ip", "")
@@ -4049,6 +4157,56 @@ async def handle_ws_command(ws, msg: dict):
     elif cmd == "npcap_consumers":
         consumers = npcap_get_consumers()
         await ws.send(json.dumps({"type": "npcap_consumers", "consumers": consumers}))
+
+    # ── Multi-PC license management (2026-04-30) ──────────────────────
+    elif cmd == "license_status":
+        try:
+            if LicenseManager is None:
+                payload = {"type": "license_status", "available": False,
+                           "error": "license_manager unavailable"}
+            else:
+                s = LicenseManager().status()
+                payload = {
+                    "type": "license_status",
+                    "available": True,
+                    "plan": s.get("plan"),
+                    "tier": s.get("tier"),
+                    "seats_used": s.get("seats_used", 0),
+                    "max_seats": s.get("max_seats", 0),
+                    "expires_at": s.get("expires_at"),
+                    "license_id": s.get("license_id", ""),
+                    "trial": s.get("trial", False),
+                    "trial_days_left": s.get("trial_days_left", 0),
+                    "expired": s.get("expired", False),
+                    "fingerprint_short": s.get("fingerprint_short", ""),
+                    "devices": s.get("devices", []),
+                    "seat_exhausted": LICENSE_SEAT_EXHAUSTED,
+                    "seat_error": LICENSE_SEAT_ERROR,
+                }
+            await ws.send(json.dumps(payload))
+        except Exception as e:
+            await ws.send(json.dumps({"type": "license_status", "available": False,
+                                      "error": str(e)}))
+    elif cmd == "license_deactivate_device":
+        # TODO(real-server): when the activation server exists, also POST to
+        # /api/v1/license/deactivate so the seat is freed across machines.
+        # For now this is a *local* deactivation only.
+        fingerprint = msg.get("fingerprint", "")
+        if not fingerprint:
+            await ws.send(json.dumps({"type": "license_device_deactivated",
+                                      "ok": False,
+                                      "error": "fingerprint requis"}))
+        else:
+            try:
+                ok = bool(LicenseManager and
+                          LicenseManager().deactivate_device(fingerprint))
+                await ws.send(json.dumps({"type": "license_device_deactivated",
+                                          "ok": ok,
+                                          "fingerprint": fingerprint}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "license_device_deactivated",
+                                          "ok": False,
+                                          "error": str(e)}))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
