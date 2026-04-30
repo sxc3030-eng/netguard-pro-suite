@@ -2868,6 +2868,7 @@ function render(s) {
     renderRateLimitStats(s.rate_limit_stats || []);
   }
   renderPackets(s.recent_packets, 'pkts-full-body', 500);
+  if (s.top_bandwidth_ips) renderBandwidthPanel(s.top_bandwidth_ips);
   _accumulateThreats(s.threats);
   renderThreats(s.threats, 'dash-threats-compact', 6);
   renderThreats(s.threats, 'threats-full', 100);
@@ -3855,6 +3856,41 @@ function renderTopIps(ips) {
       <span style="font-family:'Geist Mono',monospace;color:var(--text2)">${ip}</span>
       <span style="color:var(--amber);font-weight:600">${hits} hits</span>
     </div>`).join('');
+}
+
+// ── Top Bande passante (audit 2026-04-28: app-id + bandwidth per IP) ─────
+function renderBandwidthPanel(rows, totalLabel) {
+  const el = document.getElementById('dash-bandwidth-list');
+  const tot = document.getElementById('dash-bw-total');
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px">Aucune donnée bande passante (capture en cours…)</div>';
+    if (tot) tot.textContent = '— total';
+    return;
+  }
+  const max = rows[0].bytes || 1;
+  const sum = rows.reduce((a,r) => a + (r.bytes||0), 0);
+  if (tot) tot.textContent = fmtBytes(sum) + ' total';
+  el.innerHTML = rows.map(r => {
+    const pct = Math.max(2, Math.round((r.bytes || 0) * 100 / max));
+    const ip = esc(r.ip || '');
+    const proc = esc(r.process || '—');
+    const country = esc(r.country || '');
+    const bytes = fmtBytes(r.bytes || 0);
+    return `
+      <div style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:3px">
+          <span style="font-family:'Geist Mono',monospace;color:var(--text)" title="${ip}">${ip}${country ? ' <span style=\"color:var(--text3);font-size:10px\">' + country + '</span>' : ''}</span>
+          <span style="color:var(--blue);font-weight:600;font-family:'Geist Mono',monospace">${bytes}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+          <span style="color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%" title="${proc}">${proc}</span>
+          <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-left:8px">
+            <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,var(--blue),var(--purple))"></div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
