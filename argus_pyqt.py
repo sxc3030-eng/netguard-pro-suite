@@ -201,6 +201,26 @@ except ImportError:
     def vault_exists():  # type: ignore[no-redef]
         return False
 
+# Manifest layer — trust-on-register entitlements for the Vault tab.
+try:
+    from argus_vault_manifests import (
+        manifest_set, manifest_get, manifest_list, manifest_delete,
+        programs_entitled_to,
+    )
+    HAVE_VAULT_MANIFESTS = True
+except ImportError:
+    HAVE_VAULT_MANIFESTS = False
+    def manifest_set(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("argus_vault_manifests not available")
+    def manifest_get(_h):  # type: ignore[no-redef]
+        return None
+    def manifest_list():  # type: ignore[no-redef]
+        return []
+    def manifest_delete(_h):  # type: ignore[no-redef]
+        return False
+    def programs_entitled_to(_n):  # type: ignore[no-redef]
+        return []
+
 # Audit chain verification (vault gateway) — Vault tab "Verify chain" button.
 try:
     from argus_vault_gateway import gateway_audit_chain_verify
@@ -1519,6 +1539,21 @@ class SettingsDialog(QDialog):
                 f"Saisis une valeur pour {name} avant de sauvegarder.",
             )
             return
+
+        # Auto-routing intelligence: which already-registered programs
+        # WILL gain access if we save this secret? Surface them BEFORE
+        # the write so the operator can opt out specific programs.
+        opt_out_hashes: list[str] = []
+        if HAVE_VAULT_MANIFESTS:
+            try:
+                entitled_progs = programs_entitled_to(name) or []
+            except Exception:
+                entitled_progs = []
+            if entitled_progs:
+                opt_out_hashes = self._auto_routing_confirm(name, entitled_progs)
+                if opt_out_hashes is None:
+                    return  # cancelled
+
         try:
             store_secret(name, value, owner="user")
         except Exception as e:
@@ -1527,6 +1562,32 @@ class SettingsDialog(QDialog):
                 f"Impossible de stocker {name} :\n{e}",
             )
             return
+
+        # Apply opt-outs by removing the secret from those manifests.
+        if HAVE_VAULT_MANIFESTS and opt_out_hashes:
+            for h in opt_out_hashes:
+                rec = manifest_get(h)
+                if rec is None:
+                    continue
+                new_needs = [n for n in rec.get("needs", []) if n != name]
+                try:
+                    manifest_set(
+                        program_hash=h,
+                        name=rec.get("name", ""),
+                        needs=new_needs,
+                        approved_by="settings_ui_optout",
+                    )
+                except Exception:
+                    # A single opt-out failure must NOT propagate as a
+                    # save error — the secret IS already stored. Surface
+                    # silently as a warning instead of a critical.
+                    continue
+            # Reload the table so the count column reflects the change.
+            try:
+                self._reload_manifest_table()
+            except Exception:
+                pass
+
         # Mask again on success.
         line_edit.clear()
         line_edit.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1535,6 +1596,49 @@ class SettingsDialog(QDialog):
             self, "Argus — coffre",
             f"{name} a été stocké dans le coffre chiffré.",
         )
+
+    def _auto_routing_confirm(self, secret_name: str,
+                              entitled_progs: list[dict]):
+        """Show the auto-routing modal.
+
+        Returns:
+            * a list of program_hashes the user OPTED OUT of (may be empty),
+            * or ``None`` if the user cancelled the save entirely.
+        """
+        names = ", ".join(p.get("name", "") for p in entitled_progs) or "—"
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Argus — auto-routing")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(QLabel(
+            f"Sauvegarder {secret_name} donnera l'accès aux programmes "
+            "suivants (selon leur manifeste) :"
+        ))
+        dl.addWidget(QLabel(f"<b>{names}</b>"))
+        dl.addWidget(QLabel(
+            "Décoche un programme pour l'opt-out (le secret sera retiré "
+            "de son manifeste après sauvegarde)."
+        ))
+        boxes: dict[str, QCheckBox] = {}
+        for p in entitled_progs:
+            h = p.get("program_hash", "")
+            cb = QCheckBox(p.get("name", h[:12]))
+            cb.setChecked(True)  # default: keep
+            boxes[h] = cb
+            dl.addWidget(cb)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        save_btn = btns.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn is not None:
+            save_btn.setText("Sauvegarder")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        dl.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return [h for h, cb in boxes.items() if not cb.isChecked()]
 
     def _migrate_from_env(self):
         env_path = ROOT / ".env"
@@ -1614,6 +1718,44 @@ class SettingsDialog(QDialog):
         hdr.setWordWrap(True)
         hdr.setStyleSheet("font-size: 12px; color: #9aa0ad;")
         ov.addWidget(hdr)
+
+        # ── Programs sub-section (trust-on-register manifests) ──────────
+        if HAVE_VAULT_MANIFESTS:
+            prog_group = QGroupBox("Programmes enregistrés (manifestes)")
+            pg = QVBoxLayout(prog_group)
+            pg_hint = QLabel(
+                "Chaque programme reçoit l'accès aux secrets que tu approuves "
+                "ici. Au runtime, aucune popup — le programme reçoit la "
+                "valeur ou rien (le code appelant gère le cas None)."
+            )
+            pg_hint.setWordWrap(True)
+            pg_hint.setStyleSheet("font-size: 11px; color: #9aa0ad;")
+            pg.addWidget(pg_hint)
+
+            self._manifest_table = QTableWidget()
+            self._manifest_table.setColumnCount(4)
+            self._manifest_table.setHorizontalHeaderLabels(
+                ["Programme", "Secrets entitled", "Approuvé le", "Actions"]
+            )
+            self._manifest_table.verticalHeader().setVisible(False)
+            self._manifest_table.setEditTriggers(
+                QTableWidget.EditTrigger.NoEditTriggers
+            )
+            self._manifest_table.setSelectionBehavior(
+                QTableWidget.SelectionBehavior.SelectRows
+            )
+            try:
+                mh = self._manifest_table.horizontalHeader()
+                mh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            except Exception:
+                pass
+            pg.addWidget(self._manifest_table)
+            self._reload_manifest_table()
+
+            ov.addWidget(prog_group)
 
         # Table: Name / Owner / Created / Actions
         self._vault_table = QTableWidget()
@@ -1783,6 +1925,157 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, "Argus — gateway",
                                 "Chaîne d'audit invalide ou interrompue ✗")
+
+    # ── Manifest table (trust-on-register) ─────────────────────────────
+    def _reload_manifest_table(self):
+        if not HAVE_VAULT_MANIFESTS:
+            return
+        try:
+            entries = manifest_list() or []
+        except Exception as e:
+            entries = []
+            QMessageBox.warning(self, "Argus — manifestes",
+                                f"manifest_list() a échoué : {e}")
+        try:
+            self._manifest_table.setRowCount(len(entries))
+        except Exception:
+            return
+        for r, rec in enumerate(entries):
+            name = rec.get("name", "")
+            needs = rec.get("needs", []) or []
+            approved_at = rec.get("approved_at", "") or "—"
+            program_hash = rec.get("program_hash", "")
+
+            self._manifest_table.setItem(r, 0, QTableWidgetItem(name))
+            self._manifest_table.setItem(
+                r, 1, QTableWidgetItem(str(len(needs))),
+            )
+            self._manifest_table.setItem(r, 2, QTableWidgetItem(approved_at))
+
+            cell = QWidget()
+            cl = QHBoxLayout(cell)
+            cl.setContentsMargins(2, 2, 2, 2)
+            cl.setSpacing(4)
+
+            view_btn = QPushButton("View")
+            view_btn.setToolTip("Voir la liste exacte des secrets entitled.")
+            view_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_view(h)
+            )
+            edit_btn = QPushButton("Edit")
+            edit_btn.setToolTip("Cocher / décocher les secrets approuvés.")
+            edit_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_edit(h)
+            )
+            rev_btn = QPushButton("Revoke")
+            rev_btn.setToolTip(
+                "Supprimer le manifeste — le programme cessera "
+                "d'être entitled à aucun secret."
+            )
+            rev_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_revoke(h)
+            )
+            cl.addWidget(view_btn)
+            cl.addWidget(edit_btn)
+            cl.addWidget(rev_btn)
+            cl.addStretch(1)
+            self._manifest_table.setCellWidget(r, 3, cell)
+
+    def _manifest_view(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            QMessageBox.information(self, "Argus — manifestes",
+                                    "Manifeste introuvable.")
+            return
+        body = (
+            f"Programme : {rec.get('name', '')}\n"
+            f"Hash : {program_hash[:16]}…\n"
+            f"Approuvé le : {rec.get('approved_at', '—')}\n"
+            f"Approuvé par : {rec.get('approved_by', '—')}\n\n"
+            "Secrets entitled :\n"
+            + ("\n".join(f"  • {n}" for n in rec.get('needs', [])) or "  (aucun)")
+        )
+        QMessageBox.information(self, "Argus — manifeste", body)
+
+    def _manifest_edit(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            QMessageBox.information(self, "Argus — manifestes",
+                                    "Manifeste introuvable.")
+            return
+        current = set(rec.get("needs", []) or [])
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Argus — éditer {rec.get('name', '')}")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(QLabel(
+            "Coche les secrets que ce programme est autorisé à lire au "
+            "runtime. Les changements prennent effet immédiatement — au "
+            "prochain appel, vault_get retournera la valeur ou None."
+        ))
+        # Combine canonical + any existing custom names.
+        canonical = list(CANONICAL_SECRETS.keys()) if HAVE_CONFIG else []
+        all_keys = list(canonical) + [k for k in current if k not in canonical]
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        boxes: dict[str, QCheckBox] = {}
+        for k in all_keys:
+            cb = QCheckBox(k)
+            cb.setChecked(k in current)
+            boxes[k] = cb
+            bv.addWidget(cb)
+        bv.addStretch(1)
+        scroll.setWidget(body)
+        dl.addWidget(scroll, 1)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        dl.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_needs = [k for k, cb in boxes.items() if cb.isChecked()]
+        try:
+            manifest_set(
+                program_hash=program_hash,
+                name=rec.get("name", ""),
+                needs=new_needs,
+                approved_by="settings_ui",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — manifestes",
+                                 f"Échec de l'enregistrement : {e}")
+            return
+        self._reload_manifest_table()
+
+    def _manifest_revoke(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            return
+        ans = QMessageBox.question(
+            self, "Argus — manifestes",
+            f"Supprimer le manifeste de {rec.get('name', '')} ?\n"
+            "Le programme conserve son entrée whitelist mais ne sera plus "
+            "entitled à aucun secret jusqu'à ce qu'un nouveau manifeste "
+            "soit créé.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            manifest_delete(program_hash)
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — manifestes",
+                                 f"Échec de la suppression : {e}")
+            return
+        self._reload_manifest_table()
 
     def _on_theme_preview(self, name: str):
         """Live preview — apply immediately. _cancel reverts."""

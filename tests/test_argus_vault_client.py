@@ -176,6 +176,62 @@ def test_get_raises_on_permission_denied(fake_server):
         c.get("RESTRICTED_SECRET")
 
 
+def test_get_raises_on_not_entitled(fake_server):
+    """403 with error="not_entitled" is mapped to VaultNotEntitled,
+    distinct from the generic VaultPermissionDenied so callers can
+    handle 'enable feature in Settings' separately from 'no ACL access'.
+    """
+    c = avc.VaultClient(program_hash=FAKE_HASH)
+    fake_server.script = [
+        {  # handshake
+            "status": 200,
+            "body": {
+                "session_token": fake_server.session_token,
+                "session_key_b64": base64.b64encode(fake_server.session_key).decode(),
+                "expires_in_s": 300,
+            },
+        },
+        {
+            "status": 403,
+            "body": {"error": "not_entitled", "secret": "ANTHROPIC_API_KEY"},
+        },
+    ]
+    with pytest.raises(avc.VaultNotEntitled) as exc_info:
+        c.get("ANTHROPIC_API_KEY")
+    # The exception carries the offending secret name as args[1] so
+    # caller logs can include it.
+    assert exc_info.value.args[0] == "not_entitled"
+    assert exc_info.value.args[1] == "ANTHROPIC_API_KEY"
+    # And it is NOT confused with the generic permission-denied class.
+    assert not isinstance(exc_info.value, avc.VaultPermissionDenied)
+
+
+def test_manifest_returns_program_record(fake_server):
+    c = avc.VaultClient(program_hash=FAKE_HASH)
+    fake_server.script = [
+        {  # handshake
+            "status": 200,
+            "body": {
+                "session_token": fake_server.session_token,
+                "session_key_b64": base64.b64encode(fake_server.session_key).decode(),
+                "expires_in_s": 300,
+            },
+        },
+        {
+            "status": 200,
+            "body": {
+                "name": "NetGuard",
+                "needs": ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+                "granted": ["ANTHROPIC_API_KEY"],
+            },
+        },
+    ]
+    rec = c.manifest()
+    assert rec["name"] == "NetGuard"
+    assert rec["needs"] == ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"]
+    assert rec["granted"] == ["ANTHROPIC_API_KEY"]
+
+
 def test_get_raises_on_not_registered(fake_server):
     c = avc.VaultClient(program_hash=FAKE_HASH)
     fake_server.script = [

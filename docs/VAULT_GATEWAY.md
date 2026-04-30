@@ -282,7 +282,138 @@ before decrypting. Any mismatch -> `VaultProtocolError`.
 
 ---
 
-## 8. Future work
+## 8. Manifests + Entitlements (trust-on-register)
+
+The whitelist controls *what a program could ever see*; the **manifest**
+controls *what the operator pre-approved it to see right now*. These are
+two layers on purpose:
+
+* The whitelist is a binary-identity ACL (set once at register time).
+* The manifest is the operator's opt-in list, editable from the
+  Settings UI without re-running `register_program`.
+
+### 8.1 Trust-on-register flow
+
+When the operator runs `tools/register_program.py`, the script now
+prompts for the secrets the program needs and writes a manifest at
+`argus_data/.gateway/manifests/<program_hash>.json`. At runtime, no
+prompts are raised — the program calls `config.get_secret(name)` (or
+`VaultClient.get(name)`) and either gets the value or `None` / a
+`VaultNotEntitled` exception. **The caller MUST handle that gracefully**
+(disable the feature, surface a Settings link, never crash).
+
+### 8.2 Sample manifest
+
+```jsonc
+// argus_data/.gateway/manifests/<program_hash>.json
+{
+  "approved_at":  "2026-04-28T18:00:00+00:00",
+  "approved_by":  "register_program",
+  "name":         "NetGuard",
+  "needs":        ["ANTHROPIC_API_KEY", "VIRUSTOTAL_API_KEY"],
+  "program_hash": "1234abcd...64-hex-chars..."
+}
+```
+
+### 8.3 Sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Op as Operator
+    participant Reg as register_program.py
+    participant Gw as Vault Gateway
+    participant Prog as Program
+    participant Vault as argus_vault
+
+    Op->>Reg: register binary X with secrets [A, B]
+    Reg->>Gw: gateway_register_program (whitelist)
+    Reg->>Reg: manifest_set(hash, name, needs=[A, B])
+    Note over Reg: trust-on-register: NEEDS pre-approved
+
+    Prog->>Gw: POST /vault/handshake (binary hash)
+    Gw-->>Prog: session_token
+
+    Prog->>Gw: POST /vault/get {secret: A}
+    Gw->>Gw: ACL check (A in whitelist?)
+    Gw->>Gw: manifest_is_entitled(hash, A)?
+    alt entitled
+        Gw->>Vault: vault_get(A)
+        Vault-->>Gw: ciphertext
+        Gw-->>Prog: {ciphertext, hmac, nonce}
+    else not in manifest
+        Gw-->>Prog: 403 {error: "not_entitled", secret: A}
+        Note over Prog: lazy fallback: get_secret returns None,<br/>caller disables the feature, no prompt
+    end
+```
+
+### 8.4 Auto-routing intelligence
+
+When the operator types a brand-new secret value in
+**Settings → API Keys**, the panel calls
+`programs_entitled_to(secret_name)` and shows:
+
+> Adding `ANTHROPIC_API_KEY` will grant access to: NetGuard, Argus, GeniA.
+> [OK] [Cancel] [Customize]
+
+`Customize` lets the operator uncheck specific programs *before* the
+secret is saved; an opt-out is recorded by removing that secret from
+the program's manifest in the same flow.
+
+### 8.5 Manifest API (Python)
+
+```python
+from argus_vault_manifests import (
+    manifest_set,
+    manifest_get,
+    manifest_list,
+    manifest_delete,
+    manifest_is_entitled,
+    programs_entitled_to,
+)
+
+# Trust-on-register: pre-approve.
+manifest_set(program_hash, name="NetGuard",
+             needs=["ANTHROPIC_API_KEY", "VIRUSTOTAL_API_KEY"])
+
+# Runtime: gateway calls this on every /vault/get.
+manifest_is_entitled(program_hash, "ANTHROPIC_API_KEY")  # -> bool
+
+# UI: which programs WOULD gain access if I save this secret?
+programs_entitled_to("ANTHROPIC_API_KEY")  # -> [{"name": "NetGuard", ...}]
+```
+
+### 8.6 GET /manifest endpoint
+
+A program can fetch *its own* manifest at startup:
+
+```jsonc
+// GET /manifest  (with Authorization: Bearer <session_token>)
+// Response (200)
+{
+  "name":    "NetGuard",
+  "needs":   ["ANTHROPIC_API_KEY", "VIRUSTOTAL_API_KEY"],
+  "granted": ["ANTHROPIC_API_KEY"]
+}
+```
+
+`granted` is the intersection of `needs` and the whitelist ACL — i.e.
+secrets the program could *and* is entitled to read right now. Useful
+for the caller to grey-out UI buttons before doing a doomed `get()`.
+
+### 8.7 Hard rules
+
+* No runtime prompts. The model is trust-on-register; if a secret is
+  missing the caller treats it like `None` and degrades gracefully.
+* New secrets do NOT auto-grant. Adding a key in Settings shows which
+  registered programs WILL gain access; the user clicks Save (or
+  Customize) to confirm — never silent.
+* Manifest writes are atomic (`.tmp` + `os.replace`); a crashed write
+  leaves the previous record intact.
+
+---
+
+## 9. Future work
 
 * **mTLS** — currently the client trusts the server cert (or pins by
   SPKI) but the server only authenticates by binary hash. A second

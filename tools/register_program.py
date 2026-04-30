@@ -44,6 +44,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import argus_vault_gateway  # noqa: E402
+import argus_vault_manifests  # noqa: E402
+
+try:
+    import config as _config_mod  # noqa: E402
+
+    CANONICAL = list(_config_mod.CANONICAL_SECRETS.keys())
+except Exception:
+    CANONICAL = []
 
 
 def _confirm(prompt: str, default_yes: bool = True) -> bool:
@@ -104,6 +112,14 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=10,
         help="Burst size for the token bucket. Default: 10",
+    )
+    parser.add_argument(
+        "--needs",
+        default=None,
+        help="Comma-separated list of secrets this program is entitled to "
+             "read at runtime. 'all' selects every canonical secret, "
+             "'none' opts out of every secret. Required with --yes when "
+             "no value is given the script falls back to --secrets.",
     )
 
     args = parser.parse_args(argv)
@@ -196,6 +212,71 @@ def main(argv: list[str] | None = None) -> int:
         burst=args.burst,
     )
     print(f"OK: program registered with hash {h}")
+
+    # ──────────────────────────────────────────────────────────────────
+    # Manifest collection (trust-on-register).
+    #
+    # Every entry the operator opts in here pre-approves runtime reads
+    # for that secret. At runtime, no prompts are raised — calls to
+    # ``config.get_secret`` either return the value or None.
+    # ──────────────────────────────────────────────────────────────────
+    needs_csv = args.needs
+    if needs_csv is None and not args.yes:
+        if CANONICAL:
+            print()
+            print("Canonical secrets the suite is aware of:")
+            for n in CANONICAL:
+                print(f"  - {n}")
+        needs_csv = _prompt(
+            "Which secrets does this program need? "
+            "(comma-separated names, 'all', or 'none')",
+            default="none",
+        )
+    if needs_csv is None:
+        # --yes path with no --needs: fall back to whatever was given as
+        # --secrets (back-compat) but only the canonical subset; '*' is
+        # treated as "no manifest entries" — the operator must be
+        # explicit about runtime entitlements.
+        if allowed == ["*"]:
+            needs_list: list[str] = []
+        else:
+            needs_list = [s for s in allowed if s in CANONICAL or not CANONICAL]
+    else:
+        sel = needs_csv.strip().lower()
+        if sel == "all":
+            needs_list = list(CANONICAL)
+        elif sel in ("none", ""):
+            needs_list = []
+        else:
+            raw = [s.strip() for s in needs_csv.split(",") if s.strip()]
+            invalid = [s for s in raw if CANONICAL and s not in CANONICAL]
+            if invalid:
+                print(
+                    "WARNING: the following names are not in the canonical "
+                    "secret catalogue and will still be accepted (custom "
+                    "secrets are allowed): " + ", ".join(invalid),
+                    file=sys.stderr,
+                )
+            needs_list = raw
+
+    try:
+        argus_vault_manifests.manifest_set(
+            program_hash=h,
+            name=label or os.path.basename(binary_path),
+            needs=needs_list,
+            approved_by="register_program",
+        )
+    except ValueError as exc:
+        print(f"ERROR: manifest rejected: {exc}", file=sys.stderr)
+        # The whitelist registration already succeeded; the program will
+        # not be entitled to anything until a manifest is set later.
+        # Returning a non-zero code lets scripted callers notice.
+        return 3
+
+    print(f"OK: manifest stored with {len(needs_list)} secret(s) entitled.")
+    if needs_list:
+        for n in needs_list:
+            print(f"  - {n}")
     return 0
 
 

@@ -110,6 +110,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.x509.oid import NameOID
 
 import argus_vault
+import argus_vault_manifests
 
 # --------------------------------------------------------------------------- #
 # Constants
@@ -677,6 +678,8 @@ class _GatewayHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == "/vault/list":
             self._handle_list(t0)
+        elif path == "/manifest":
+            self._handle_manifest(t0)
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -784,6 +787,32 @@ class _GatewayHandler(http.server.BaseHTTPRequestHandler):
                                  (time.monotonic() - t0) * 1000)
             self._send_json(403, {"error": "secret not in ACL"})
             return
+
+        # Trust-on-register entitlement check. The whitelist's ACL is the
+        # *upper bound* of what a program could ever touch (set by the
+        # operator at register time); the manifest is the *opt-in list* the
+        # operator approved during the same flow. A missing manifest means
+        # nothing is entitled — callers go through the lazy path
+        # (config.get_secret -> None -> degrade gracefully). Programs
+        # registered with allowed_secrets=["*"] still need an explicit
+        # manifest entry per secret, so a wildcard ACL does not auto-grant
+        # everything new the user adds later.
+        try:
+            entitled = argus_vault_manifests.manifest_is_entitled(
+                program_hash, secret_key
+            )
+        except Exception:
+            entitled = False
+        if not entitled:
+            _audit_write("get", program_hash, secret_key, "denied_not_entitled")
+            self._record_request(program_hash, True,
+                                 (time.monotonic() - t0) * 1000)
+            self._send_json(403, {
+                "error": "not_entitled",
+                "secret": secret_key,
+            })
+            return
+
         perms = meta.get("permissions", {}).get(secret_key, ["read"])
         if "read" not in perms:
             _audit_write("get", program_hash, secret_key, "denied_no_read")
@@ -853,6 +882,49 @@ class _GatewayHandler(http.server.BaseHTTPRequestHandler):
         self._record_request(program_hash, False,
                              (time.monotonic() - t0) * 1000)
         self._send_json(200, {"secrets": names})
+
+    # ----- manifest ----- #
+
+    def _handle_manifest(self, t0: float) -> None:
+        """Return the calling program's own manifest.
+
+        Shape:
+            {"name": str, "needs": [str, ...], "granted": [str, ...]}
+
+        ``needs`` is the operator-approved opt-in list; ``granted`` is
+        the intersection with the whitelist ACL (i.e. secrets the
+        program could *and* is entitled to read right now). Programs
+        without a stored manifest get an empty record so the lazy
+        client can still call this safely.
+        """
+        sess = self._validate_session()
+        if sess is None:
+            self._send_json(401, {"error": "no valid session"})
+            return
+        _, sess_data = sess
+        program_hash = sess_data["program_hash"]
+        wl = _read_whitelist()
+        meta = wl.get(program_hash)
+        if meta is None:
+            self._send_json(401, {"error": "program no longer whitelisted"})
+            return
+        try:
+            rec = argus_vault_manifests.manifest_get(program_hash)
+        except Exception:
+            rec = None
+        needs = list(rec.get("needs", [])) if rec else []
+        name = (rec or {}).get("name") or meta.get("label") or ""
+        allowed = set(meta.get("allowed_secrets", []) or [])
+        wildcard = "*" in allowed
+        granted = [n for n in needs if wildcard or n in allowed]
+        _audit_write("manifest", program_hash, None, "ok")
+        self._record_request(program_hash, False,
+                             (time.monotonic() - t0) * 1000)
+        self._send_json(200, {
+            "name": name,
+            "needs": needs,
+            "granted": granted,
+        })
 
     # ----- store ----- #
 

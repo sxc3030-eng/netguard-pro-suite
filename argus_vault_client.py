@@ -84,6 +84,16 @@ class VaultNotRegistered(VaultClientError):
     """Program is not whitelisted; run register_program.py first."""
 
 
+class VaultNotEntitled(VaultClientError):
+    """403 from the gateway with ``error="not_entitled"``.
+
+    Raised when a program is registered (the ACL allows the secret) but
+    the operator-approved manifest for this program does NOT include
+    the requested key. Trust-on-register: surface as a None / disabled
+    feature in the caller, do not prompt at runtime.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -195,6 +205,14 @@ class VaultClient:
         if code == 403:
             if "not whitelisted" in msg or "hash mismatch" in msg:
                 raise VaultNotRegistered(msg)
+            if msg == "not_entitled":
+                # The gateway also includes the secret name in the body so
+                # callers can log which key was refused. We surface it via
+                # exception args[1] for programmatic consumers.
+                secret = (
+                    body.get("secret") if isinstance(body, dict) else None
+                )
+                raise VaultNotEntitled(msg, secret)
             raise VaultPermissionDenied(msg or "permission denied")
         if code == 429:
             raise VaultRateLimited(msg or "rate limited")
@@ -270,6 +288,31 @@ class VaultClient:
         except Exception as exc:
             raise VaultProtocolError("decryption failed") from exc
         return plaintext.decode("utf-8")
+
+    def manifest(self) -> Dict[str, Any]:
+        """Return the calling program's own manifest record.
+
+        Shape::
+
+            {"name": str, "needs": [str, ...], "granted": [str, ...]}
+
+        Useful for the caller to inspect what it can read at startup and
+        wire UI / disable buttons accordingly without doing a doomed
+        get() that would 403.
+        """
+        self._ensure_session()
+        resp = self._request("GET", "/manifest", body=None, with_auth=True)
+        if resp["status"] == 401:
+            self._session_token = None
+            self._session_key = None
+            self.handshake()
+            resp = self._request("GET", "/manifest", body=None, with_auth=True)
+        body = self._raise_for_status(resp)
+        return {
+            "name": body.get("name", ""),
+            "needs": list(body.get("needs", [])),
+            "granted": list(body.get("granted", [])),
+        }
 
     def list(self) -> List[str]:  # noqa: A003  (shadowing is fine on a method)
         """Names only — the gateway never returns values from this endpoint."""

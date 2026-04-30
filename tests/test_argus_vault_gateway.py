@@ -34,6 +34,7 @@ if str(ROOT) not in sys.path:
 
 import argus_vault  # noqa: E402
 import argus_vault_gateway as gw  # noqa: E402
+import argus_vault_manifests as avm  # noqa: E402
 
 PASSPHRASE = "test-passphrase-not-a-real-secret"
 SECRET_VALUE = "test_value_xyz_placeholder"
@@ -73,6 +74,7 @@ def isolated_gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
     monkeypatch.setenv("ARGUS_GATEWAY_SKIP_LIVE_REHASH", "1")
     importlib.reload(argus_vault)
+    importlib.reload(avm)
     importlib.reload(gw)
 
     # Init vault and stash a test secret
@@ -90,6 +92,10 @@ def isolated_gateway(tmp_path, monkeypatch):
         rate_per_min=600,  # high so we don't hit it accidentally
         burst=20,
     )
+    # Trust-on-register: write the manifest entitling the fake program
+    # to SECRET_KEY so the gateway's entitlement check passes. Tests that
+    # want to exercise the un-entitled path build their own fixture.
+    avm.manifest_set(fake_hash, "pytest_fixture", [SECRET_KEY])
 
     port = _free_port()
     gw._reset_state_for_tests()
@@ -216,6 +222,117 @@ def test_get_unauthorized_secret_returns_403(isolated_gateway):
     assert code == 403
 
 
+def test_get_unentitled_secret_returns_403(tmp_path, monkeypatch):
+    """ACL allows the secret, but the manifest does not list it -> 403."""
+    monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setenv("ARGUS_GATEWAY_SKIP_LIVE_REHASH", "1")
+    importlib.reload(argus_vault)
+    importlib.reload(avm)
+    importlib.reload(gw)
+    argus_vault.vault_init(passphrase=PASSPHRASE)
+    argus_vault.vault_set(SECRET_KEY, SECRET_VALUE, passphrase=PASSPHRASE)
+    argus_vault.vault_set(OTHER_SECRET, "x", passphrase=PASSPHRASE)
+
+    fake_binary = _make_fake_binary(tmp_path, name="unentitled_prog.bin")
+    # ACL allows BOTH secrets but the manifest only entitles SECRET_KEY.
+    fake_hash = gw.gateway_register_program(
+        binary_path=fake_binary,
+        allowed_secrets=[SECRET_KEY, OTHER_SECRET],
+        permissions={SECRET_KEY: ["read"], OTHER_SECRET: ["read"]},
+        program_label="unentitled_test",
+        rate_per_min=600,
+        burst=20,
+    )
+    avm.manifest_set(fake_hash, "unentitled_test", [SECRET_KEY])
+
+    port = _free_port()
+    gw._reset_state_for_tests()
+    gw.gateway_start(host="127.0.0.1", port=port, tls=False,
+                     vault_passphrase=PASSPHRASE)
+    time.sleep(0.05)
+    try:
+        token, _ = _open_session(port, fake_hash)
+
+        # SECRET_KEY: entitled -> 200
+        code, _ = _http(
+            "POST", port, "/vault/get",
+            {"secret_key": SECRET_KEY, "nonce": "n1"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert code == 200
+
+        # OTHER_SECRET: in ACL but NOT in manifest -> 403 not_entitled
+        code, body = _http(
+            "POST", port, "/vault/get",
+            {"secret_key": OTHER_SECRET, "nonce": "n2"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert code == 403
+        assert body.get("error") == "not_entitled"
+        assert body.get("secret") == OTHER_SECRET
+    finally:
+        gw.gateway_stop()
+
+
+def test_get_no_manifest_returns_403(tmp_path, monkeypatch):
+    """A program with NO manifest at all is entitled to nothing."""
+    monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
+    monkeypatch.setenv("ARGUS_GATEWAY_SKIP_LIVE_REHASH", "1")
+    importlib.reload(argus_vault)
+    importlib.reload(avm)
+    importlib.reload(gw)
+    argus_vault.vault_init(passphrase=PASSPHRASE)
+    argus_vault.vault_set(SECRET_KEY, SECRET_VALUE, passphrase=PASSPHRASE)
+
+    fake_binary = _make_fake_binary(tmp_path, name="no_manifest_prog.bin")
+    fake_hash = gw.gateway_register_program(
+        binary_path=fake_binary,
+        allowed_secrets=[SECRET_KEY],
+        permissions={SECRET_KEY: ["read"]},
+        program_label="no_manifest",
+        rate_per_min=600,
+        burst=20,
+    )
+    # NO avm.manifest_set call.
+
+    port = _free_port()
+    gw._reset_state_for_tests()
+    gw.gateway_start(host="127.0.0.1", port=port, tls=False,
+                     vault_passphrase=PASSPHRASE)
+    time.sleep(0.05)
+    try:
+        token, _ = _open_session(port, fake_hash)
+        code, body = _http(
+            "POST", port, "/vault/get",
+            {"secret_key": SECRET_KEY, "nonce": "x"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert code == 403
+        assert body.get("error") == "not_entitled"
+    finally:
+        gw.gateway_stop()
+
+
+def test_manifest_endpoint_returns_program_record(isolated_gateway):
+    port, fake_hash = isolated_gateway
+    token, _ = _open_session(port, fake_hash)
+    code, body = _http(
+        "GET", port, "/manifest", body=None,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert code == 200
+    assert body["name"] == "pytest_fixture"
+    assert body["needs"] == [SECRET_KEY]
+    # granted is the manifest ∩ ACL — same here.
+    assert body["granted"] == [SECRET_KEY]
+
+
+def test_manifest_endpoint_without_session_returns_401(isolated_gateway):
+    port, _ = isolated_gateway
+    code, _ = _http("GET", port, "/manifest", body=None)
+    assert code == 401
+
+
 # --------------------------------------------------------------------------- #
 # Rate limiting
 # --------------------------------------------------------------------------- #
@@ -226,6 +343,7 @@ def test_rate_limit_returns_429_after_burst(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
     monkeypatch.setenv("ARGUS_GATEWAY_SKIP_LIVE_REHASH", "1")
     importlib.reload(argus_vault)
+    importlib.reload(avm)
     importlib.reload(gw)
 
     argus_vault.vault_init(passphrase=PASSPHRASE)
@@ -241,6 +359,7 @@ def test_rate_limit_returns_429_after_burst(tmp_path, monkeypatch):
         rate_per_min=6,
         burst=2,
     )
+    avm.manifest_set(fake_hash, "rl_test", [SECRET_KEY])
     port = _free_port()
     gw._reset_state_for_tests()
     gw.gateway_start(host="127.0.0.1", port=port, tls=False,
