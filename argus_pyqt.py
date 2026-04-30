@@ -286,6 +286,20 @@ AI_HISTORY_MAX = 50          # cap conversation lines persisted
 AI_PAGE_TEXT_MAX = 4096      # chars of page.toPlainText() included as context
 AI_PAGE_TEXT_TIMEOUT_MS = 2000  # 2s, then send without page text
 
+# Default home URL — loaded when a new tab is created. Points to the local
+# NetGuard dashboard HTML; the dashboard JS handles the "NetGuard backend
+# offline" state gracefully (retry-loop on WebSocket connect). User can
+# override via DEFAULT_SETTINGS["home_url"] persisted in argus_data/settings.json.
+def _default_home_url() -> str:
+    dash = Path(__file__).resolve().parent / "netguard_dashboard.html"
+    if dash.exists():
+        # Use file:/// triple-slash so QtWebEngine treats it as a local file
+        # (otherwise the WS connection back to localhost gets blocked by CORS).
+        return dash.as_uri()
+    return "https://duckduckgo.com"
+
+HOME_URL = _default_home_url()
+
 DEFAULT_SETTINGS = {
     "show_live_feed":   True,
     "show_favs":        True,
@@ -294,6 +308,7 @@ DEFAULT_SETTINGS = {
     "show_search_row":  True,
     "theme":            "Cyber Dark",
     "ai_panel_open":    False,
+    "home_url":         HOME_URL,
 }
 
 # Quick-action prefills for the AI side panel.
@@ -3339,7 +3354,7 @@ class ArgusBrowser(QMainWindow):
         self.tab_bar = TabBar()
         self.tab_bar.tab_clicked.connect(self._on_tab_clicked)
         self.tab_bar.tab_close_requested.connect(self._on_tab_close)
-        self.tab_bar.new_tab_requested.connect(lambda: self._open_new_tab("https://duckduckgo.com"))
+        self.tab_bar.new_tab_requested.connect(lambda: self._open_new_tab(HOME_URL))
         v.addWidget(self.tab_bar)
 
         # Main area = vault banner + pages_stack + AI side panel
@@ -3378,7 +3393,7 @@ class ArgusBrowser(QMainWindow):
         self._apply_mode()
 
         # First tab
-        self._open_new_tab("https://duckduckgo.com")
+        self._open_new_tab(HOME_URL)
 
         # Apply persisted display settings
         self._apply_display_settings()
@@ -3390,7 +3405,7 @@ class ArgusBrowser(QMainWindow):
         QShortcut(QKeySequence("F5"), self, activated=lambda: self._current_page() and self._current_page().reload())
         QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self._current_page() and self._current_page().back())
         QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self._current_page() and self._current_page().forward())
-        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self._open_new_tab("https://duckduckgo.com"))
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self._open_new_tab(HOME_URL))
         QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self._on_tab_close(self.pages_stack.currentIndex()))
         QShortcut(QKeySequence("Ctrl+D"), self, activated=self._toggle_favorite_current)
         QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
@@ -3530,7 +3545,7 @@ class ArgusBrowser(QMainWindow):
         new_tab_btn.setProperty("class", "dockBtn")
         new_tab_btn.setProperty("primary", True)
         new_tab_btn.setToolTip("Nouveau tab (Ctrl+T)")
-        new_tab_btn.clicked.connect(lambda: self._open_new_tab("https://duckduckgo.com"))
+        new_tab_btn.clicked.connect(lambda: self._open_new_tab(HOME_URL))
 
         h3.addWidget(settings_btn)
         h3.addWidget(self.favs_bar, 1)
@@ -3620,7 +3635,7 @@ class ArgusBrowser(QMainWindow):
         view.deleteLater()
         self.tab_bar.remove_tab(idx)
         if not self.tab_pages:
-            self._open_new_tab("https://duckduckgo.com")
+            self._open_new_tab(HOME_URL)
         else:
             new_idx = min(idx, len(self.tab_pages) - 1)
             self._switch_to_tab(new_idx)
@@ -4492,7 +4507,7 @@ class ArgusBrowser(QMainWindow):
             file_menu = mb.addMenu("&Fichier")
             act_new_tab = file_menu.addAction("Nouveau tab\tCtrl+T")
             act_new_tab.triggered.connect(
-                lambda: self._open_new_tab("https://duckduckgo.com")
+                lambda: self._open_new_tab(HOME_URL)
             )
             act_new_sandbox = file_menu.addAction("Nouveau Code Sandbox\tCtrl+Shift+N")
             act_new_sandbox.triggered.connect(self._open_code_sandbox_tab)
@@ -4704,7 +4719,7 @@ class ArgusBrowser(QMainWindow):
         elif kind == "command":
             cmd = item.get("cmd")
             if cmd == "cmd_new_tab":
-                self._open_new_tab("https://duckduckgo.com")
+                self._open_new_tab(HOME_URL)
             elif cmd == "cmd_toggle_ai":
                 self._toggle_ai_panel()
             elif cmd == "cmd_settings":
