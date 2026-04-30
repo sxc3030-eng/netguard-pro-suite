@@ -38,6 +38,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, urlparse
+from weakref import WeakValueDictionary
 
 # Module-level Argus version constant (used by About dialog + version banner +
 # Help > About menu). Bump this when shipping a new release.
@@ -45,9 +46,12 @@ ARGUS_VERSION = "3.0.0"
 
 from PyQt6.QtCore import (
     Qt, QUrl, QSize, pyqtSignal, QObject, QTimer,
-    QPropertyAnimation, QEasingCurve,
+    QPropertyAnimation, QEasingCurve, QMimeData, QPoint, QPointF,
 )
-from PyQt6.QtGui import QShortcut, QKeySequence, QIcon, QPixmap, QTextCursor
+from PyQt6.QtGui import (
+    QShortcut, QKeySequence, QIcon, QPixmap, QTextCursor,
+    QDrag, QCursor, QColor, QPainter,
+)
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QComboBox, QPushButton, QLabel, QStackedWidget, QFrame,
@@ -356,6 +360,27 @@ MODES = [
     {"id": "private", "icon": "🟦", "text": "PRIVÉ",   "color": "#4d9fff"},
     {"id": "vault",   "icon": "🟡", "text": "COFFRE",  "color": "#d4af37"},
 ]
+
+# ── Tab drag-and-drop constants ──────────────────────────────────────────
+# Custom MIME type used by the inter-window tab DnD payload. Keeping it in
+# the application/x-* namespace avoids accidental drag matches from other
+# apps (e.g. text/plain bookmarklets dragged from another browser).
+ARGUS_TAB_MIME = "application/x-argus-tab"
+# Pixel threshold before a left-mouse press inside the tab bar promotes to
+# a QDrag. Matches Qt's default startDragDistance() ballpark while staying
+# stable across themes/DPI scales.
+ARGUS_TAB_DRAG_THRESHOLD = 8
+
+
+def _can_accept_drop(source_mode: str, target_mode: str) -> bool:
+    """Strict same-mode drop policy.
+
+    A tab from a Normal window must never land in a Vault window (and
+    vice-versa) — modes mean different cookie jars / sandboxing levels and
+    silently merging them would leak credentials. Pure-logic helper so we
+    can unit-test the rule without QApplication.
+    """
+    return bool(source_mode) and source_mode == target_mode
 
 
 # ── Theme palette → QSS (full app stylesheets, applied via app.setStyleSheet) ──
@@ -2239,6 +2264,11 @@ class TabBar(QFrame):
         self.tab_buttons: list[QPushButton] = []
         self.close_buttons: list[QPushButton] = []
         self.tab_widgets: list[QWidget] = []  # container holding btn+close
+        # Drag state — set on mousePressEvent, consulted from mouseMoveEvent.
+        # _drag_start_pos is the original press point (in TabBar coords) so
+        # we measure manhattan distance against it for the threshold check.
+        self._drag_start_pos: QPointF | None = None
+        self._drag_tab_idx: int | None = None
 
     def add_tab(self, idx: int, title: str = "Loading…", mode: str = "normal"):
         wrapper = QFrame()
