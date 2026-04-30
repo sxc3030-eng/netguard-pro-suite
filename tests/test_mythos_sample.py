@@ -71,7 +71,9 @@ def bus_and_gateway(tmp_path, monkeypatch):
     two services agree.
     """
     monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
-    argus_vault.vault_init()
+    # Pass a test passphrase so vault_init works on non-Windows (DPAPI
+    # is Windows-only; PBKDF2 fallback needs an explicit passphrase).
+    argus_vault.vault_init(passphrase="test_passphrase_xyz")
     import secrets
     shared = secrets.token_hex(32)
     argus_vault.vault_set("MYTHOS_BUS_TOKEN", shared, owner="test")
