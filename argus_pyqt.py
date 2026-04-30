@@ -2338,6 +2338,249 @@ class TabBar(QFrame):
             return "Loading…"
         return title if len(title) <= n else title[:n - 1] + "…"
 
+    # ── Drag init (inter-window tab DnD) ────────────────────────────
+    def _idx_at(self, pos) -> int | None:
+        """Return the tab index whose wrapper contains ``pos``.
+
+        ``pos`` is a QPointF (Qt6) or QPoint coming from a mouse event
+        in TabBar-local coordinates. Returns ``None`` if the point is not
+        over any tab (e.g. over the "+" button or the trailing stretch).
+        """
+        try:
+            x = int(pos.x())
+            y = int(pos.y())
+        except Exception:
+            return None
+        for i, wrapper in enumerate(self.tab_widgets):
+            if wrapper is None:
+                continue
+            geom = wrapper.geometry()
+            if geom.contains(x, y):
+                return i
+        return None
+
+    def mousePressEvent(self, event):
+        """Record the press position so mouseMoveEvent can decide whether
+        the gesture should escalate to a QDrag (>= ARGUS_TAB_DRAG_THRESHOLD).
+        """
+        try:
+            if event.button() == Qt.MouseButton.LeftButton:
+                # Qt6 events expose position() as QPointF; older signatures
+                # may return QPoint. Both have .x()/.y() so we don't care.
+                pos = event.position() if hasattr(event, "position") else event.pos()
+                self._drag_start_pos = pos
+                self._drag_tab_idx = self._idx_at(pos)
+        except Exception:
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Promote the press > QDrag once we cross the 8 px threshold.
+
+        Only fires while the LeftButton is held AND we recorded a tab
+        index in mousePressEvent. Cross-window merge is handled on the
+        receiver side (ArgusBrowser.dropEvent); a tearoff happens when
+        the drag ends with IgnoreAction (no acceptor).
+        """
+        try:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                return super().mouseMoveEvent(event)
+            if self._drag_start_pos is None or self._drag_tab_idx is None:
+                return super().mouseMoveEvent(event)
+            cur = event.position() if hasattr(event, "position") else event.pos()
+            try:
+                dx = cur.x() - self._drag_start_pos.x()
+                dy = cur.y() - self._drag_start_pos.y()
+            except Exception:
+                return super().mouseMoveEvent(event)
+            # Manhattan distance threshold (matches Qt's startDragDistance idiom).
+            if abs(dx) + abs(dy) < ARGUS_TAB_DRAG_THRESHOLD:
+                return super().mouseMoveEvent(event)
+            # Snapshot drag state and clear so we don't re-enter while the
+            # drag exec loop is running.
+            tab_idx = self._drag_tab_idx
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+            self._start_tab_drag(tab_idx)
+        except Exception:
+            # Drag init must never crash the UI - fall back to default.
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+        return super().mouseMoveEvent(event)
+
+    def _start_tab_drag(self, tab_idx: int) -> None:
+        """Build the QDrag payload and execute the drag loop.
+
+        On IgnoreAction (no window accepted the drop), trigger a tearoff
+        at the current cursor position via :func:`_tearoff_at_cursor`.
+        """
+        if not (0 <= tab_idx < len(self.tab_buttons)):
+            return
+        win = self.window()
+        # Resolve current url + title from the parent ArgusBrowser when
+        # available; fall back to the button's text otherwise.
+        url = ""
+        title = ""
+        try:
+            btn = self.tab_buttons[tab_idx]
+            title = btn.toolTip() or btn.text() or ""
+        except Exception:
+            title = ""
+        try:
+            if hasattr(win, "tab_pages") and 0 <= tab_idx < len(win.tab_pages):
+                view = win.tab_pages[tab_idx]
+                url = view.url().toString() if view is not None else ""
+        except Exception:
+            url = ""
+        # Mode tagged on the button takes precedence (matches what's drawn
+        # for the user); fall back to the window's current_mode.
+        try:
+            btn_mode = self.tab_buttons[tab_idx].property("mode")
+        except Exception:
+            btn_mode = None
+        mode = btn_mode or getattr(win, "current_mode", "normal") or "normal"
+        payload = {
+            "source_window_id": id(win),
+            "tab_idx": tab_idx,
+            "mode": str(mode),
+            "url": url,
+            "title": title,
+        }
+        try:
+            mime = QMimeData()
+            mime.setData(ARGUS_TAB_MIME, json.dumps(payload).encode("utf-8"))
+        except Exception:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        # Drag pixmap - use the tab button's grab() if possible, else a
+        # 32x32 colored block matching the tab mode.
+        try:
+            pix = self._build_drag_pixmap(tab_idx, mode)
+            if pix is not None and not pix.isNull():
+                drag.setPixmap(pix)
+                drag.setHotSpot(QPoint(pix.width() // 2, pix.height() // 2))
+        except Exception:
+            pass
+        try:
+            result = drag.exec(
+                Qt.DropAction.MoveAction | Qt.DropAction.CopyAction
+            )
+        except Exception:
+            result = Qt.DropAction.IgnoreAction
+        if result == Qt.DropAction.IgnoreAction:
+            # Drop landed outside any Argus window > tearoff.
+            try:
+                _tearoff_at_cursor(payload)
+            except Exception:
+                pass
+
+    def _build_drag_pixmap(self, tab_idx: int, mode: str) -> QPixmap | None:
+        """Return a small drag thumbnail for the tab being dragged.
+
+        Prefers a grab of the tab wrapper so users see the actual tab
+        chrome floating with their cursor; falls back to a colored block
+        keyed by mode so vault drags look obviously different.
+        """
+        try:
+            if 0 <= tab_idx < len(self.tab_widgets):
+                wrapper = self.tab_widgets[tab_idx]
+                if wrapper is not None:
+                    pix = wrapper.grab()
+                    if pix is not None and not pix.isNull():
+                        return pix
+        except Exception:
+            pass
+        # Fallback - 32x32 mode-color block.
+        try:
+            color_for = {
+                "normal":  QColor("#9aa0ad"),
+                "private": QColor("#4d9fff"),
+                "vault":   QColor("#d4af37"),
+            }
+            color = color_for.get(mode, QColor("#9aa0ad"))
+            pix = QPixmap(32, 32)
+            pix.fill(color)
+            return pix
+        except Exception:
+            return None
+
+
+def _tearoff_at_cursor(payload: dict) -> None:
+    """Spawn a new ArgusBrowser positioned at the cursor's screen.
+
+    Called when a tab drag is released over empty desktop (no Argus window
+    accepted the drop). The new window inherits the SOURCE TAB'S MODE so
+    Coffre tabs torn off into open space stay Coffre. Multi-monitor: we
+    use ``QApplication.screenAt(QCursor.pos())`` so the window lands on
+    whichever monitor the cursor is currently over.
+    """
+    try:
+        cursor_pos = QCursor.pos()
+    except Exception:
+        cursor_pos = QPoint(0, 0)
+    try:
+        target_screen = QApplication.screenAt(cursor_pos)
+        if target_screen is None:
+            target_screen = QApplication.primaryScreen()
+    except Exception:
+        target_screen = None
+    avail = None
+    try:
+        if target_screen is not None:
+            avail = target_screen.availableGeometry()
+    except Exception:
+        avail = None
+    mode = str(payload.get("mode") or "normal")
+    try:
+        new_browser = ArgusBrowser(startup_mode=mode)
+    except Exception:
+        # If we can't even spawn a window, give up silently - the source
+        # tab remains where it was.
+        return
+    # Compute geometry inside the cursor's screen so the window doesn't
+    # appear off-screen (or split across two monitors).
+    try:
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            w = min(1000, avail.width() - 40)
+            h = min(700, avail.height() - 40)
+            x = max(avail.x(), min(cursor_pos.x() - w // 2, avail.right() - w))
+            y = max(avail.y(), min(cursor_pos.y() - 30, avail.bottom() - h))
+            new_browser.resize(w, h)
+            new_browser.move(x, y)
+    except Exception:
+        pass
+    # Locate the source window via the WeakValueDictionary registry and
+    # extract the tab. payload['source_window_id'] is id(window), which
+    # may be reused after GC - WeakValueDictionary keeps the mapping
+    # valid only while the window is alive.
+    try:
+        src_id = int(payload.get("source_window_id"))
+    except Exception:
+        src_id = None
+    src = None
+    if src_id is not None:
+        try:
+            src = ArgusBrowser._instances.get(src_id)
+        except Exception:
+            src = None
+    if src is not None:
+        try:
+            tab_idx = int(payload.get("tab_idx", -1))
+            view, profile, title = src._extract_tab(tab_idx)
+            new_browser._import_tab(view, profile, title, mode)
+        except Exception:
+            # If extraction fails (index out of range, source already
+            # closed, etc.) the new window keeps its default first tab.
+            pass
+    try:
+        new_browser.show()
+        new_browser.raise_()
+        new_browser.activateWindow()
+    except Exception:
+        pass
+
 
 # ── AI side panel (right collapsible) ────────────────────────────────────
 class AIPanel(QFrame):
@@ -3273,9 +3516,26 @@ class CodeSandboxFallback(QWidget):
 
 # ── Main window ──────────────────────────────────────────────────────────
 class ArgusBrowser(QMainWindow):
-    def __init__(self):
+    # Class-level registry mapping id(self) -> ArgusBrowser. WeakValueDictionary
+    # so a closed window is GC'd and removed automatically; used by the tab DnD
+    # payload to find the source window when a drop / tearoff occurs.
+    _instances: "WeakValueDictionary[int, ArgusBrowser]" = WeakValueDictionary()
+
+    def __init__(self, startup_mode: str = "normal"):
         super().__init__()
         self.setWindowTitle("Argus 2.0 — NetGuard Cybersecurity Browser")
+        # Register this window in the global instance registry so cross-window
+        # tab drags can locate the source by id(window).
+        try:
+            ArgusBrowser._instances[id(self)] = self
+        except Exception:
+            pass
+        # Accept tab DnD drops on this window. Per-event filtering happens in
+        # dragEnterEvent / dropEvent based on the strict same-mode policy.
+        try:
+            self.setAcceptDrops(True)
+        except Exception:
+            pass
 
         # Adapt to actual usable area (excludes Windows taskbar / macOS dock /
         # Linux WM panels). Without this the window can extend past the
@@ -3296,10 +3556,21 @@ class ArgusBrowser(QMainWindow):
         else:
             self.resize(1400, 900)
 
-        self.mode_idx = 0
+        # Resolve startup_mode against the canonical MODES list. An unknown
+        # value silently falls back to normal so the window always starts in
+        # a valid state (defensive against bad caller input).
+        _valid_mode_ids = {m["id"] for m in MODES}
+        if startup_mode not in _valid_mode_ids:
+            startup_mode = "normal"
+        try:
+            self.mode_idx = next(
+                i for i, m in enumerate(MODES) if m["id"] == startup_mode
+            )
+        except StopIteration:
+            self.mode_idx = 0
         # Track current mode by name (separate from the cycling index so vault
         # can be entered/exited without forcing private as an intermediate).
-        self.current_mode: str = "normal"
+        self.current_mode: str = startup_mode
         self.dev_tools_view = None
         self.dev_tools_container = None
         self.tab_pages: list[QWebEngineView] = []
@@ -3706,6 +3977,235 @@ class ArgusBrowser(QMainWindow):
         except Exception:
             loading = False
         self._set_spinning(loading)
+
+    # ── Inter-window tab DnD (receiver side) ─────────────────────
+    def _decode_tab_drag_payload(self, event) -> dict | None:
+        """Return the parsed payload dict if the event carries an Argus tab,
+        else ``None``. Wraps json/utf-8 decoding so dragMoveEvent / dropEvent
+        can call this cheaply for every event without try/except boilerplate.
+        """
+        try:
+            mime = event.mimeData()
+            if not mime.hasFormat(ARGUS_TAB_MIME):
+                return None
+            raw = bytes(mime.data(ARGUS_TAB_MIME))
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None
+
+    def dragEnterEvent(self, event):
+        """Accept tab drags only when source mode == this window's mode.
+
+        On a refused drop we surface a transient warning in the live feed
+        so the user understands why nothing happened.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dragEnterEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            if _can_accept_drop(src_mode, self.current_mode):
+                event.acceptProposedAction()
+            else:
+                # Don't accept the proposed action; let the drag move on.
+                # We don't log here yet (event may still find another window
+                # that accepts) — the warning fires on dropEvent.
+                event.ignore()
+        except Exception:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        """Same accept logic as dragEnterEvent — needed for the drop indicator
+        to remain visible while moving across the window.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dragMoveEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            if _can_accept_drop(src_mode, self.current_mode):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Receive a tab from another Argus window (or this same window).
+
+        Strict same-mode policy (already enforced in dragEnterEvent, but we
+        re-check here in case the policy changes mid-drag — defense in depth).
+        On accept, extract the tab from the source and import into self.
+        On reject, fire a brief warning in the SOURCE window's live feed so
+        the user gets feedback even if the cursor isn't over the source.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dropEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            try:
+                src_id = int(payload.get("source_window_id"))
+            except Exception:
+                src_id = None
+            src = None
+            if src_id is not None:
+                try:
+                    src = ArgusBrowser._instances.get(src_id)
+                except Exception:
+                    src = None
+            if not _can_accept_drop(src_mode, self.current_mode):
+                # Surface the refusal in the SOURCE window's feed (so user
+                # sees it where the drag started). Fall back to self if the
+                # source is gone.
+                feeder = src if src is not None else self
+                try:
+                    feeder._set_live_feed_arbiter_decision(
+                        "warn",
+                        "Cross-mode drag bloqué",
+                        reason=f"{src_mode} -> {self.current_mode}",
+                    )
+                except Exception:
+                    pass
+                event.ignore()
+                return
+            # Same-mode merge: extract from source, import into self.
+            if src is None:
+                event.ignore()
+                return
+            try:
+                tab_idx = int(payload.get("tab_idx", -1))
+            except Exception:
+                tab_idx = -1
+            if not (0 <= tab_idx < len(src.tab_pages)):
+                event.ignore()
+                return
+            try:
+                view, profile, title = src._extract_tab(tab_idx)
+                self._import_tab(view, profile, title, src_mode)
+                event.acceptProposedAction()
+            except Exception:
+                event.ignore()
+        except Exception:
+            try:
+                event.ignore()
+            except Exception:
+                pass
+
+    def _extract_tab(self, idx: int):
+        """Detach the tab at ``idx`` from this window without destroying it.
+
+        Returns a (view, profile, title) tuple. The view is removed from
+        ``pages_stack``, ``tab_pages``, ``tab_profiles``, and the tab bar
+        UI but kept alive (no deleteLater) so the new owner can re-parent
+        it. If this leaves the window with zero tabs we open a placeholder
+        HOME_URL tab — the window stays open per the spec.
+        """
+        if not (0 <= idx < len(self.tab_pages)):
+            raise IndexError(f"tab idx {idx} out of range (have {len(self.tab_pages)})")
+        view = self.tab_pages.pop(idx)
+        profile = None
+        if 0 <= idx < len(self.tab_profiles):
+            profile = self.tab_profiles.pop(idx)
+        # Capture the title from the active tab button BEFORE we remove it.
+        title = ""
+        try:
+            if 0 <= idx < len(self.tab_bar.tab_buttons):
+                btn = self.tab_bar.tab_buttons[idx]
+                # toolTip holds the un-truncated title; text() is truncated.
+                title = btn.toolTip() or btn.text() or ""
+        except Exception:
+            title = ""
+        if not title:
+            try:
+                title = view.title() or view.url().toString() or "Tab"
+            except Exception:
+                title = "Tab"
+        try:
+            self.pages_stack.removeWidget(view)
+        except Exception:
+            pass
+        # Detach view from this window so re-parenting is clean.
+        try:
+            view.setParent(None)
+        except Exception:
+            pass
+        try:
+            self.tab_bar.remove_tab(idx)
+        except Exception:
+            pass
+        # If we just emptied the window, open a placeholder so it stays
+        # usable (per spec: "leave window as-is with placeholder, do NOT close").
+        if not self.tab_pages:
+            try:
+                self._open_new_tab(HOME_URL)
+            except Exception:
+                pass
+        else:
+            # Activate a sensible neighbour so the user doesn't see a dead
+            # gap where the dragged tab was.
+            try:
+                new_idx = min(idx, len(self.tab_pages) - 1)
+                if new_idx >= 0:
+                    self._switch_to_tab(new_idx)
+            except Exception:
+                pass
+        return view, profile, title
+
+    def _import_tab(self, view, profile, title: str, mode: str) -> int:
+        """Re-parent ``view`` into this window's tab strip and activate it.
+
+        Used by both cross-window merges (dropEvent) and tearoffs
+        (`_tearoff_at_cursor`). Returns the new tab's index.
+        """
+        # Re-parent the view into our pages stack.
+        try:
+            view.setParent(self.pages_stack)
+        except Exception:
+            pass
+        # Re-wire the per-view signals to THIS window. The signals from the
+        # old window were captured in lambdas that close over the source
+        # ArgusBrowser; we connect new lambdas that route to self.
+        try:
+            view.urlChanged.connect(lambda u, v=view: self._on_view_url_changed(v, u))
+        except Exception:
+            pass
+        try:
+            view.titleChanged.connect(lambda t, v=view: self._on_view_title_changed(v, t))
+        except Exception:
+            pass
+        try:
+            view.loadStarted.connect(lambda v=view: self._on_load_started(v))
+        except Exception:
+            pass
+        try:
+            view.loadFinished.connect(lambda _ok, v=view: self._on_load_finished(v))
+        except Exception:
+            pass
+        # Re-route the page's owner to self so popup createWindow + form
+        # beacons land in THIS window's handlers.
+        try:
+            page = view.page()
+            if hasattr(page, "set_owner"):
+                page.set_owner(self)
+        except Exception:
+            pass
+        # Stash and add to UI.
+        self.tab_pages.append(view)
+        self.tab_profiles.append(profile)
+        try:
+            new_idx = self.pages_stack.addWidget(view)
+        except Exception:
+            new_idx = len(self.tab_pages) - 1
+        try:
+            self.tab_bar.add_tab(new_idx, title or "Loading…", mode=mode)
+        except Exception:
+            pass
+        try:
+            self._switch_to_tab(len(self.tab_pages) - 1)
+        except Exception:
+            pass
+        return len(self.tab_pages) - 1
 
     def _current_view(self) -> QWebEngineView | None:
         idx = self.pages_stack.currentIndex()
