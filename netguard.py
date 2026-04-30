@@ -890,10 +890,9 @@ WEBHOOK_COOLDOWN: int  = 60
 # ─── Forensic ─────────────────────────────────────────────────────────────
 FORENSIC_QUEUE: list = []
 
-# ─── WireGuard VPN ────────────────────────────────────────────────────────
-WG_SERVER_PRIVKEY: str = ""
-WG_SERVER_PUBKEY:  str = ""
-WG_PEERS: list = []  # [{name, pubkey, privkey, address, allowed_ips, last_handshake, transfer}]
+# ─── WireGuard VPN (display-only post-trim 2026-04-30) ────────────────────
+# Only kept for state-shape backwards compat with the dashboard.
+WG_PEERS: list = []
 WG_STATUS: dict = {"running": False, "interface": "", "peers_connected": 0}
 
 _SENSITIVE_PATTERNS = [
@@ -1151,175 +1150,9 @@ SURICATA_LOADED = len(SURICATA_RULES)
 print(f"[SURICATA] {SURICATA_LOADED} règles intégrées chargées")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# v4.0 — NEW MODULES: Vulnerability / Backup / Incidents / Training / NAC / IAM
+# v4.0 — NetGuard Modules: Backup / Login Auth Helpers
+# (IAM/NAC/Incidents/Training/Vuln-scan trimmed — see TRIM_REPORT.md)
 # ══════════════════════════════════════════════════════════════════════════════
-
-# ─── Vulnerability Scanner ────────────────────────────────────────────────────
-VULN_SCAN_HISTORY = deque(maxlen=50)
-
-def vuln_scan_ports(target: str, port_range: str = "1-1024") -> dict:
-    """Scan TCP ports on a target"""
-    import socket
-    open_ports = []
-    try:
-        parts = port_range.split("-")
-        start = int(parts[0])
-        end = int(parts[1]) if len(parts) > 1 else start
-        end = min(end, 65535)
-        start = max(start, 1)
-    except Exception:
-        start, end = 1, 1024
-
-    KNOWN_SERVICES = {
-        21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
-        80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
-        993: "IMAPS", 995: "POP3S", 1433: "MSSQL", 3306: "MySQL",
-        3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
-        8080: "HTTP-Alt", 8443: "HTTPS-Alt", 27017: "MongoDB",
-    }
-    VULN_PORTS = {
-        21: "FTP anonymous access possible",
-        23: "Telnet unencrypted protocol",
-        445: "SMB exposed (WannaCry, EternalBlue risk)",
-        3389: "RDP exposed (BlueKeep risk)",
-        5900: "VNC exposed (often unencrypted)",
-        6379: "Redis exposed (usually no auth)",
-        27017: "MongoDB exposed (usually no auth)",
-    }
-
-    scanned = 0
-    for port in range(start, end + 1):
-        scanned += 1
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.3)
-            result = sock.connect_ex((target, port))
-            if result == 0:
-                service = KNOWN_SERVICES.get(port, "unknown")
-                vuln = VULN_PORTS.get(port, "")
-                open_ports.append({
-                    "port": port,
-                    "service": service,
-                    "state": "open",
-                    "vulnerability": vuln,
-                    "risk": "high" if vuln else "info",
-                })
-            sock.close()
-        except Exception:
-            pass
-
-    scan_result = {
-        "ok": True,
-        "target": target,
-        "open_ports": open_ports,
-        "scanned": scanned,
-        "timestamp": datetime.now().isoformat(),
-    }
-    VULN_SCAN_HISTORY.appendleft(scan_result)
-    log.info(f"[VULN] Port scan {target}: {len(open_ports)} open ports / {scanned} scanned")
-    return scan_result
-
-def vuln_cve_lookup(cve_id: str) -> dict:
-    """Lookup CVE from NIST NVD API"""
-    import urllib.request
-    try:
-        url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/4.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode())
-        if data.get("vulnerabilities"):
-            vuln = data["vulnerabilities"][0]["cve"]
-            desc = ""
-            for d in vuln.get("descriptions", []):
-                if d.get("lang") == "en":
-                    desc = d.get("value", "")
-                    break
-            metrics = vuln.get("metrics", {})
-            score = ""
-            severity = ""
-            for k in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"]:
-                if k in metrics and metrics[k]:
-                    score = metrics[k][0].get("cvssData", {}).get("baseScore", "")
-                    severity = metrics[k][0].get("cvssData", {}).get("baseSeverity", "")
-                    break
-            return {
-                "ok": True,
-                "id": vuln.get("id", cve_id),
-                "description": desc,
-                "score": score,
-                "severity": severity,
-                "published": vuln.get("published", ""),
-                "modified": vuln.get("lastModified", ""),
-                "references": [ref.get("url", "") for ref in vuln.get("references", [])[:5]],
-            }
-        return {"ok": False, "error": "CVE not found"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-def vuln_system_check() -> dict:
-    """Basic system security check"""
-    checks = []
-    import subprocess
-    _si = None
-    _cf = 0
-    if os.name == 'nt':
-        _si = subprocess.STARTUPINFO()
-        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        _si.wShowWindow = 0
-        _cf = subprocess.CREATE_NO_WINDOW
-
-    # Check firewall
-    try:
-        r = subprocess.run(["netsh", "advfirewall", "show", "allprofiles", "state"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        fw_on = "ON" in r.stdout.upper()
-        checks.append({"check": "Windows Firewall", "status": "pass" if fw_on else "fail",
-                       "detail": "Enabled" if fw_on else "DISABLED - Enable immediately!"})
-    except Exception:
-        checks.append({"check": "Windows Firewall", "status": "unknown", "detail": "Could not check"})
-
-    # Check Windows Update
-    try:
-        r = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1).InstalledOn"], capture_output=True, text=True, timeout=10, startupinfo=_si, creationflags=_cf)
-        last_update = r.stdout.strip()
-        checks.append({"check": "Last Windows Update", "status": "info", "detail": last_update or "Unknown"})
-    except Exception:
-        checks.append({"check": "Last Windows Update", "status": "unknown", "detail": "Could not check"})
-
-    # Check antivirus
-    try:
-        r = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,AntivirusEnabled"], capture_output=True, text=True, timeout=10, startupinfo=_si, creationflags=_cf)
-        av_on = "True" in r.stdout
-        checks.append({"check": "Windows Defender", "status": "pass" if av_on else "warn",
-                       "detail": "Active" if av_on else "Real-time protection may be disabled"})
-    except Exception:
-        checks.append({"check": "Windows Defender", "status": "unknown", "detail": "Could not check"})
-
-    # Check open ports
-    try:
-        r = subprocess.run(["netstat", "-an"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        listening = [l for l in r.stdout.splitlines() if "LISTENING" in l]
-        checks.append({"check": "Listening Ports", "status": "info", "detail": f"{len(listening)} ports listening"})
-    except Exception:
-        checks.append({"check": "Listening Ports", "status": "unknown", "detail": "Could not check"})
-
-    # Check RDP
-    try:
-        r = subprocess.run(["reg", "query", r"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server", "/v", "fDenyTSConnections"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        rdp_disabled = "0x1" in r.stdout
-        checks.append({"check": "Remote Desktop (RDP)", "status": "pass" if rdp_disabled else "warn",
-                       "detail": "Disabled" if rdp_disabled else "ENABLED - Consider disabling if not needed"})
-    except Exception:
-        checks.append({"check": "Remote Desktop (RDP)", "status": "unknown", "detail": "Could not check"})
-
-    # Check password policy
-    try:
-        r = subprocess.run(["net", "accounts"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        checks.append({"check": "Password Policy", "status": "info", "detail": "Checked"})
-    except Exception:
-        pass
-
-    return {"ok": True, "checks": checks, "timestamp": datetime.now().isoformat()}
-
 
 # ─── Backup & Recovery ────────────────────────────────────────────────────────
 BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
@@ -1507,214 +1340,7 @@ def backup_delete(filename: str) -> dict:
     return {"ok": False, "error": "File not found"}
 
 
-# ─── Incident Response / Ticketing ────────────────────────────────────────────
-INCIDENTS = []  # list of ticket dicts
-INCIDENT_COUNTER = 0
-
-def incident_create(title: str, description: str, severity: str = "medium",
-                    assigned_to: str = "", related_ip: str = "") -> dict:
-    global INCIDENT_COUNTER
-    INCIDENT_COUNTER += 1
-    ticket = {
-        "id": f"INC-{INCIDENT_COUNTER:04d}",
-        "title": title,
-        "description": description,
-        "severity": severity,
-        "status": "open",
-        "assigned_to": assigned_to,
-        "related_ip": related_ip,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-        "notes": [],
-    }
-    INCIDENTS.insert(0, ticket)
-    log.info(f"[INCIDENT] Created: {ticket['id']} — {title}")
-    return ticket
-
-def incident_update(ticket_id: str, updates: dict) -> dict:
-    for t in INCIDENTS:
-        if t["id"] == ticket_id:
-            if "notes" in updates:
-                t["notes"].append({
-                    "text": updates["notes"],
-                    "timestamp": datetime.now().isoformat(),
-                })
-                del updates["notes"]
-            t.update(updates)
-            t["updated_at"] = datetime.now().isoformat()
-            return {"ok": True, "ticket": t}
-    return {"ok": False, "error": "Ticket not found"}
-
-def incident_list(status_filter: str = "") -> list:
-    if status_filter:
-        return [t for t in INCIDENTS if t["status"] == status_filter]
-    return INCIDENTS
-
-def incident_get(ticket_id: str) -> dict:
-    for t in INCIDENTS:
-        if t["id"] == ticket_id:
-            return t
-    return {}
-
-def incident_delete(ticket_id: str) -> dict:
-    global INCIDENTS
-    INCIDENTS = [t for t in INCIDENTS if t["id"] != ticket_id]
-    return {"ok": True}
-
-
-# ─── Training & Awareness ────────────────────────────────────────────────────
-TRAINING_MODULES = [
-    {
-        "id": "phishing_101",
-        "title": "Phishing Detection 101",
-        "description": "Learn to identify phishing emails, suspicious links, and social engineering attacks.",
-        "category": "email",
-        "difficulty": "beginner",
-        "duration_min": 15,
-        "questions": [
-            {"q": "What is the most common sign of a phishing email?", "options": ["Misspelled sender domain", "Blue text", "Long email", "Has images"], "correct": 0},
-            {"q": "A colleague sends you an urgent link to 'verify your password'. What should you do?", "options": ["Click immediately", "Forward to IT security", "Verify via another channel", "Delete and ignore"], "correct": 2},
-            {"q": "Which URL is likely a phishing attempt?", "options": ["https://google.com", "https://g00gle-security.com/verify", "https://mail.google.com", "https://accounts.google.com"], "correct": 1},
-            {"q": "What is 'spear phishing'?", "options": ["Mass email spam", "Targeted attack on specific person", "Fishing website", "Email with attachments"], "correct": 1},
-            {"q": "What should you check before clicking a link in an email?", "options": ["The font size", "Hover over to see actual URL", "The email length", "The sender's profile picture"], "correct": 1},
-        ],
-    },
-    {
-        "id": "password_security",
-        "title": "Password Security & MFA",
-        "description": "Best practices for creating strong passwords and using multi-factor authentication.",
-        "category": "access",
-        "difficulty": "beginner",
-        "duration_min": 10,
-        "questions": [
-            {"q": "Which is the strongest password?", "options": ["password123", "P@ssw0rd!", "correct-horse-battery-staple", "admin"], "correct": 2},
-            {"q": "How often should you change your password?", "options": ["Every day", "When there's a breach", "Never", "Every hour"], "correct": 1},
-            {"q": "What is MFA?", "options": ["Multiple File Access", "Multi-Factor Authentication", "Main Firewall Admin", "Managed File Archive"], "correct": 1},
-            {"q": "Which MFA method is most secure?", "options": ["SMS code", "Hardware security key", "Email code", "Security questions"], "correct": 1},
-            {"q": "Should you use the same password for multiple accounts?", "options": ["Yes, easier to remember", "Only for unimportant sites", "Never", "Only with MFA"], "correct": 2},
-        ],
-    },
-    {
-        "id": "social_engineering",
-        "title": "Social Engineering Defense",
-        "description": "Recognize and defend against social engineering tactics used by attackers.",
-        "category": "awareness",
-        "difficulty": "intermediate",
-        "duration_min": 20,
-        "questions": [
-            {"q": "What is pretexting?", "options": ["Writing code", "Creating false scenario to gain trust", "Sending spam", "Hacking passwords"], "correct": 1},
-            {"q": "A caller claims to be from IT and asks for your password. What do you do?", "options": ["Give it immediately", "Hang up and call IT directly", "Email your password instead", "Give a fake password"], "correct": 1},
-            {"q": "What is tailgating in security?", "options": ["Following someone through a secure door", "Sending follow-up emails", "Tracking someone online", "Using VPN"], "correct": 0},
-            {"q": "Which is a sign of a social engineering attack?", "options": ["Unusual urgency", "Proper grammar", "Known sender", "Normal request"], "correct": 0},
-            {"q": "What is baiting?", "options": ["Using malicious USB drives", "Email fishing", "Phone calls", "Web browsing"], "correct": 0},
-        ],
-    },
-    {
-        "id": "ransomware_defense",
-        "title": "Ransomware Prevention",
-        "description": "Learn to prevent, detect, and respond to ransomware attacks.",
-        "category": "malware",
-        "difficulty": "intermediate",
-        "duration_min": 15,
-        "questions": [
-            {"q": "What is the best defense against ransomware?", "options": ["Paying the ransom", "Regular backups", "Stronger passwords", "Faster internet"], "correct": 1},
-            {"q": "How does ransomware typically spread?", "options": ["Through Bluetooth", "Phishing emails with malicious attachments", "Through Wi-Fi signals", "Via printer"], "correct": 1},
-            {"q": "Should you pay the ransom if hit?", "options": ["Always", "Never recommended", "Only if cheap", "Wait a week"], "correct": 1},
-            {"q": "What file extension indicates a potentially dangerous attachment?", "options": [".pdf", ".exe", ".jpg", ".txt"], "correct": 1},
-            {"q": "What is the 3-2-1 backup rule?", "options": ["3 passwords, 2 emails, 1 phone", "3 copies, 2 media types, 1 offsite", "3 users, 2 admins, 1 root", "3 networks, 2 firewalls, 1 VPN"], "correct": 1},
-        ],
-    },
-    {
-        "id": "network_security",
-        "title": "Network Security Basics",
-        "description": "Understanding network threats, firewalls, VPNs, and secure configurations.",
-        "category": "network",
-        "difficulty": "advanced",
-        "duration_min": 20,
-        "questions": [
-            {"q": "What does a firewall do?", "options": ["Speeds up internet", "Filters network traffic", "Stores passwords", "Creates backups"], "correct": 1},
-            {"q": "What is a VPN used for?", "options": ["Blocking ads", "Encrypting network traffic", "Speeding up downloads", "Creating websites"], "correct": 1},
-            {"q": "What is a Man-in-the-Middle attack?", "options": ["Physical break-in", "Intercepting communications", "DDoS attack", "Brute force"], "correct": 1},
-            {"q": "Which port is commonly used for HTTPS?", "options": ["80", "443", "22", "3389"], "correct": 1},
-            {"q": "What does DNS stand for?", "options": ["Digital Network System", "Domain Name System", "Data Network Security", "Dynamic Node Service"], "correct": 1},
-        ],
-    },
-]
-
-TRAINING_SCORES = {}
-
-def training_submit_quiz(module_id: str, answers: dict) -> dict:
-    module = next((m for m in TRAINING_MODULES if m["id"] == module_id), None)
-    if not module:
-        return {"ok": False, "error": "Module not found"}
-
-    correct = 0
-    total = len(module["questions"])
-    details = []
-    for i, q in enumerate(module["questions"]):
-        user_answer = answers.get(str(i), -1)
-        is_correct = int(user_answer) == q["correct"]
-        if is_correct:
-            correct += 1
-        details.append({
-            "question": q["q"],
-            "correct": is_correct,
-            "user_answer": int(user_answer),
-            "correct_answer": q["correct"],
-        })
-
-    score = round((correct / total) * 100)
-    TRAINING_SCORES[module_id] = {
-        "score": score,
-        "correct": correct,
-        "total": total,
-        "passed": score >= 70,
-        "timestamp": datetime.now().isoformat(),
-    }
-
-    return {"ok": True, "score": score, "correct": correct, "total": total,
-            "passed": score >= 70, "details": details, "module_id": module_id}
-
-def training_phishing_sim(target_email: str) -> dict:
-    """Simulate a phishing test (local only, no actual email sent)"""
-    sim_id = f"SIM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    return {
-        "ok": True,
-        "sim_id": sim_id,
-        "message": "Phishing simulation created (local mode — no actual email sent)",
-        "target": target_email,
-        "template": "Password Reset Notification",
-    }
-
-
-# ─── NAC Enhanced ─────────────────────────────────────────────────────────────
-NAC_APPROVED = []   # [{"ip": ..., "mac": ..., "name": ..., "approved_at": ...}]
-NAC_DENIED = []     # [{"ip": ..., "mac": ..., "denied_at": ...}]
-NAC_PENDING = []    # [{"ip": ..., "mac": ..., "first_seen": ...}]
-NAC_POLICY = {"default_action": "allow", "require_approval": False, "mac_filter": False}
-
-def nac_approve_device(ip: str, mac: str, name: str = ""):
-    NAC_APPROVED.append({"ip": ip, "mac": mac, "name": name or ip, "approved_at": datetime.now().isoformat()})
-    NAC_PENDING[:] = [d for d in NAC_PENDING if d.get("ip") != ip]
-    NAC_DENIED[:] = [d for d in NAC_DENIED if d.get("ip") != ip]
-    log.info(f"[NAC] Device approved: {ip} ({mac})")
-
-def nac_deny_device(ip: str, mac: str):
-    NAC_DENIED.append({"ip": ip, "mac": mac, "denied_at": datetime.now().isoformat()})
-    NAC_PENDING[:] = [d for d in NAC_PENDING if d.get("ip") != ip]
-    NAC_APPROVED[:] = [d for d in NAC_APPROVED if d.get("ip") != ip]
-    log.info(f"[NAC] Device denied: {ip} ({mac})")
-
-
-# ─── IAM Enhanced ─────────────────────────────────────────────────────────────
-IAM_USERS = {}      # {username: {password_hash, role, email, mfa_enabled, created_at}}
-IAM_SESSIONS = {}   # {session_id: {username, ip, created_at}}
-IAM_ROLES = {
-    "admin":   {"permissions": ["all"]},
-    "analyst": {"permissions": ["read", "alerts", "reports", "threats"]},
-    "viewer":  {"permissions": ["read"]},
-}
-
+# ─── Login Auth Helpers (password hashing — used by netguard_login.html) ──────
 def _hash_password(password: str) -> str:
     """Hash password with scrypt (OWASP n=16384, r=8, p=1). Format: 'scrypt$<salt-hex>$<hash-hex>'."""
     salt = _ng_secrets.token_bytes(16)
@@ -1723,7 +1349,8 @@ def _hash_password(password: str) -> str:
 
 
 def iam_verify_password(password: str, stored: str) -> bool:
-    """Verify password against stored hash. Supports scrypt (new) + sha256 + salt:hash legacy formats."""
+    """Verify password against stored hash. Supports scrypt (new) + sha256 + salt:hash legacy formats.
+    Name kept for backwards compatibility with login flow + tests."""
     if not stored or not password:
         return False
     try:
@@ -1766,73 +1393,6 @@ def iam_verify_password(password: str, stored: str) -> bool:
     return False
 
 
-def iam_create_user(username: str, password: str, role: str = "viewer", email: str = "") -> dict:
-    if not username or not password:
-        return {"ok": False, "error": "Username and password required"}
-    if username in IAM_USERS:
-        return {"ok": False, "error": "User already exists"}
-    if role not in IAM_ROLES:
-        return {"ok": False, "error": f"Invalid role. Valid: {list(IAM_ROLES.keys())}"}
-    pw_hash = _hash_password(password)
-    IAM_USERS[username] = {
-        "password_hash": pw_hash,
-        "role": role,
-        "email": email,
-        "mfa_enabled": False,
-        "mfa_secret": "",
-        "created_at": datetime.now().isoformat(),
-        "last_login": "",
-    }
-    log.info(f"[IAM] User created: {username} (role: {role})")
-    try:
-        save_settings()
-    except Exception:
-        pass
-    return {"ok": True, "username": username, "role": role}
-
-def iam_delete_user(username: str) -> dict:
-    if username in IAM_USERS:
-        del IAM_USERS[username]
-        try:
-            save_settings()
-        except Exception:
-            pass
-        return {"ok": True}
-    return {"ok": False, "error": "User not found"}
-
-def iam_list_users() -> list:
-    return [
-        {"username": u, "role": d["role"], "email": d.get("email", ""),
-         "mfa_enabled": d.get("mfa_enabled", False),
-         "created_at": d["created_at"], "last_login": d.get("last_login", "")}
-        for u, d in IAM_USERS.items()
-    ]
-
-def iam_update_role(username: str, role: str) -> dict:
-    if username not in IAM_USERS:
-        return {"ok": False, "error": "User not found"}
-    if role not in IAM_ROLES:
-        return {"ok": False, "error": "Invalid role"}
-    IAM_USERS[username]["role"] = role
-    try:
-        save_settings()
-    except Exception:
-        pass
-    return {"ok": True, "username": username, "role": role}
-
-def iam_toggle_mfa(username: str) -> dict:
-    if username not in IAM_USERS:
-        return {"ok": False, "error": "User not found"}
-    IAM_USERS[username]["mfa_enabled"] = not IAM_USERS[username]["mfa_enabled"]
-    if IAM_USERS[username]["mfa_enabled"]:
-        IAM_USERS[username]["mfa_secret"] = _ng_secrets.token_hex(16)
-    try:
-        save_settings()
-    except Exception:
-        pass
-    return {"ok": True, "mfa_enabled": IAM_USERS[username]["mfa_enabled"]}
-
-
 def dpi_inspect(src_ip: str, payload: bytes) -> list:
     if not payload:
         return []
@@ -1845,6 +1405,174 @@ def dpi_inspect(src_ip: str, payload: bytes) -> list:
         if pattern.search(payload):
             alerts.append({"type": "attack", "detail": label, "masked": False})
     return alerts
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task B 2026-04-30 — Rogue Npcap Consumer Detector
+# ═══════════════════════════════════════════════════════════════════════════
+# Background: orphan pytest sessions loading scapy triggered the Windows UAC
+# popup loop because Npcap was running in admin-only mode. We detect this
+# pattern proactively: track processes that map Packet.dll / wpcap.dll, and
+# if a launch-loop signature is observed (>3 short-lived restarts of the
+# same exe in 5 min), log a critical alert and kill the rogue process.
+#
+# Detection signals:
+#  - psutil.Process.memory_maps()  -> Packet.dll / wpcap.dll in mapped DLLs
+#  - Fast-relaunch heuristic       -> same exe path, multiple short-lived PIDs
+# Whitelist: netguard.py itself, python.exe running netguard.py, plus any
+# absolute exe path listed in settings.json:npcap_whitelist.
+
+NPCAP_WHITELIST: set = set()                   # user-config absolute exe paths
+_NPCAP_CONSUMERS: dict = {}                    # {exe_path: {pids:set, first_seen, last_pids:deque, hits:int}}
+_NPCAP_SCAN_INTERVAL_SEC = 30
+_NPCAP_RELAUNCH_WINDOW_SEC = 300               # 5 min
+_NPCAP_RELAUNCH_THRESHOLD = 3                  # > 3 relaunches in 5 min -> rogue
+_NPCAP_DLLS = {"packet.dll", "wpcap.dll"}      # lowercased
+
+
+def _npcap_self_paths() -> set:
+    """Return absolute exe paths that should never be flagged as rogue
+    (NetGuard itself + the Python interpreter running netguard.py)."""
+    paths = set()
+    try:
+        paths.add(os.path.realpath(sys.executable))
+    except Exception:
+        pass
+    try:
+        paths.add(os.path.realpath(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    try:
+        # Argv[0] handles bundled .exe (PyInstaller) where __file__ = .py
+        if sys.argv and sys.argv[0]:
+            paths.add(os.path.realpath(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+    return paths
+
+
+def _npcap_process_uses_npcap(proc) -> bool:
+    """True if the given psutil.Process has Packet.dll or wpcap.dll mapped."""
+    try:
+        for m in proc.memory_maps():
+            # m.path is a string; lower-case the basename for match
+            try:
+                base = os.path.basename(m.path).lower()
+            except Exception:
+                continue
+            if base in _NPCAP_DLLS:
+                return True
+    except Exception:
+        # Access denied / process gone / not supported on this platform
+        return False
+    return False
+
+
+def _npcap_is_whitelisted(exe_path: str) -> bool:
+    """Whitelist check: NetGuard self + user-configured paths."""
+    if not exe_path:
+        return True  # cannot identify -> don't kill
+    norm = os.path.normcase(os.path.realpath(exe_path))
+    if norm in {os.path.normcase(p) for p in _npcap_self_paths()}:
+        return True
+    if norm in {os.path.normcase(os.path.realpath(p)) for p in NPCAP_WHITELIST if p}:
+        return True
+    return False
+
+
+def detect_npcap_uac_spammers() -> list:
+    """Scan running processes once. Return list of consumer entries.
+    Side-effect: kill rogue processes (>N relaunches in window) and log critical."""
+    try:
+        import psutil
+    except ImportError:
+        log.debug("[NPCAP] psutil not installed — detector idle")
+        return []
+    now = time.time()
+    found = []  # current-scan snapshot
+    rogue_killed = []
+    seen_exes = set()
+    for proc in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+        try:
+            info = proc.info
+            exe = info.get("exe") or ""
+            if not exe:
+                continue
+            if not _npcap_process_uses_npcap(proc):
+                continue
+            seen_exes.add(exe)
+            entry = _NPCAP_CONSUMERS.setdefault(exe, {
+                "first_seen": now,
+                "pids": set(),
+                "last_pids": deque(maxlen=20),  # (pid, ts)
+                "hits": 0,
+            })
+            pid = info.get("pid")
+            if pid is not None and pid not in entry["pids"]:
+                entry["pids"].add(pid)
+                entry["last_pids"].append((pid, now))
+            # Prune relaunches outside the 5-min window
+            cutoff = now - _NPCAP_RELAUNCH_WINDOW_SEC
+            recent = [(p, t) for (p, t) in entry["last_pids"] if t >= cutoff]
+            entry["last_pids"] = deque(recent, maxlen=20)
+            relaunches = len(recent)
+            entry["hits"] = relaunches
+            found.append({
+                "exe": exe,
+                "name": info.get("name", ""),
+                "pid": pid,
+                "relaunches_in_window": relaunches,
+                "first_seen": entry["first_seen"],
+            })
+            # Rogue trigger: > N relaunches in 5 min, not whitelisted
+            if relaunches > _NPCAP_RELAUNCH_THRESHOLD and not _npcap_is_whitelisted(exe):
+                log.critical(f"[NPCAP] Rogue Npcap consumer: {exe} ({relaunches} relaunches in {_NPCAP_RELAUNCH_WINDOW_SEC}s) — killing PID {pid}")
+                try:
+                    proc.kill()
+                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches})
+                except Exception as e:
+                    log.error(f"[NPCAP] Failed to kill {exe} PID {pid}: {e}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        except Exception as e:
+            log.debug(f"[NPCAP] scan error on PID {proc.pid if hasattr(proc, 'pid') else '?'}: {e}")
+            continue
+    # Drop entries for exes we no longer see and that have aged out of window
+    cutoff = now - _NPCAP_RELAUNCH_WINDOW_SEC * 2
+    stale = [k for k, v in _NPCAP_CONSUMERS.items()
+             if k not in seen_exes and v["first_seen"] < cutoff]
+    for k in stale:
+        del _NPCAP_CONSUMERS[k]
+    if rogue_killed:
+        log.warning(f"[NPCAP] Killed {len(rogue_killed)} rogue consumer(s): {rogue_killed}")
+    return found
+
+
+def npcap_get_consumers() -> list:
+    """JSON-safe consumer snapshot for /api/npcap_consumers and dashboard."""
+    out = []
+    for exe, entry in _NPCAP_CONSUMERS.items():
+        out.append({
+            "exe": exe,
+            "pids": sorted(entry.get("pids", [])),
+            "first_seen": entry.get("first_seen", 0),
+            "relaunches_in_window": entry.get("hits", 0),
+            "whitelisted": _npcap_is_whitelisted(exe),
+        })
+    return out
+
+
+def _npcap_detector_loop():
+    """Background thread: run detect_npcap_uac_spammers() every 30s."""
+    log.info("[NPCAP] Detector started (interval=%ds, threshold=%d/%ds)",
+             _NPCAP_SCAN_INTERVAL_SEC, _NPCAP_RELAUNCH_THRESHOLD, _NPCAP_RELAUNCH_WINDOW_SEC)
+    while True:
+        try:
+            detect_npcap_uac_spammers()
+        except Exception as e:
+            log.error(f"[NPCAP] detector loop error: {e}")
+        time.sleep(_NPCAP_SCAN_INTERVAL_SEC)
+
 
 def _record_filename() -> str:
     os.makedirs(CFG.record_dir, exist_ok=True)
@@ -2784,379 +2512,31 @@ def generate_forensic_report(ip: str, trigger: str) -> str:
         return ""
 
 # ═══════════════════════════════════════════════════════════════════════════
-# v3.0 — WIREGUARD VPN SERVER
+# v3.0 — WIREGUARD CLIENT CONFIG (display only — server lifecycle removed)
 # ═══════════════════════════════════════════════════════════════════════════
+# Trim 2026-04-30: WireGuard server lifecycle removed (start/stop/peer mgmt,
+# config generation, peer key generation, on-disk peer roster).
+# A standalone WireGuard install (wireguard.com) remains the recommended way
+# to actually run the tunnel; NetGuard only displays a manually-provisioned
+# client config from the wg_* settings keys.
 
-def _wg_find_binary(name: str) -> str:
-    """Trouve le chemin complet d'un binaire WireGuard (wg, wireguard)"""
-    import shutil
-    # Check PATH first
-    found = shutil.which(name)
-    if found:
-        return found
-    # Windows: check standard install locations
-    if IS_WINDOWS:
-        candidates = [
-            os.path.join(r"C:\Program Files\WireGuard", name),
-            os.path.join(r"C:\Program Files\WireGuard", name + ".exe"),
-            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "WireGuard", name),
-            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "WireGuard", name + ".exe"),
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-    return name  # Return as-is, let subprocess handle FileNotFoundError
-
-_WG_BIN = None
-_WIREGUARD_BIN = None
-
-def _wg_cmd() -> str:
-    """Retourne le chemin vers wg(.exe)"""
-    global _WG_BIN
-    if _WG_BIN is None:
-        _WG_BIN = _wg_find_binary("wg")
-    return _WG_BIN
-
-def _wireguard_cmd() -> str:
-    """Retourne le chemin vers wireguard(.exe)"""
-    global _WIREGUARD_BIN
-    if _WIREGUARD_BIN is None:
-        _WIREGUARD_BIN = _wg_find_binary("wireguard")
-    return _WIREGUARD_BIN
-
-def _wg_genkey_python() -> tuple:
-    """Génère une paire de clés WireGuard en pur Python via X25519 (fallback sans wg CLI)"""
-    try:
-        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
-        privkey_obj = X25519PrivateKey.generate()
-        priv_b64 = base64.b64encode(privkey_obj.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode()
-        pub_b64 = base64.b64encode(privkey_obj.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
-        log.info("[WG] Clés générées via Python cryptography (fallback)")
-        return priv_b64, pub_b64
-    except ImportError:
-        log.error("[WG] Ni wg CLI ni Python cryptography disponible. Installe: pip install cryptography")
-        return "", ""
-    except Exception as e:
-        log.error(f"[WG] Erreur génération clés Python: {e}")
-        return "", ""
-
-def _wg_genpsk_python() -> str:
-    """Génère un preshared key en pur Python (fallback sans wg CLI)"""
-    return base64.b64encode(os.urandom(32)).decode()
-
-def _wg_genkey() -> tuple:
-    """Génère une paire de clés WireGuard (privkey, pubkey) — essaie wg CLI puis fallback Python"""
-    try:
-        result = _subprocess.run([_wg_cmd(), "genkey"], capture_output=True, text=True, timeout=5)
-        privkey = result.stdout.strip()
-        if not privkey:
-            raise ValueError("wg genkey returned empty")
-        result2 = _subprocess.run([_wg_cmd(), "pubkey"], input=privkey, capture_output=True, text=True, timeout=5)
-        pubkey = result2.stdout.strip()
-        if not pubkey:
-            raise ValueError("wg pubkey returned empty")
-        return privkey, pubkey
-    except (FileNotFoundError, ValueError):
-        log.warning("[WG] wg CLI non trouvé, utilisation du fallback Python cryptography")
-        return _wg_genkey_python()
-    except Exception as e:
-        log.warning(f"[WG] Erreur wg CLI ({e}), tentative fallback Python")
-        return _wg_genkey_python()
-
-def _wg_init_server():
-    """Initialise les clés serveur WireGuard si nécessaire"""
-    global WG_SERVER_PRIVKEY, WG_SERVER_PUBKEY
-    os.makedirs(CFG.wg_config_dir, exist_ok=True)
-    keyfile = os.path.join(CFG.wg_config_dir, "server_keys.json")
-    if os.path.exists(keyfile):
-        try:
-            with open(keyfile, "r") as f:
-                keys = json.load(f)
-            WG_SERVER_PRIVKEY = keys.get("privkey", "")
-            WG_SERVER_PUBKEY = keys.get("pubkey", "")
-            if WG_SERVER_PRIVKEY and WG_SERVER_PUBKEY:
-                log.info(f"[WG] Clés serveur chargées. PubKey: {WG_SERVER_PUBKEY[:20]}...")
-                return
-        except Exception:
-            pass
-    # Generate new keys
-    WG_SERVER_PRIVKEY, WG_SERVER_PUBKEY = _wg_genkey()
-    if WG_SERVER_PRIVKEY:
-        try:
-            with open(keyfile, "w") as f:
-                json.dump({"privkey": WG_SERVER_PRIVKEY, "pubkey": WG_SERVER_PUBKEY}, f)
-            try:
-                os.chmod(keyfile, 0o600)
-            except OSError:
-                pass
-            log.info(f"[WG] Nouvelles clés serveur générées. PubKey: {WG_SERVER_PUBKEY[:20]}...")
-        except Exception as e:
-            log.error(f"[WG] Erreur sauvegarde clés: {e}")
-
-def _wg_generate_server_config() -> str:
-    """Génère le fichier de config serveur WireGuard"""
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    lines = [
-        "[Interface]",
-        f"PrivateKey = {WG_SERVER_PRIVKEY}",
-        f"Address = {CFG.wg_address}",
-        f"ListenPort = {CFG.wg_listen_port}",
-        f"DNS = {CFG.wg_dns}",
-    ]
-    if CFG.wg_post_up:
-        lines.append(f"PostUp = {CFG.wg_post_up}")
-    if CFG.wg_post_down:
-        lines.append(f"PostDown = {CFG.wg_post_down}")
-    # Add peers
-    for peer in WG_PEERS:
-        lines.append("")
-        lines.append("[Peer]")
-        lines.append(f"PublicKey = {peer['pubkey']}")
-        lines.append(f"AllowedIPs = {peer['address']}/32")
-        if peer.get("preshared_key"):
-            lines.append(f"PresharedKey = {peer['preshared_key']}")
-    config = "\n".join(lines) + "\n"
-    config_path = os.path.join(CFG.wg_config_dir, f"{CFG.wg_interface}.conf")
-    with open(config_path, "w") as f:
-        f.write(config)
-    log.info(f"[WG] Config serveur écrite: {config_path}")
-    return config_path
-
-def _wg_generate_peer_config(peer: dict) -> str:
-    """Génère la config client pour un peer"""
+def _wg_generate_peer_config(name: str = "client") -> str:
+    """Generate a *display-only* sample client config based on stored wg_* settings.
+    No server keys, no real peer keys — caller is expected to fill those in."""
     endpoint = CFG.wg_endpoint or "YOUR_SERVER_IP:51820"
-    # Extract network prefix from server address (e.g., 10.66.66 from 10.66.66.1/24)
-    server_net = CFG.wg_address.split("/")[0]
-    config = f"""[Interface]
-PrivateKey = {peer['privkey']}
-Address = {peer['address']}/32
-DNS = {CFG.wg_dns}
-
-[Peer]
-PublicKey = {WG_SERVER_PUBKEY}
-Endpoint = {endpoint}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-"""
-    return config
-
-def wg_add_peer(name: str) -> dict:
-    """Ajoute un nouveau peer VPN"""
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    privkey, pubkey = _wg_genkey()
-    if not privkey:
-        return {"error": "Impossible de générer les clés. WireGuard est-il installé?"}
-    # Calculate next available IP
-    base_parts = CFG.wg_address.split("/")[0].split(".")
-    used_ips = {p["address"] for p in WG_PEERS}
-    next_ip = ""
-    for i in range(2, 254):
-        candidate = f"{base_parts[0]}.{base_parts[1]}.{base_parts[2]}.{i}"
-        if candidate not in used_ips and candidate != CFG.wg_address.split("/")[0]:
-            next_ip = candidate
-            break
-    if not next_ip:
-        return {"error": "Plus d'adresses IP disponibles"}
-    # Generate preshared key (wg CLI or Python fallback)
-    try:
-        psk_result = _subprocess.run([_wg_cmd(), "genpsk"], capture_output=True, text=True, timeout=5)
-        psk = psk_result.stdout.strip()
-        if not psk:
-            psk = _wg_genpsk_python()
-    except Exception:
-        psk = _wg_genpsk_python()
-    peer = {
-        "name":          name,
-        "pubkey":        pubkey,
-        "privkey":       privkey,
-        "preshared_key": psk,
-        "address":       next_ip,
-        "allowed_ips":   f"{next_ip}/32",
-        "created":       datetime.now().isoformat(),
-        "last_handshake": "",
-        "transfer_rx":   0,
-        "transfer_tx":   0,
-    }
-    WG_PEERS.append(peer)
-    # Save peer config file
-    os.makedirs(CFG.wg_config_dir, exist_ok=True)
-    peer_conf = _wg_generate_peer_config(peer)
-    peer_file = os.path.join(CFG.wg_config_dir, f"peer_{name}.conf")
-    with open(peer_file, "w") as f:
-        f.write(peer_conf)
-    # Regenerate server config
-    _wg_generate_server_config()
-    # Save peers list
-    _wg_save_peers()
-    log.info(f"[WG] Peer ajouté: {name} ({next_ip})")
-    return {"ok": True, "peer": {k: v for k, v in peer.items() if k != "privkey"}, "config": peer_conf, "config_file": peer_file}
-
-def wg_remove_peer(name: str) -> dict:
-    """Supprime un peer VPN"""
-    global WG_PEERS
-    peer = next((p for p in WG_PEERS if p["name"] == name), None)
-    if not peer:
-        return {"error": f"Peer '{name}' non trouvé"}
-    WG_PEERS = [p for p in WG_PEERS if p["name"] != name]
-    # Remove peer config file
-    peer_file = os.path.join(CFG.wg_config_dir, f"peer_{name}.conf")
-    if os.path.exists(peer_file):
-        os.remove(peer_file)
-    # Regenerate server config
-    _wg_generate_server_config()
-    _wg_save_peers()
-    # If WG is running, remove peer live
-    if WG_STATUS.get("running"):
-        try:
-            _subprocess.run([_wg_cmd(), "set", CFG.wg_interface, "peer", peer["pubkey"], "remove"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
-    log.info(f"[WG] Peer supprimé: {name}")
-    return {"ok": True}
-
-def wg_start() -> dict:
-    """Démarre le tunnel WireGuard"""
-    global WG_STATUS
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    config_path = _wg_generate_server_config()
-    abs_config = os.path.abspath(config_path)
-    try:
-        if IS_LINUX:
-            result = _subprocess.run(["wg-quick", "up", abs_config],
-                                    capture_output=True, text=True, timeout=15)
-        elif IS_WINDOWS:
-            # Windows: wireguard.exe /installtunnelservice needs admin rights
-            result = _subprocess.run([_wireguard_cmd(), "/installtunnelservice", abs_config],
-                                    capture_output=True, text=True, timeout=15)
-        else:
-            return {"error": "OS non supporté pour WireGuard"}
-
-        if result.returncode != 0:
-            stderr = result.stderr.strip() or result.stdout.strip()
-            if "access" in stderr.lower() or "denied" in stderr.lower() or "privilege" in stderr.lower():
-                msg = "Droits administrateur requis. Lance NetGuard en tant qu'Administrateur pour démarrer le VPN."
-            else:
-                msg = f"Erreur WireGuard (code {result.returncode}): {stderr}"
-            log.error(f"[WG] {msg}")
-            return {"error": msg}
-
-        # Verify tunnel is actually up (give it a moment)
-        import time
-        time.sleep(1)
-        verify = _subprocess.run([_wg_cmd(), "show", CFG.wg_interface],
-                                capture_output=True, text=True, timeout=5)
-        if verify.returncode == 0:
-            WG_STATUS["running"] = True
-            WG_STATUS["interface"] = CFG.wg_interface
-            WG_STATUS["not_installed"] = False
-            log.info(f"[WG] Tunnel {CFG.wg_interface} démarré et vérifié")
-            return {"ok": True, "status": "started"}
-        else:
-            # Command ran but tunnel not active — likely needs admin
-            WG_STATUS["running"] = False
-            msg = "Le tunnel n'a pas démarré. Lance NetGuard en tant qu'Administrateur (clic droit → Exécuter en admin)."
-            log.warning(f"[WG] {msg}")
-            return {"error": msg}
-
-    except FileNotFoundError:
-        msg = "WireGuard non installé. "
-        if IS_WINDOWS:
-            msg += "Lance install_wireguard.bat en admin ou installe depuis https://wireguard.com/install/"
-        else:
-            msg += "Installe avec: sudo apt install wireguard"
-        log.error(f"[WG] {msg}")
-        return {"error": msg}
-    except Exception as e:
-        log.error(f"[WG] Erreur démarrage tunnel: {e}")
-        return {"error": str(e)}
-
-def wg_stop() -> dict:
-    """Arrête le tunnel WireGuard"""
-    global WG_STATUS
-    config_path = os.path.join(CFG.wg_config_dir, f"{CFG.wg_interface}.conf")
-    try:
-        if IS_LINUX:
-            _subprocess.run(["wg-quick", "down", config_path], capture_output=True, text=True, timeout=15)
-        elif IS_WINDOWS:
-            _subprocess.run([_wireguard_cmd(), "/uninstalltunnelservice", CFG.wg_interface],
-                          capture_output=True, text=True, timeout=15)
-        WG_STATUS["running"] = False
-        WG_STATUS["peers_connected"] = 0
-        log.info(f"[WG] Tunnel {CFG.wg_interface} arrêté")
-        return {"ok": True, "status": "stopped"}
-    except FileNotFoundError:
-        msg = "WireGuard non installé. "
-        if IS_WINDOWS:
-            msg += "Lance install_wireguard.bat en admin"
-        else:
-            msg += "Installe avec: sudo apt install wireguard"
-        return {"error": msg}
-    except Exception as e:
-        return {"error": str(e)}
-
-def wg_get_status() -> dict:
-    """Récupère le statut du tunnel WireGuard"""
-    global WG_STATUS
-    try:
-        result = _subprocess.run([_wg_cmd(), "show", CFG.wg_interface], capture_output=True, text=True, timeout=5)
-        if result.returncode != 0:
-            WG_STATUS["running"] = False
-            return WG_STATUS
-        WG_STATUS["running"] = True
-        WG_STATUS["interface"] = CFG.wg_interface
-        # Parse output for peer info
-        connected = 0
-        lines = result.stdout.splitlines()
-        current_peer_pub = ""
-        for line in lines:
-            line = line.strip()
-            if line.startswith("peer:"):
-                current_peer_pub = line.split(":", 1)[1].strip()
-            elif line.startswith("latest handshake:") and current_peer_pub:
-                hs = line.split(":", 1)[1].strip()
-                for p in WG_PEERS:
-                    if p["pubkey"] == current_peer_pub:
-                        p["last_handshake"] = hs
-                connected += 1
-            elif line.startswith("transfer:") and current_peer_pub:
-                parts = line.split(":", 1)[1].strip()
-                for p in WG_PEERS:
-                    if p["pubkey"] == current_peer_pub:
-                        p["transfer_info"] = parts
-        WG_STATUS["peers_connected"] = connected
-    except FileNotFoundError:
-        WG_STATUS["running"] = False
-        WG_STATUS["not_installed"] = True
-    except Exception:
-        WG_STATUS["running"] = False
-    return WG_STATUS
-
-def _wg_save_peers():
-    """Sauvegarde la liste des peers"""
-    try:
-        peers_file = os.path.join(CFG.wg_config_dir, "peers.json")
-        safe_peers = [{k: v for k, v in p.items()} for p in WG_PEERS]
-        with open(peers_file, "w", encoding="utf-8") as f:
-            json.dump(safe_peers, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        log.error(f"[WG] Erreur sauvegarde peers: {e}")
-
-def _wg_load_peers():
-    """Charge la liste des peers"""
-    global WG_PEERS
-    peers_file = os.path.join(CFG.wg_config_dir, "peers.json")
-    if os.path.exists(peers_file):
-        try:
-            with open(peers_file, "r", encoding="utf-8") as f:
-                WG_PEERS = json.load(f)
-            log.info(f"[WG] {len(WG_PEERS)} peers chargés")
-        except Exception as e:
-            log.error(f"[WG] Erreur chargement peers: {e}")
+    address = CFG.wg_address.split("/")[0] if "/" in CFG.wg_address else CFG.wg_address
+    return (
+        "[Interface]\n"
+        "PrivateKey = <REPLACE_WITH_CLIENT_PRIVKEY>\n"
+        f"Address = {address}/32\n"
+        f"DNS = {CFG.wg_dns}\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = <REPLACE_WITH_SERVER_PUBKEY>\n"
+        f"Endpoint = {endpoint}\n"
+        "AllowedIPs = 0.0.0.0/0, ::/0\n"
+        "PersistentKeepalive = 25\n"
+    )
 
 def analyze_packet(pkt):
     if not HAS_SCAPY:
@@ -3644,13 +3024,15 @@ def build_state_message() -> dict:
             "isolated_devices":     list(ISOLATED_DEVICES),
             "webhook_log":          list(STATE.webhook_log)[:20],
             "forensic_reports":     list(STATE.forensic_reports)[:10],
-            # v3.0 — WireGuard VPN
+            # v3.0 — WireGuard VPN (display-only post-trim)
             "wg_enabled":         CFG.wg_enabled,
             "wg_status":          WG_STATUS,
-            "wg_peers":           [{k: v for k, v in p.items() if k not in ("privkey", "preshared_key")} for p in WG_PEERS],
-            "wg_server_pubkey":   WG_SERVER_PUBKEY,
+            "wg_peers":           [],
+            "wg_server_pubkey":   "",
             "wg_listen_port":     CFG.wg_listen_port,
             "wg_address":         CFG.wg_address,
+            # Task B 2026-04-30 — Npcap consumer detector snapshot
+            "npcap_consumers":    npcap_get_consumers(),
             # License
             "license_tier":       LICENSE.get("tier", "free"),
             "license_trial":      LICENSE.get("trial", False),
@@ -4231,35 +3613,11 @@ async def handle_ws_command(ws, msg: dict):
             threading.Thread(target=_gen, daemon=True).start()
             await ws.send(json.dumps({"type": "forensic_generating", "ip": ip}))
 
-    # ── WireGuard VPN ─────────────────────────────────────────────────────
-    elif cmd == "wg_start":
-        result = wg_start()
-        await ws.send(json.dumps({"type": "wg_started", **result}))
-    elif cmd == "wg_stop":
-        result = wg_stop()
-        await ws.send(json.dumps({"type": "wg_stopped", **result}))
-    elif cmd == "wg_status":
-        status = wg_get_status()
-        await ws.send(json.dumps({"type": "wg_status", **status}))
-    elif cmd == "wg_add_peer":
-        name = msg.get("name", "")
-        if name:
-            result = wg_add_peer(name)
-            await ws.send(json.dumps({"type": "wg_peer_added", **result}, default=str))
-    elif cmd == "wg_remove_peer":
-        name = msg.get("name", "")
-        if name:
-            result = wg_remove_peer(name)
-            await ws.send(json.dumps({"type": "wg_peer_removed", **result}))
-    elif cmd == "wg_get_peers":
-        safe_peers = [{k: v for k, v in p.items() if k not in ("privkey", "preshared_key")} for p in WG_PEERS]
-        await ws.send(json.dumps({"type": "wg_peers", "peers": safe_peers}))
+    # ── WireGuard VPN — client config display only ────────────────────────
     elif cmd == "wg_get_config":
-        name = msg.get("name", "")
-        peer = next((p for p in WG_PEERS if p["name"] == name), None)
-        if peer:
-            config = _wg_generate_peer_config(peer)
-            await ws.send(json.dumps({"type": "wg_peer_config", "name": name, "config": config}))
+        name = msg.get("name", "client")
+        config = _wg_generate_peer_config(name)
+        await ws.send(json.dumps({"type": "wg_peer_config", "name": name, "config": config}))
     elif cmd == "wg_set_config":
         if "endpoint" in msg:
             CFG.wg_endpoint = msg["endpoint"]
@@ -4273,46 +3631,8 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "wg_config_saved"}))
 
     # ══════════════════════════════════════════════════════════════════════
-    # v4.0 — New Modules: Vulnerability / Backup / Incidents / Training / NAC / IAM
+    # v4.0 — Backup & Recovery (only remaining v4.0 module post-trim)
     # ══════════════════════════════════════════════════════════════════════
-
-    # ── Vulnerability Scanner ──────────────────────────────────────────
-    elif cmd == "vuln_port_scan":
-        target = msg.get("target", "127.0.0.1")
-        port_range = msg.get("ports", "1-1024")
-        def _scan():
-            results = vuln_scan_ports(target, port_range)
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_scan_result", "target": target, **results})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_scan, daemon=True).start()
-        await ws.send(json.dumps({"type": "vuln_scan_started", "target": target}))
-
-    elif cmd == "vuln_cve_lookup":
-        cve_id = msg.get("cve", "")
-        def _lookup():
-            result = vuln_cve_lookup(cve_id)
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_cve_result", "cve": cve_id, **result})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_lookup, daemon=True).start()
-
-    elif cmd == "vuln_system_check":
-        def _check():
-            result = vuln_system_check()
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_system_result", **result})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_check, daemon=True).start()
-        await ws.send(json.dumps({"type": "vuln_system_checking"}))
-
-    elif cmd == "vuln_get_history":
-        await ws.send(json.dumps({"type": "vuln_history", "scans": list(VULN_SCAN_HISTORY)}))
-
-    # ── Backup & Recovery ──────────────────────────────────────────────
     elif cmd == "backup_create":
         name = msg.get("name", "")
         include = msg.get("include", ["settings", "rules", "blocked"])
@@ -4350,103 +3670,10 @@ async def handle_ws_command(ws, msg: dict):
         save_settings()
         await ws.send(json.dumps({"type": "backup_schedule_set", **BACKUP_SCHEDULE}))
 
-    # ── Incident Response / Ticketing ──────────────────────────────────
-    elif cmd == "incident_create":
-        ticket = incident_create(
-            msg.get("title", ""),
-            msg.get("description", ""),
-            msg.get("severity", "medium"),
-            msg.get("assigned_to", ""),
-            msg.get("related_ip", ""),
-        )
-        await ws.send(json.dumps({"type": "incident_created", "ticket": ticket}))
-
-    elif cmd == "incident_update":
-        ticket_id = msg.get("id", "")
-        updates = {k: v for k, v in msg.items() if k in ("status", "notes", "assigned_to", "severity")}
-        result = incident_update(ticket_id, updates)
-        await ws.send(json.dumps({"type": "incident_updated", **result}))
-
-    elif cmd == "incident_list":
-        status_filter = msg.get("status", "")
-        tickets = incident_list(status_filter)
-        await ws.send(json.dumps({"type": "incident_list", "tickets": tickets}))
-
-    elif cmd == "incident_get":
-        ticket = incident_get(msg.get("id", ""))
-        await ws.send(json.dumps({"type": "incident_detail", "ticket": ticket}))
-
-    elif cmd == "incident_delete":
-        result = incident_delete(msg.get("id", ""))
-        await ws.send(json.dumps({"type": "incident_deleted", **result}))
-
-    # ── Training & Awareness ──────────────────────────────────────────
-    elif cmd == "training_get_modules":
-        await ws.send(json.dumps({"type": "training_modules", "modules": TRAINING_MODULES}))
-
-    elif cmd == "training_submit_quiz":
-        module_id = msg.get("module_id", "")
-        answers = msg.get("answers", {})
-        result = training_submit_quiz(module_id, answers)
-        await ws.send(json.dumps({"type": "training_quiz_result", **result}))
-
-    elif cmd == "training_get_scores":
-        await ws.send(json.dumps({"type": "training_scores", "scores": TRAINING_SCORES}))
-
-    elif cmd == "training_phishing_sim":
-        result = training_phishing_sim(msg.get("target_email", ""))
-        await ws.send(json.dumps({"type": "training_phishing_started", **result}))
-
-    # ── NAC Enhanced ──────────────────────────────────────────────────
-    elif cmd == "nac_approve_device":
-        ip = msg.get("ip", "")
-        mac = msg.get("mac", "")
-        name = msg.get("name", "")
-        nac_approve_device(ip, mac, name)
-        await ws.send(json.dumps({"type": "nac_device_approved", "ip": ip, "mac": mac}))
-
-    elif cmd == "nac_deny_device":
-        ip = msg.get("ip", "")
-        mac = msg.get("mac", "")
-        nac_deny_device(ip, mac)
-        await ws.send(json.dumps({"type": "nac_device_denied", "ip": ip, "mac": mac}))
-
-    elif cmd == "nac_get_devices":
-        await ws.send(json.dumps({"type": "nac_devices", "approved": NAC_APPROVED, "denied": NAC_DENIED, "pending": NAC_PENDING}))
-
-    elif cmd == "nac_set_policy":
-        NAC_POLICY.update({k: v for k, v in msg.items() if k in ("default_action", "require_approval", "mac_filter")})
-        save_settings()
-        await ws.send(json.dumps({"type": "nac_policy_set", "policy": NAC_POLICY}))
-
-    # ── IAM Enhanced ──────────────────────────────────────────────────
-    elif cmd == "iam_create_user":
-        result = iam_create_user(
-            msg.get("username", ""),
-            msg.get("password", ""),
-            msg.get("role", "viewer"),
-            msg.get("email", ""),
-        )
-        await ws.send(json.dumps({"type": "iam_user_created", **result}))
-
-    elif cmd == "iam_delete_user":
-        result = iam_delete_user(msg.get("username", ""))
-        await ws.send(json.dumps({"type": "iam_user_deleted", **result}))
-
-    elif cmd == "iam_list_users":
-        users = iam_list_users()
-        await ws.send(json.dumps({"type": "iam_users", "users": users}))
-
-    elif cmd == "iam_update_role":
-        result = iam_update_role(msg.get("username", ""), msg.get("role", "viewer"))
-        await ws.send(json.dumps({"type": "iam_role_updated", **result}))
-
-    elif cmd == "iam_toggle_mfa":
-        result = iam_toggle_mfa(msg.get("username", ""))
-        await ws.send(json.dumps({"type": "iam_mfa_toggled", **result}))
-
-    elif cmd == "iam_get_sessions":
-        await ws.send(json.dumps({"type": "iam_sessions", "sessions": list(IAM_SESSIONS.values())}))
+    # ── Rogue Npcap consumer detector (Task B 2026-04-30) ──────────────
+    elif cmd == "npcap_consumers":
+        consumers = npcap_get_consumers()
+        await ws.send(json.dumps({"type": "npcap_consumers", "consumers": consumers}))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4799,10 +4026,9 @@ async def main_async(interface: str):
         _schedule_feed_refresh()
     if CFG.otx_enabled:
         threading.Thread(target=_otx_fetch_pulses, daemon=True).start()
-    # v3.0 — WireGuard
-    if CFG.wg_enabled:
-        _wg_init_server()
-        _wg_load_peers()
+    # v3.0 — WireGuard (server lifecycle removed in trim 2026-04-30)
+    # Task B 2026-04-30: Start rogue Npcap consumer detector
+    threading.Thread(target=_npcap_detector_loop, daemon=True).start()
     log.info(f"[WS] Serveur WebSocket sur ws://localhost:{CFG.ws_port}")
     if HAS_WS:
         try:
@@ -4872,26 +4098,17 @@ def save_settings():
             "quarantine_enabled": CFG.quarantine_enabled,
             "auto_forensic_enabled": CFG.auto_forensic_enabled,
             "auto_forensic_severity": CFG.auto_forensic_severity,
-            # WireGuard
+            # WireGuard (display-only client config post-trim)
             "wg_enabled": CFG.wg_enabled,
             "wg_listen_port": CFG.wg_listen_port,
             "wg_address": CFG.wg_address,
             "wg_dns": CFG.wg_dns,
             "wg_endpoint": CFG.wg_endpoint,
             "wg_interface": CFG.wg_interface,
-            # v4.0 — New Modules
-            "nac_approved": NAC_APPROVED,
-            "nac_denied": NAC_DENIED,
-            "nac_policy": NAC_POLICY,
+            # v4.0 — Backup is the only kept v4.0 module post-trim 2026-04-30
             "backup_schedule": BACKUP_SCHEDULE,
-            # password_hash is now persisted (settings.json is 0600 — Phase 2.2 hardening)
-            "iam_users": dict(IAM_USERS),
-            "incidents": INCIDENTS[:50],
-            "training_scores": TRAINING_SCORES,
-            "detection_params": {
-                k: DETECTION_PARAMS[k]["value"]
-                for k in DETECTION_PARAMS
-            } if 'DETECTION_PARAMS' in globals() else {},
+            # Npcap whitelist (Task B 2026-04-30)
+            "npcap_whitelist": list(NPCAP_WHITELIST),
         }
         _secure_json_write(SETTINGS_FILE, settings)
         log.info(f"[SETTINGS] Sauvegardé → {SETTINGS_FILE}")
@@ -4980,15 +4197,11 @@ def load_settings():
         CFG.wg_endpoint     = s.get("wg_endpoint", "")
         CFG.wg_interface    = s.get("wg_interface", "wg0")
 
-        # v4.0 — New Modules
-        global NAC_APPROVED, NAC_DENIED, NAC_POLICY, BACKUP_SCHEDULE, INCIDENTS, INCIDENT_COUNTER, TRAINING_SCORES
-        NAC_APPROVED = s.get("nac_approved", [])
-        NAC_DENIED = s.get("nac_denied", [])
-        NAC_POLICY.update(s.get("nac_policy", {}))
+        # v4.0 — Backup only (rest trimmed 2026-04-30)
+        global BACKUP_SCHEDULE, NPCAP_WHITELIST
         BACKUP_SCHEDULE.update(s.get("backup_schedule", {}))
-        INCIDENTS = s.get("incidents", [])
-        INCIDENT_COUNTER = len(INCIDENTS)
-        TRAINING_SCORES = s.get("training_scores", {})
+        # Task B 2026-04-30: Npcap consumer whitelist
+        NPCAP_WHITELIST = set(s.get("npcap_whitelist", []))
 
         log.info(f"[SETTINGS] Chargé — {len(BLOCKED_IPS)} IPs bloquées, {len(GEO_BLOCKED_COUNTRIES)} pays géobloqués")
     except Exception as e:
@@ -5046,9 +4259,8 @@ def main_webview():
         _schedule_feed_refresh()
     if CFG.otx_enabled:
         threading.Thread(target=_otx_fetch_pulses, daemon=True).start()
-    if CFG.wg_enabled:
-        _wg_init_server()
-        _wg_load_peers()
+    # Task B 2026-04-30: Start rogue Npcap consumer detector
+    threading.Thread(target=_npcap_detector_loop, daemon=True).start()
 
     # Start async event loop in background thread for async command handling + WS server
     loop = asyncio.new_event_loop()

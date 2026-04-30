@@ -10,28 +10,26 @@
     "alert_geo": true
   },
   "blocked_ips": [
-    "45.33.32.156",
-    "24.201.245.77",
+    "2607:1640:50::145",
+    "2607:1640:50::159",
     "77.88.55.66",
-    "185.220.101.34",
-    "104.26.8.44",
     "2606:4700:20::681a:82c",
-    "104.26.9.44",
-    "2606:4700::6810:422",
+    "185.220.101.34",
     "2606:4700:20::681a:92c",
-    "172.67.69.226",
     "203.0.113.1",
-    "2606:4700:20::ac43:45e2",
+    "172.67.69.226",
+    "24.200.243.189",
+    "2607:fa48:2:f000::1",
+    "208.95.112.1",
+    "24.201.245.77",
+    "2607:fa48:2:f008::1",
     "91.108.4.1",
-    "198.51.100.5"
+    "198.51.100.5",
+    "45.33.32.156",
+    "2607:6bc0::10",
+    "160.79.104.10"
   ],
-  "geo_blocked_countries": [
-    "KP",
-    "CN",
-    "NG",
-    "IR",
-    "RU"
-  ],
+  "geo_blocked_countries": [],
   "auto_block_enabled": true,
   "auto_block_hits": 10,
   "dpi_enabled": true,
@@ -40,8 +38,8 @@
   "suricata_disabled_sids": [],
   "suricata_custom_rules": [],
   "suricata_rule_hits": {
-    "9000014": 1,
-    "9000014": 8
+    "9000014": 5,
+    "9000005": 20
   },
   "anomaly_enabled": true,
   "anomaly_zscore": 3.0,
@@ -74,20 +72,10 @@
   "wg_dns": "1.1.1.1, 9.9.9.9",
   "wg_endpoint": "173.178.55.81:443",
   "wg_interface": "wg0",
-  "nac_approved": [],
-  "nac_denied": [],
-  "nac_policy": {
-    "default_action": "allow",
-    "require_approval": false,
-    "mac_filter": false
-  },
   "backup_schedule": {
     "enabled": false,
     "interval_hours": 24,
     "last_backup": ""
   },
-  "iam_users": {},
-  "incidents": [],
-  "training_scores": {},
-  "detection_params": {}
+  "npcap_whitelist": []
 }

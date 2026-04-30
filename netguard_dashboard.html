@@ -492,29 +492,9 @@ tr:hover td{background:var(--bg4)22}
     </div>
 
     <div style="font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;padding:14px 16px 6px;margin-top:4px;border-top:1px solid var(--border)">v4.0 Modules</div>
-    <div class="nav-item" onclick="showTab('vulnscan',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <span>Vulnerability Scanner</span>
-    </div>
     <div class="nav-item" onclick="showTab('backup',this)">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       <span>Backup & Recovery</span>
-    </div>
-    <div class="nav-item" onclick="showTab('incidents',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-      <span>Incidents & Tickets</span>
-    </div>
-    <div class="nav-item" onclick="showTab('training',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-      <span>Training & Awareness</span>
-    </div>
-    <div class="nav-item" onclick="showTab('nac',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      <span>NAC</span>
-    </div>
-    <div class="nav-item" onclick="showTab('iam',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      <span>IAM & MFA</span>
     </div>
 
     <div style="padding:12px 16px;border-top:1px solid var(--border)">
@@ -888,14 +868,29 @@ tr:hover td{background:var(--bg4)22}
           </div>
           <div class="panel-body compact">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
-              <button class="btn" onclick="showTab('vulnscan',null)" style="font-size:10px;padding:6px">🔍 Vuln Scan</button>
-              <button class="btn" onclick="showTab('incidents',null)" style="font-size:10px;padding:6px">🎫 Incidents</button>
-              <button class="btn" onclick="showTab('training',null)" style="font-size:10px;padding:6px">📚 Training</button>
               <button class="btn" onclick="backupCreate();showToast('Backup en cours...','var(--blue)')" style="font-size:10px;padding:6px">💾 Backup</button>
-              <button class="btn" onclick="showTab('nac',null)" style="font-size:10px;padding:6px">🔒 NAC</button>
-              <button class="btn" onclick="showTab('iam',null)" style="font-size:10px;padding:6px">👥 IAM</button>
+              <button class="btn" onclick="showTab('blocked',null)" style="font-size:10px;padding:6px">🚫 IPs bloquées</button>
+              <button class="btn" onclick="showTab('threats',null)" style="font-size:10px;padding:6px">🛡 Menaces</button>
+              <button class="btn" onclick="showTab('honeypot',null)" style="font-size:10px;padding:6px">🍯 Honeypot</button>
             </div>
           </div>
+          <div class="panel-resize"></div>
+        </div>
+
+        <!-- Activité système — Npcap consumer detector (Task B 2026-04-30) -->
+        <div class="grid-panel gs-3" data-panel="npcap" draggable="false">
+          <div class="panel-header">
+            <span class="panel-drag-handle">⠿</span>
+            <span class="panel-title" style="display:flex;align-items:center;gap:6px">
+              <span style="width:6px;height:6px;border-radius:50%;background:var(--amber)"></span>
+              Activité système
+            </span>
+            <span style="font-size:10px;color:var(--text3)" id="dash-npcap-count">0</span>
+            <div class="panel-actions">
+              <button class="popout-btn" onclick="panelMinimize(this)" title="Réduire">─</button>
+            </div>
+          </div>
+          <div class="panel-body compact" id="dash-npcap-list" style="max-height:200px;overflow-y:auto"></div>
           <div class="panel-resize"></div>
         </div>
 
@@ -1969,7 +1964,12 @@ tr:hover td{background:var(--bg4)22}
   <h2 data-t="wg_title">🔐 WireGuard VPN Server</h2>
 
   <div class="card" style="margin-bottom:16px">
-    <h3 data-t="wg_server_config">⚙️ Server Configuration</h3>
+    <h3 data-t="wg_server_config">⚙️ Client Configuration (display-only)</h3>
+    <p style="font-size:12px;color:var(--text2);margin:8px 0 12px">
+      NetGuard no longer runs a WireGuard server itself — install
+      <a href="https://www.wireguard.com/install/" target="_blank" style="color:var(--blue)">WireGuard</a>
+      and use the fields below to display a sample client config.
+    </p>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:12px">
       <div>
         <label style="font-size:12px;color:var(--text3)" data-t="wg_endpoint_label">Endpoint (IP:Port)</label>
@@ -1990,30 +1990,13 @@ tr:hover td{background:var(--bg4)22}
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <button class="btn" onclick="saveWgConfig()" data-t="wg_save_config">💾 Save Config</button>
-      <button class="btn" id="wg-start-btn" onclick="toggleWg()" style="background:var(--green)" data-t="wg_start">▶️ Start VPN</button>
-      <span id="wg-server-status" style="font-size:13px;margin-left:8px"></span>
+      <button class="btn" onclick="sendCmd({cmd:'wg_get_config'})" data-t="wg_show_sample">📋 Show Sample Client Config</button>
     </div>
-  </div>
-
-  <div class="metrics-row" style="margin-bottom:16px">
-    <div class="metric-card"><div class="metric-value" id="m-wg-status" style="font-size:16px">⏸️ Stopped</div><div class="metric-label" data-t="wg_status_label">VPN Status</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-peers">0</div><div class="metric-label" data-t="wg_peers_count">Peers</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-connected">0</div><div class="metric-label" data-t="wg_connected">Connected</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-pubkey" style="font-size:10px;word-break:break-all">—</div><div class="metric-label" data-t="wg_pubkey">Server PubKey</div></div>
-  </div>
-
-  <div class="card" style="margin-bottom:16px">
-    <h3 data-t="wg_peers_title">👥 VPN Peers</h3>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="wg-peer-name" class="input" placeholder="Nom du peer (ex: phone, laptop)" style="flex:1">
-      <button class="btn" onclick="addWgPeer()" data-t="wg_add_peer">➕ Add Peer</button>
-    </div>
-    <div id="wg-peers-list"></div>
   </div>
 
   <div id="wg-peer-config-modal" style="display:none" class="card">
-    <h3>📋 Peer Configuration</h3>
-    <p style="font-size:12px;color:var(--text3)" data-t="wg_peer_config_info">Copy this config to the client device or scan the QR code:</p>
+    <h3>📋 Sample Client Configuration</h3>
+    <p style="font-size:12px;color:var(--text3)" data-t="wg_peer_config_info">Copy this config to the client device. Replace placeholders with actual keys provisioned on your WireGuard server.</p>
     <pre id="wg-peer-config-text" style="background:var(--bg2);padding:12px;border-radius:8px;font-size:12px;overflow-x:auto;white-space:pre-wrap;border:1px solid var(--bg4)"></pre>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-sm" onclick="copyWgConfig()" data-t="wg_copy_config">📋 Copy</button>
@@ -2240,56 +2223,18 @@ tr:hover td{background:var(--bg4)22}
       • DNS Blackhole<br>
       • LAN device discovery<br>
       • GeoIP blocking<br>
-      <strong>v4.0:</strong><br>
+      <strong>v4.1 (post-trim 2026-04-30):</strong><br>
       • Enhanced Suricata IDS (custom rules, per-rule control, hit counters)<br>
-      • Vulnerability Scanner (port scan, CVE lookup, system check)<br>
       • Backup &amp; Recovery (automated backups, restore wizard)<br>
-      • Incident Response &amp; Ticketing system<br>
-      • Security Training &amp; Awareness (5 modules, quizzes)<br>
-      • Network Access Control (NAC) with device approval<br>
-      • Identity &amp; Access Management (IAM) with MFA support
+      • Rogue Npcap consumer detector (UAC popup-loop guard)<br>
+      • App-id + bandwidth per-IP attribution (psutil-backed)
     </div>
   </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════ -->
-<!-- v4.0 — NEW MODULE TABS                                           -->
+<!-- v4.0 — Backup tab (other v4.0 modules trimmed 2026-04-30)        -->
 <!-- ══════════════════════════════════════════════════════════════════ -->
-
-<!-- Vulnerability Scanner Tab -->
-<div id="tab-vulnscan" class="tab-content" style="display:none">
-  <h2>🔍 Vulnerability Scanner</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Port Scanner</h3>
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <input type="text" id="vuln-target" placeholder="Target IP (e.g. 127.0.0.1)" value="127.0.0.1" style="flex:1;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <input type="text" id="vuln-ports" placeholder="Port range (e.g. 1-1024)" value="1-1024" style="width:150px;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <button class="btn" onclick="vulnScan()" id="vuln-scan-btn" style="padding:10px 20px;font-weight:600">🔍 Scan</button>
-    </div>
-    <div id="vuln-scan-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>CVE Lookup</h3>
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <input type="text" id="vuln-cve-input" placeholder="CVE ID (e.g. CVE-2021-44228)" style="flex:1;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <button class="btn" onclick="vulnCVELookup()" style="padding:10px 20px;font-weight:600">🔎 Lookup</button>
-    </div>
-    <div id="vuln-cve-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>System Security Check</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Run a quick security audit of your system configuration.</p>
-    <button class="btn" onclick="vulnSystemCheck()" id="vuln-sys-btn" style="padding:10px 20px;font-weight:600">🛡️ Run System Check</button>
-    <div id="vuln-system-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3>Scan History</h3>
-    <div id="vuln-history" style="margin-top:12px"><div class="empty-msg">No scans yet</div></div>
-  </div>
-</div>
 
 <!-- Backup & Recovery Tab -->
 <div id="tab-backup" class="tab-content" style="display:none">
@@ -2322,155 +2267,6 @@ tr:hover td{background:var(--bg4)22}
     <h3 style="color:var(--amber)">⚠️ Restore from Backup</h3>
     <p style="font-size:12px;color:var(--text2);margin:8px 0">Restoring will overwrite your current settings. A backup of current state will be created automatically before restore.</p>
     <div id="backup-restore-status" style="margin-top:8px"></div>
-  </div>
-</div>
-
-<!-- Incidents & Tickets Tab -->
-<div id="tab-incidents" class="tab-content" style="display:none">
-  <h2>🎫 Incidents & Tickets</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Create Incident Ticket</h3>
-    <div style="display:grid;gap:10px;margin-top:12px">
-      <input type="text" id="inc-title" placeholder="Incident title" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <textarea id="inc-desc" placeholder="Description..." rows="3" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;resize:vertical"></textarea>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <select id="inc-severity" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
-          <option value="low">Low</option>
-          <option value="medium" selected>Medium</option>
-          <option value="high">High</option>
-          <option value="critical">Critical</option>
-        </select>
-        <input type="text" id="inc-assigned" placeholder="Assigned to" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-        <input type="text" id="inc-ip" placeholder="Related IP" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;font-family:'Geist Mono',monospace">
-      </div>
-      <button class="btn" onclick="incidentCreate()" style="padding:10px;font-weight:600;background:var(--purple);color:#fff">+ Create Ticket</button>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3>Incident Queue</h3>
-      <div style="display:flex;gap:8px">
-        <button class="btn" onclick="incidentList('')" style="font-size:11px;padding:5px 12px">All</button>
-        <button class="btn" onclick="incidentList('open')" style="font-size:11px;padding:5px 12px;color:var(--red)">Open</button>
-        <button class="btn" onclick="incidentList('investigating')" style="font-size:11px;padding:5px 12px;color:var(--amber)">Investigating</button>
-        <button class="btn" onclick="incidentList('resolved')" style="font-size:11px;padding:5px 12px;color:var(--green)">Resolved</button>
-      </div>
-    </div>
-    <div id="incident-list" style="max-height:500px;overflow-y:auto"><div class="empty-msg">No incidents</div></div>
-  </div>
-</div>
-
-<!-- Training & Awareness Tab -->
-<div id="tab-training" class="tab-content" style="display:none">
-  <h2>📚 Training & Awareness</h2>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px" id="training-dashboard">
-    <div class="card" style="padding:20px;text-align:center">
-      <div style="font-size:32px;font-weight:700;color:var(--green)" id="training-score-avg">—</div>
-      <div style="font-size:12px;color:var(--text3)">Average Score</div>
-    </div>
-    <div class="card" style="padding:20px;text-align:center">
-      <div style="font-size:32px;font-weight:700;color:var(--purple)" id="training-completed">0/5</div>
-      <div style="font-size:12px;color:var(--text3)">Modules Completed</div>
-    </div>
-  </div>
-
-  <div id="training-modules-list">
-    <div class="empty-msg">Loading modules...</div>
-  </div>
-
-  <div id="training-quiz-panel" style="display:none">
-    <div class="card" style="padding:20px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <h3 id="quiz-title"></h3>
-        <button class="btn" onclick="trainingBack()" style="font-size:12px">← Back to modules</button>
-      </div>
-      <div id="quiz-questions"></div>
-      <button class="btn" onclick="trainingSubmit()" style="padding:12px 24px;font-weight:600;background:var(--green);color:#fff;margin-top:16px;width:100%">Submit Answers</button>
-      <div id="quiz-results" style="margin-top:16px;display:none"></div>
-    </div>
-  </div>
-</div>
-
-<!-- NAC Tab -->
-<div id="tab-nac" class="tab-content" style="display:none">
-  <h2>🔒 Network Access Control (NAC)</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>NAC Policy</h3>
-    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
-      <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:6px">
-        Default action:
-        <select id="nac-default-action" onchange="nacSetPolicy()" style="padding:6px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text)">
-          <option value="allow">Allow</option>
-          <option value="deny">Deny (require approval)</option>
-        </select>
-      </label>
-      <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="nac-mac-filter" onchange="nacSetPolicy()"> MAC address filtering
-      </label>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h3>Approved Devices</h3>
-      <button class="btn" onclick="nacRefresh()" style="font-size:11px;padding:5px 12px">🔄 Refresh</button>
-    </div>
-    <div id="nac-approved-list" style="margin-top:12px"><div class="empty-msg">No approved devices</div></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3 style="color:var(--amber)">Pending Approval</h3>
-    <div id="nac-pending-list" style="margin-top:12px"><div class="empty-msg">No pending devices</div></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3 style="color:var(--red)">Denied Devices</h3>
-    <div id="nac-denied-list" style="margin-top:12px"><div class="empty-msg">No denied devices</div></div>
-  </div>
-</div>
-
-<!-- IAM Tab -->
-<div id="tab-iam" class="tab-content" style="display:none">
-  <h2>👥 Identity & Access Management</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Create User</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px">
-      <input type="text" id="iam-username" placeholder="Username" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <input type="password" id="iam-password" placeholder="Password" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <select id="iam-role" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
-        <option value="viewer">Viewer</option>
-        <option value="analyst">Analyst</option>
-        <option value="admin">Admin</option>
-      </select>
-      <button class="btn" onclick="iamCreateUser()" style="padding:10px;font-weight:600;background:var(--purple);color:#fff">+ Create User</button>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h3>Users</h3>
-      <button class="btn" onclick="iamRefresh()" style="font-size:11px;padding:5px 12px">🔄 Refresh</button>
-    </div>
-    <div id="iam-users-list" style="margin-top:12px"><div class="empty-msg">No users</div></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3>Roles & Permissions</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--red)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Admin</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Full access to all features, settings, user management, and configuration.</div>
-      </div>
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--amber)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Analyst</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Read access + alerts, reports, threat analysis. Cannot modify settings.</div>
-      </div>
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--blue)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Viewer</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Read-only access to dashboard and basic metrics.</div>
-      </div>
-    </div>
   </div>
 </div>
 
@@ -2642,26 +2438,7 @@ function handleMsg(msg) {
   } else if (msg.type === 'suricata_alerts_cleared') {
     showToast('Alerts cleared', 'var(--green)');
 
-  // ── v4.0 — New Module Message Handlers ──────────────────────────────
-  } else if (msg.type === 'vuln_scan_started') {
-    showToast('Port scan started on ' + msg.target, 'var(--blue)');
-  } else if (msg.type === 'vuln_scan_result') {
-    vulnRenderScan(msg);
-    showToast((msg.open_ports?.length||0) + ' open ports found', 'var(--amber)');
-  } else if (msg.type === 'vuln_cve_result') {
-    vulnRenderCVE(msg);
-  } else if (msg.type === 'vuln_system_checking') {
-    showToast('System check in progress...', 'var(--blue)');
-  } else if (msg.type === 'vuln_system_result') {
-    vulnRenderSystemCheck(msg);
-  } else if (msg.type === 'vuln_history') {
-    const el = document.getElementById('vuln-history');
-    if (el && msg.scans?.length) {
-      el.innerHTML = msg.scans.slice(0,10).map(s => `
-        <div style="font-size:12px;padding:6px 0;border-bottom:1px solid var(--border);color:var(--text2)">
-          ${s.target} — ${s.open_ports?.length||0} open ports — ${s.timestamp?.slice(0,16)}
-        </div>`).join('');
-    }
+  // ── v4.0 — Backup module handlers (rest trimmed 2026-04-30) ────────
   } else if (msg.type === 'backup_creating') {
     showToast('Creating backup...', 'var(--blue)');
   } else if (msg.type === 'backup_created') {
@@ -2674,55 +2451,8 @@ function handleMsg(msg) {
   } else if (msg.type === 'backup_deleted') {
     showToast('Backup deleted', 'var(--green)');
     backupRefresh();
-  } else if (msg.type === 'incident_created') {
-    showToast('Incident created: ' + msg.ticket?.id, 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'incident_list') {
-    incidentRenderList(msg.tickets);
-  } else if (msg.type === 'incident_updated') {
-    showToast('Incident updated', 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'incident_deleted') {
-    showToast('Incident deleted', 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'training_modules') {
-    if (_trainingCurrentModule) trainingRenderQuiz(msg.modules);
-    else trainingRenderModules(msg.modules);
-  } else if (msg.type === 'training_scores') {
-    TRAINING_SCORES_CACHE = msg.scores || {};
-    const keys = Object.keys(TRAINING_SCORES_CACHE);
-    const avg = keys.length ? Math.round(keys.reduce((s,k) => s + (TRAINING_SCORES_CACHE[k].score||0), 0) / keys.length) : 0;
-    const passed = keys.filter(k => TRAINING_SCORES_CACHE[k].passed).length;
-    const el1 = document.getElementById('training-score-avg');
-    const el2 = document.getElementById('training-completed');
-    if (el1) el1.textContent = keys.length ? avg + '%' : '—';
-    if (el2) el2.textContent = passed + '/5';
-  } else if (msg.type === 'training_quiz_result') {
-    trainingRenderResult(msg);
-  } else if (msg.type === 'nac_devices') {
-    nacRenderDevices(msg);
-  } else if (msg.type === 'nac_device_approved') {
-    showToast('Device approved: ' + msg.ip, 'var(--green)');
-    nacRefresh();
-  } else if (msg.type === 'nac_device_denied') {
-    showToast('Device denied: ' + msg.ip, 'var(--red)');
-    nacRefresh();
-  } else if (msg.type === 'nac_policy_set') {
-    showToast('NAC policy updated', 'var(--green)');
-  } else if (msg.type === 'iam_user_created') {
-    showToast(msg.ok ? 'User created: ' + msg.username : 'Error: ' + msg.error, msg.ok ? 'var(--green)' : 'var(--red)');
-    iamRefresh();
-  } else if (msg.type === 'iam_users') {
-    iamRenderUsers(msg.users);
-  } else if (msg.type === 'iam_user_deleted') {
-    showToast('User deleted', 'var(--green)');
-    iamRefresh();
-  } else if (msg.type === 'iam_role_updated') {
-    showToast(msg.ok ? 'Role updated' : 'Error: ' + msg.error, msg.ok ? 'var(--green)' : 'var(--red)');
-    iamRefresh();
-  } else if (msg.type === 'iam_mfa_toggled') {
-    showToast('MFA ' + (msg.mfa_enabled ? 'enabled' : 'disabled'), 'var(--green)');
-    iamRefresh();
+  } else if (msg.type === 'npcap_consumers') {
+    renderNpcapConsumers(msg.consumers || []);
 
   } else if (msg.type === 'record_started' || msg.type === 'record_stopped') {
     sendCmd({cmd:'get_state'});
@@ -2795,34 +2525,12 @@ function handleMsg(msg) {
   else if (msg.type === 'device_unisolated') { showToast('Device ' + msg.ip + ' released', '#00c853'); }
   else if (msg.type === 'ip_quarantined') { showToast('IP ' + msg.ip + ' quarantined', '#ff9800'); }
   else if (msg.type === 'ip_unquarantined') { showToast('IP ' + msg.ip + ' released', '#00c853'); }
-  else if (msg.type === 'wg_started') {
-    if (msg.ok) showToast('WireGuard VPN started!', '#00c853');
-    else showToast('WireGuard error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_stopped') {
-    if (msg.ok) showToast('WireGuard VPN stopped', '#ff9800');
-    else showToast('WireGuard error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_peer_added') {
-    if (msg.ok) {
-      showToast('Peer added: ' + (msg.peer?msg.peer.name:''), '#00c853');
-      if (msg.config) {
-        document.getElementById('wg-peer-config-text').textContent = msg.config;
-        document.getElementById('wg-peer-config-modal').style.display = 'block';
-      }
-      sendCmd({cmd:'wg_get_peers'});
-    } else showToast('Error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_peer_removed') {
-    if (msg.ok) { showToast('Peer removed', '#ff9800'); sendCmd({cmd:'wg_get_peers'}); }
-    else showToast('Error: ' + (msg.error||''), '#ff5252');
-  }
+  // WG server lifecycle handlers removed in trim 2026-04-30 (display-only WG now)
   else if (msg.type === 'wg_peer_config') {
     document.getElementById('wg-peer-config-text').textContent = msg.config;
     document.getElementById('wg-peer-config-modal').style.display = 'block';
   }
   else if (msg.type === 'wg_config_saved') { showToast('WireGuard config saved', '#00c853'); }
-  else if (msg.type === 'wg_peers') { renderWgPeers(msg.peers); }
 }
 
 function showToast(msg, color) {
@@ -2998,17 +2706,10 @@ function render(s) {
     }
   }
 
-  // WireGuard
-  renderWgPeers(s.wg_peers || []);
-  if (s.wg_status) {
-    const running = s.wg_status.running;
-    const statusEl = document.getElementById('m-wg-status');
-    if (statusEl) statusEl.innerHTML = running ? '<span style="color:var(--green)">🟢 Running</span>' : '⏸️ Stopped';
-    const btnEl = document.getElementById('wg-start-btn');
-    if (btnEl) { btnEl.textContent = running ? '⏹️ Stop VPN' : '▶️ Start VPN'; btnEl.style.background = running ? 'var(--red)' : 'var(--green)'; }
-    const connEl = document.getElementById('m-wg-connected');
-    if (connEl) connEl.textContent = s.wg_status.peers_connected || 0;
-  }
+  // WireGuard server lifecycle removed (display-only post-trim 2026-04-30)
+
+  // Activité système — Npcap consumer detector (Task B 2026-04-30)
+  if (s.npcap_consumers) renderNpcapConsumers(s.npcap_consumers);
 
   // Logs
   buildLogsFromState(s);
@@ -3945,82 +3646,8 @@ function loadET(ruleset) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// v4.0 — New Module Functions
+// v4.0 — Backup & Recovery (other v4.0 modules trimmed 2026-04-30)
 // ══════════════════════════════════════════════════════════════════════════
-
-// ── Vulnerability Scanner ─────────────────────────────────────────────────
-function vulnScan() {
-  const target = document.getElementById('vuln-target')?.value?.trim() || '127.0.0.1';
-  const ports = document.getElementById('vuln-ports')?.value?.trim() || '1-1024';
-  const btn = document.getElementById('vuln-scan-btn');
-  if (btn) { btn.style.opacity='0.5'; btn.textContent='Scanning...'; }
-  sendCmd({cmd:'vuln_port_scan', target, ports});
-}
-
-function vulnCVELookup() {
-  const cve = document.getElementById('vuln-cve-input')?.value?.trim();
-  if (!cve) return;
-  document.getElementById('vuln-cve-result').innerHTML = '<div style="color:var(--text3);font-size:12px">Looking up...</div>';
-  sendCmd({cmd:'vuln_cve_lookup', cve});
-}
-
-function vulnSystemCheck() {
-  const btn = document.getElementById('vuln-sys-btn');
-  if (btn) { btn.style.opacity='0.5'; btn.textContent='Checking...'; }
-  sendCmd({cmd:'vuln_system_check'});
-}
-
-function vulnRenderScan(data) {
-  const el = document.getElementById('vuln-scan-result');
-  const btn = document.getElementById('vuln-scan-btn');
-  if (btn) { btn.style.opacity=''; btn.textContent='🔍 Scan'; }
-  if (!el) return;
-  if (!data.ok) { el.innerHTML = '<div style="color:var(--red)">Error: ' + (data.error||'') + '</div>'; return; }
-  const rc = {high:'var(--red)',info:'var(--blue)',med:'var(--amber)'};
-  el.innerHTML = `
-    <div style="font-size:13px;color:var(--text2);margin-bottom:12px">
-      <strong>${data.open_ports?.length || 0}</strong> open ports found on <code style="color:var(--cyan)">${data.target}</code> (${data.scanned} scanned)
-    </div>
-    ${(data.open_ports||[]).map(p => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--border);font-size:12px">
-        <span style="font-family:'Geist Mono',monospace;color:var(--amber);min-width:50px;font-weight:600">${p.port}</span>
-        <span style="color:var(--text);min-width:90px">${p.service}</span>
-        <span style="color:var(--green);min-width:50px;font-size:10px;text-transform:uppercase">${p.state}</span>
-        <span style="color:${rc[p.risk]||'var(--text3)'};flex:1;font-size:11px">${p.vulnerability || '—'}</span>
-      </div>`).join('')}`;
-}
-
-function vulnRenderCVE(data) {
-  const el = document.getElementById('vuln-cve-result');
-  if (!el) return;
-  if (!data.ok) { el.innerHTML = '<div style="color:var(--red);font-size:12px">' + (data.error||'CVE not found') + '</div>'; return; }
-  const sc = {CRITICAL:'#ff1a4d',HIGH:'var(--red)',MEDIUM:'var(--amber)',LOW:'var(--blue)'};
-  el.innerHTML = `
-    <div style="background:var(--bg3);padding:16px;border-radius:8px;border-left:3px solid ${sc[data.severity]||'var(--text3)'}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-weight:700;font-size:16px;color:var(--text)">${data.id}</span>
-        <span style="font-size:13px;font-weight:600;color:${sc[data.severity]||'var(--text3)'}">Score: ${data.score} (${data.severity})</span>
-      </div>
-      <p style="font-size:12px;color:var(--text2);line-height:1.6;margin:8px 0">${data.description}</p>
-      <div style="font-size:11px;color:var(--text3)">Published: ${data.published?.slice(0,10)} | Modified: ${data.modified?.slice(0,10)}</div>
-      ${data.references?.length ? '<div style="margin-top:8px;font-size:11px">' + data.references.map(r => '<a href="'+r+'" target="_blank" style="color:var(--blue);display:block;margin:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r+'</a>').join('') + '</div>' : ''}
-    </div>`;
-}
-
-function vulnRenderSystemCheck(data) {
-  const el = document.getElementById('vuln-system-result');
-  const btn = document.getElementById('vuln-sys-btn');
-  if (btn) { btn.style.opacity=''; btn.textContent='🛡️ Run System Check'; }
-  if (!el) return;
-  const sc = {pass:'var(--green)',fail:'var(--red)',warn:'var(--amber)',info:'var(--blue)',unknown:'var(--text3)'};
-  const ic = {pass:'✅',fail:'❌',warn:'⚠️',info:'ℹ️',unknown:'❓'};
-  el.innerHTML = (data.checks||[]).map(c => `
-    <div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border);font-size:13px">
-      <span style="font-size:16px">${ic[c.status]||'❓'}</span>
-      <span style="color:var(--text);min-width:180px;font-weight:500">${c.check}</span>
-      <span style="color:${sc[c.status]||'var(--text3)'};flex:1">${c.detail}</span>
-    </div>`).join('');
-}
 
 // ── Backup & Recovery ─────────────────────────────────────────────────────
 function backupCreate() {
@@ -4047,217 +3674,29 @@ function backupRenderList(backups) {
     </div>`).join('');
 }
 
-// ── Incidents & Tickets ───────────────────────────────────────────────────
-function incidentCreate() {
-  const title = document.getElementById('inc-title')?.value?.trim();
-  const description = document.getElementById('inc-desc')?.value?.trim();
-  const severity = document.getElementById('inc-severity')?.value || 'medium';
-  const assigned_to = document.getElementById('inc-assigned')?.value?.trim();
-  const related_ip = document.getElementById('inc-ip')?.value?.trim();
-  if (!title) { alert('Title required'); return; }
-  sendCmd({cmd:'incident_create', title, description, severity, assigned_to, related_ip});
-  document.getElementById('inc-title').value = '';
-  document.getElementById('inc-desc').value = '';
-}
-
-function incidentList(status) { sendCmd({cmd:'incident_list', status}); }
-
-function incidentRenderList(tickets) {
-  const el = document.getElementById('incident-list');
-  if (!el) return;
-  if (!tickets?.length) { el.innerHTML = '<div class="empty-msg">No incidents</div>'; return; }
-  const sc = {critical:'#ff1a4d',high:'var(--red)',medium:'var(--amber)',low:'var(--blue)'};
-  const stc = {open:'var(--red)',investigating:'var(--amber)',resolved:'var(--green)',closed:'var(--text3)'};
-  el.innerHTML = tickets.map(t => `
-    <div style="display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--border);font-size:12px">
-      <span style="font-family:'Geist Mono',monospace;color:var(--purple);min-width:75px;font-weight:600">${t.id}</span>
-      <span style="color:${sc[t.severity]||'var(--text3)'};min-width:60px;font-weight:700;text-transform:uppercase;font-size:10px">${t.severity}</span>
-      <span style="color:var(--text);flex:1;font-weight:500">${t.title}</span>
-      <span style="color:${stc[t.status]||'var(--text3)'};font-size:11px;font-weight:600;text-transform:uppercase;min-width:90px">${t.status}</span>
-      <span style="color:var(--text3);font-size:10px;min-width:70px">${t.created_at?.slice(0,10)}</span>
-      <select onchange="sendCmd({cmd:'incident_update',id:'${t.id}',status:this.value})" style="padding:4px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-size:11px">
-        <option value="open" ${t.status==='open'?'selected':''}>Open</option>
-        <option value="investigating" ${t.status==='investigating'?'selected':''}>Investigating</option>
-        <option value="resolved" ${t.status==='resolved'?'selected':''}>Resolved</option>
-        <option value="closed" ${t.status==='closed'?'selected':''}>Closed</option>
-      </select>
-      <button class="btn" onclick="if(confirm('Delete?'))sendCmd({cmd:'incident_delete',id:'${t.id}'})" style="font-size:11px;padding:4px 8px;color:var(--red)">✕</button>
-    </div>`).join('');
-}
-
-// ── Training & Awareness ──────────────────────────────────────────────────
-let _trainingCurrentModule = null;
-
-function trainingLoadModules() { sendCmd({cmd:'training_get_modules'}); sendCmd({cmd:'training_get_scores'}); }
-
-function trainingRenderModules(modules) {
-  const el = document.getElementById('training-modules-list');
-  if (!el) return;
-  const dc = {beginner:'var(--green)',intermediate:'var(--amber)',advanced:'var(--red)'};
-  el.innerHTML = modules.map(m => {
-    const score = TRAINING_SCORES_CACHE[m.id];
-    const passed = score?.passed;
-    return `
-    <div class="card" style="padding:20px;margin-bottom:12px;border-left:3px solid ${passed ? 'var(--green)' : 'var(--border2)'}">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <h3 style="margin:0;font-size:15px">${m.title}</h3>
-          <p style="font-size:12px;color:var(--text2);margin:6px 0">${m.description}</p>
-          <div style="display:flex;gap:10px;font-size:11px;color:var(--text3)">
-            <span style="color:${dc[m.difficulty]||'var(--text3)'}">${m.difficulty}</span>
-            <span>⏱ ${m.duration_min} min</span>
-            <span>${m.questions.length} questions</span>
-          </div>
-        </div>
-        <div style="text-align:center">
-          ${score ? `<div style="font-size:22px;font-weight:700;color:${passed?'var(--green)':'var(--red)'}">${score.score}%</div><div style="font-size:10px;color:var(--text3)">${passed?'PASSED':'FAILED'}</div>` : ''}
-          <button class="btn" onclick="trainingStartQuiz('${m.id}')" style="margin-top:8px;padding:8px 16px;font-weight:600">${score ? 'Retry' : 'Start'}</button>
-        </div>
-      </div>
-    </div>`;
+// ── Activité système — Npcap consumer detector (Task B 2026-04-30) ────────
+function renderNpcapConsumers(consumers) {
+  const list = document.getElementById('dash-npcap-list');
+  const cnt = document.getElementById('dash-npcap-count');
+  if (cnt) cnt.textContent = consumers.length || 0;
+  if (!list) return;
+  if (!consumers || !consumers.length) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text3);padding:8px">Aucun process touchant Npcap</div>';
+    return;
+  }
+  list.innerHTML = consumers.map(c => {
+    const flag = c.whitelisted ? '<span style="color:var(--green)">trusted</span>'
+              : (c.relaunches_in_window > 3 ? '<span style="color:var(--red)">ROGUE</span>' : '<span style="color:var(--text3)">' + c.relaunches_in_window + ' launches</span>');
+    const exeShort = (c.exe || '').split(/[\\/]/).pop();
+    return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span title="' + esc(c.exe) + '">' + esc(exeShort) + '</span>' + flag + '</div>';
   }).join('');
 }
 
-let TRAINING_SCORES_CACHE = {};
-
-function trainingStartQuiz(moduleId) {
-  _trainingCurrentModule = moduleId;
-  sendCmd({cmd:'training_get_modules'});
-  document.getElementById('training-modules-list').style.display = 'none';
-  document.getElementById('training-dashboard').style.display = 'none';
-  document.getElementById('training-quiz-panel').style.display = '';
-  document.getElementById('quiz-results').style.display = 'none';
-}
-
-function trainingRenderQuiz(modules) {
-  if (!_trainingCurrentModule) return;
-  const m = modules.find(x => x.id === _trainingCurrentModule);
-  if (!m) return;
-  document.getElementById('quiz-title').textContent = m.title;
-  document.getElementById('quiz-questions').innerHTML = m.questions.map((q, i) => `
-    <div style="margin-bottom:20px;padding:16px;background:var(--bg3);border-radius:8px">
-      <div style="font-size:14px;font-weight:500;color:var(--text);margin-bottom:10px">${i+1}. ${q.q}</div>
-      ${q.options.map((o, j) => `
-        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text2);margin:4px 0;background:var(--bg4)">
-          <input type="radio" name="q${i}" value="${j}" style="accent-color:var(--purple)"> ${o}
-        </label>`).join('')}
-    </div>`).join('');
-}
-
-function trainingSubmit() {
-  if (!_trainingCurrentModule) return;
-  const answers = {};
-  document.querySelectorAll('#quiz-questions input[type=radio]:checked').forEach(r => {
-    const name = r.name;
-    const idx = name.replace('q', '');
-    answers[idx] = r.value;
-  });
-  sendCmd({cmd:'training_submit_quiz', module_id: _trainingCurrentModule, answers});
-}
-
-function trainingRenderResult(data) {
-  const el = document.getElementById('quiz-results');
-  if (!el) return;
-  el.style.display = '';
-  el.innerHTML = `
-    <div style="text-align:center;padding:20px;background:var(--bg3);border-radius:8px;border:2px solid ${data.passed?'var(--green)':'var(--red)'}">
-      <div style="font-size:48px;font-weight:700;color:${data.passed?'var(--green)':'var(--red)'}">${data.score}%</div>
-      <div style="font-size:16px;font-weight:600;color:var(--text);margin:8px 0">${data.passed ? '✅ PASSED!' : '❌ FAILED — Try again'}</div>
-      <div style="font-size:13px;color:var(--text2)">${data.correct}/${data.total} correct answers</div>
-    </div>
-    <div style="margin-top:16px">
-      ${(data.details||[]).map((d,i) => `
-        <div style="display:flex;align-items:center;gap:8px;padding:8px;font-size:12px;border-bottom:1px solid var(--border)">
-          <span style="font-size:14px">${d.correct ? '✅' : '❌'}</span>
-          <span style="color:var(--text);flex:1">${d.question}</span>
-        </div>`).join('')}
-    </div>`;
-  TRAINING_SCORES_CACHE[data.module_id] = {score: data.score, passed: data.passed};
-}
-
-function trainingBack() {
-  _trainingCurrentModule = null;
-  document.getElementById('training-modules-list').style.display = '';
-  document.getElementById('training-dashboard').style.display = '';
-  document.getElementById('training-quiz-panel').style.display = 'none';
-  trainingLoadModules();
-}
-
-// ── NAC ───────────────────────────────────────────────────────────────────
-function nacRefresh() { sendCmd({cmd:'nac_get_devices'}); }
-
-function nacSetPolicy() {
-  const default_action = document.getElementById('nac-default-action')?.value || 'allow';
-  const mac_filter = document.getElementById('nac-mac-filter')?.checked || false;
-  sendCmd({cmd:'nac_set_policy', default_action, mac_filter});
-}
-
-function nacRenderDevices(data) {
-  const renderList = (devices, elId, type) => {
-    const el = document.getElementById(elId);
-    if (!el) return;
-    if (!devices?.length) { el.innerHTML = '<div class="empty-msg">Empty</div>'; return; }
-    el.innerHTML = devices.map(d => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--border);font-size:12px">
-        <span style="font-family:'Geist Mono',monospace;color:var(--text);min-width:120px">${d.ip||''}</span>
-        <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:130px">${d.mac||''}</span>
-        <span style="color:var(--text2);flex:1">${d.name||''}</span>
-        <span style="color:var(--text3);font-size:10px">${(d.approved_at||d.denied_at||d.first_seen||'').slice(0,16)}</span>
-        ${type === 'pending' ? `
-          <button class="btn" onclick="sendCmd({cmd:'nac_approve_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--green)">✓ Approve</button>
-          <button class="btn" onclick="sendCmd({cmd:'nac_deny_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--red)">✕ Deny</button>
-        ` : type === 'approved' ? `
-          <button class="btn" onclick="sendCmd({cmd:'nac_deny_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--red)">Revoke</button>
-        ` : `
-          <button class="btn" onclick="sendCmd({cmd:'nac_approve_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--green)">Approve</button>
-        `}
-      </div>`).join('');
-  };
-  renderList(data.approved, 'nac-approved-list', 'approved');
-  renderList(data.pending, 'nac-pending-list', 'pending');
-  renderList(data.denied, 'nac-denied-list', 'denied');
-}
-
-// ── IAM ───────────────────────────────────────────────────────────────────
-function iamCreateUser() {
-  const username = document.getElementById('iam-username')?.value?.trim();
-  const password = document.getElementById('iam-password')?.value;
-  const role = document.getElementById('iam-role')?.value || 'viewer';
-  if (!username || !password) { alert('Username and password required'); return; }
-  sendCmd({cmd:'iam_create_user', username, password, role});
-  document.getElementById('iam-username').value = '';
-  document.getElementById('iam-password').value = '';
-}
-
-function iamRefresh() { sendCmd({cmd:'iam_list_users'}); }
-
-function iamRenderUsers(users) {
-  const el = document.getElementById('iam-users-list');
-  if (!el) return;
-  if (!users?.length) { el.innerHTML = '<div class="empty-msg">No users created</div>'; return; }
-  const rc = {admin:'var(--red)',analyst:'var(--amber)',viewer:'var(--blue)'};
-  el.innerHTML = users.map(u => `
-    <div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border);font-size:12px">
-      <span style="font-size:16px">👤</span>
-      <span style="color:var(--text);min-width:120px;font-weight:600">${u.username}</span>
-      <span style="color:${rc[u.role]||'var(--text3)'};min-width:70px;font-weight:600;text-transform:uppercase;font-size:10px">${u.role}</span>
-      <span style="color:var(--text3);flex:1">${u.email||''}</span>
-      <span style="font-size:11px;color:${u.mfa_enabled?'var(--green)':'var(--text3)'}">${u.mfa_enabled ? '🔐 MFA ON' : 'MFA OFF'}</span>
-      <button class="btn" onclick="sendCmd({cmd:'iam_toggle_mfa',username:'${u.username}'})" style="font-size:11px;padding:4px 10px">${u.mfa_enabled ? 'Disable MFA' : 'Enable MFA'}</button>
-      <select onchange="sendCmd({cmd:'iam_update_role',username:'${u.username}',role:this.value})" style="padding:4px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-size:11px">
-        <option value="viewer" ${u.role==='viewer'?'selected':''}>Viewer</option>
-        <option value="analyst" ${u.role==='analyst'?'selected':''}>Analyst</option>
-        <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
-      </select>
-      <button class="btn" onclick="if(confirm('Delete user?'))sendCmd({cmd:'iam_delete_user',username:'${u.username}'})" style="font-size:11px;padding:4px 8px;color:var(--red)">✕</button>
-    </div>`).join('');
-}
-
-const TABS = ['dashboard','packets','threats','blocked','rules','reports','config','honeypot','dns','lan','alerts','blacklist','ratelimit','fingerprint','users','audit','anomaly','threatintel','response','forensics','wireguard','logs','playbooks','support','vulnscan','backup','incidents','training','nac','iam'];
+const TABS = ['dashboard','packets','threats','blocked','rules','reports','config','honeypot','dns','lan','alerts','blacklist','ratelimit','fingerprint','users','audit','anomaly','threatintel','response','forensics','wireguard','logs','playbooks','support','backup'];
 
 const TAB_TITLES_I18N = {
-  fr: {dashboard:'Tableau de bord',packets:'Paquets live',threats:'Menaces',blocked:'IPs bloquées',rules:'Règles pare-feu',reports:'Rapports',config:'Configuration',honeypot:'Honeypot — Piège à attaquants',dns:'DNS Blackhole',lan:'Scan Réseau LAN',alerts:'Alertes — Email & Notifications',blacklist:'Blacklist communautaire',ratelimit:'Rate Limiting dynamique',fingerprint:'Fingerprinting OS',users:'Gestion des utilisateurs',audit:"Log d'audit",anomaly:'Détection d\'anomalies',threatintel:'Renseignement sur les menaces',response:'Réponse active',forensics:'Rapports forensiques',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Conseils & Support',vulnscan:'Scanner de vulnérabilités',backup:'Backup & Recovery',incidents:'Incidents & Tickets',training:'Formation & Sensibilisation',nac:'Contrôle d\'accès réseau (NAC)',iam:'Gestion des identités (IAM)'},
-  en: {dashboard:'Dashboard',packets:'Live Packets',threats:'Threats',blocked:'Blocked IPs',rules:'Firewall Rules',reports:'Reports',config:'Configuration',honeypot:'Honeypot — Attacker Trap',dns:'DNS Blackhole',lan:'LAN Network Scan',alerts:'Alerts — Email & Notifications',blacklist:'Community Blacklist',ratelimit:'Dynamic Rate Limiting',fingerprint:'OS Fingerprinting',users:'User Management',audit:'Audit Log',anomaly:'Anomaly Detection',threatintel:'Threat Intelligence',response:'Active Response',forensics:'Forensic Reports',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tips & Support',vulnscan:'Vulnerability Scanner',backup:'Backup & Recovery',incidents:'Incidents & Tickets',training:'Training & Awareness',nac:'Network Access Control (NAC)',iam:'Identity & Access (IAM)'},
+  fr: {dashboard:'Tableau de bord',packets:'Paquets live',threats:'Menaces',blocked:'IPs bloquées',rules:'Règles pare-feu',reports:'Rapports',config:'Configuration',honeypot:'Honeypot — Piège à attaquants',dns:'DNS Blackhole',lan:'Scan Réseau LAN',alerts:'Alertes — Email & Notifications',blacklist:'Blacklist communautaire',ratelimit:'Rate Limiting dynamique',fingerprint:'Fingerprinting OS',users:'Gestion des utilisateurs',audit:"Log d'audit",anomaly:'Détection d\'anomalies',threatintel:'Renseignement sur les menaces',response:'Réponse active',forensics:'Rapports forensiques',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Conseils & Support',backup:'Backup & Recovery'},
+  en: {dashboard:'Dashboard',packets:'Live Packets',threats:'Threats',blocked:'Blocked IPs',rules:'Firewall Rules',reports:'Reports',config:'Configuration',honeypot:'Honeypot — Attacker Trap',dns:'DNS Blackhole',lan:'LAN Network Scan',alerts:'Alerts — Email & Notifications',blacklist:'Community Blacklist',ratelimit:'Dynamic Rate Limiting',fingerprint:'OS Fingerprinting',users:'User Management',audit:'Audit Log',anomaly:'Anomaly Detection',threatintel:'Threat Intelligence',response:'Active Response',forensics:'Forensic Reports',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tips & Support',backup:'Backup & Recovery'},
   es: {dashboard:'Panel de control',packets:'Paquetes en vivo',threats:'Amenazas',blocked:'IPs bloqueadas',rules:'Reglas de cortafuegos',reports:'Informes',config:'Configuración',honeypot:'Honeypot — Trampa para atacantes',dns:'DNS Blackhole',lan:'Escaneo de red LAN',alerts:'Alertas — Correo y Notificaciones',blacklist:'Lista negra comunitaria',ratelimit:'Limitación dinámica de tasa',fingerprint:'Identificación de SO',users:'Gestión de usuarios',audit:'Registro de auditoría',anomaly:'Detección de anomalías',threatintel:'Inteligencia de amenazas',response:'Respuesta activa',forensics:'Informes forenses',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Consejos & Soporte'},
   de: {dashboard:'Dashboard',packets:'Live-Pakete',threats:'Bedrohungen',blocked:'Blockierte IPs',rules:'Firewall-Regeln',reports:'Berichte',config:'Konfiguration',honeypot:'Honeypot — Angreifer-Falle',dns:'DNS Blackhole',lan:'LAN-Netzwerk-Scan',alerts:'Warnungen — E-Mail & Benachrichtigungen',blacklist:'Community-Blacklist',ratelimit:'Dynamische Rate Limiting',fingerprint:'Betriebssystem-Fingerabdruck',users:'Benutzerverwaltung',audit:'Audit-Protokoll',anomaly:'Anomalie-Erkennung',threatintel:'Bedrohungsintelligenz',response:'Aktive Antwort',forensics:'Forensische Berichte',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tipps & Support'},
 };
@@ -4281,13 +3720,8 @@ function showTab(id, navEl) {
   }
   if (id === 'users') loadUsers();
   if (id === 'audit') loadAudit();
-  // v4.0 — Auto-load new module data
-  if (id === 'vulnscan') sendCmd({cmd:'vuln_get_history'});
+  // v4.0 — Backup auto-load (rest trimmed 2026-04-30)
   if (id === 'backup') backupRefresh();
-  if (id === 'incidents') incidentList('');
-  if (id === 'training') trainingLoadModules();
-  if (id === 'nac') nacRefresh();
-  if (id === 'iam') iamRefresh();
 }
 
 // ── Lang ───────────────────────────────────────────────────────────────────
@@ -5338,34 +4772,7 @@ function toggleAutoForensic() {
   sendCmd({ cmd: 'update_param', key: 'auto_forensic_enabled', value: document.getElementById('tgl-auto-forensic').checked });
 }
 
-// ═══ v3.0 — WireGuard VPN Functions ═════════════════════════════════════
-
-function renderWgPeers(peers) {
-  const el = document.getElementById('wg-peers-list');
-  if (!el) return;
-  if (!peers || !peers.length) {
-    el.innerHTML = '<div style="color:var(--text3);padding:12px">No VPN peers configured</div>';
-    return;
-  }
-  el.innerHTML = peers.map(p => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;margin-bottom:6px;background:var(--bg3);border-radius:8px">
-    <div>
-      <b>${p.name}</b>
-      <span style="color:var(--text3);font-size:11px;margin-left:8px">${p.address}</span>
-      ${p.last_handshake ? `<span style="color:var(--green);font-size:11px;margin-left:8px">🟢 ${p.last_handshake}</span>` : '<span style="color:var(--text3);font-size:11px;margin-left:8px">⚫ never</span>'}
-      ${p.transfer_info ? `<span style="font-size:11px;margin-left:8px;color:var(--text3)">📊 ${p.transfer_info}</span>` : ''}
-    </div>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-sm" onclick="showWgPeerConfig('${p.name}')" title="Show config">📋</button>
-      <button class="btn btn-sm" style="background:var(--red)" onclick="removeWgPeer('${p.name}')" title="Remove">🗑️</button>
-    </div>
-  </div>`).join('');
-}
-
-function toggleWg() {
-  const statusEl = document.getElementById('m-wg-status');
-  const isRunning = statusEl && statusEl.textContent.includes('Running');
-  sendCmd({ cmd: isRunning ? 'wg_stop' : 'wg_start' });
-}
+// ═══ v3.0 — WireGuard client config (display-only post-trim 2026-04-30) ══
 
 function saveWgConfig() {
   sendCmd({
@@ -5376,23 +4783,6 @@ function saveWgConfig() {
     dns: document.getElementById('wg-dns').value,
   });
   showToast('WireGuard config saved', '#00c853');
-}
-
-function addWgPeer() {
-  const name = document.getElementById('wg-peer-name').value.trim();
-  if (!name) { showToast('Enter a peer name', '#ff5252'); return; }
-  sendCmd({ cmd: 'wg_add_peer', name: name });
-  document.getElementById('wg-peer-name').value = '';
-}
-
-function removeWgPeer(name) {
-  if (confirm('Remove peer ' + name + '?')) {
-    sendCmd({ cmd: 'wg_remove_peer', name: name });
-  }
-}
-
-function showWgPeerConfig(name) {
-  sendCmd({ cmd: 'wg_get_config', name: name });
 }
 
 function copyWgConfig() {

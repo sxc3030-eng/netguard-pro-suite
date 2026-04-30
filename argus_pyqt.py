@@ -45,7 +45,7 @@ from weakref import WeakValueDictionary
 ARGUS_VERSION = "3.0.0"
 
 from PyQt6.QtCore import (
-    Qt, QUrl, QSize, pyqtSignal, QObject, QTimer,
+    Qt, QUrl, QSize, QBuffer, QIODevice, pyqtSignal, QObject, QTimer,
     QPropertyAnimation, QEasingCurve, QMimeData, QPoint, QPointF,
 )
 from PyQt6.QtGui import (
@@ -258,6 +258,16 @@ except ImportError:
     def _argus_check_for_update(*_a, **_kw):  # type: ignore[no-redef]
         return None
 
+# Direct-BYOK AI providers (Claude / OpenAI / Gemini). Sibling file so the
+# AI panel can call provider APIs in-process without netguard_ai_server.py.
+# When this import fails we fall back to legacy server mode silently.
+try:
+    import argus_ai_providers as _ai_providers
+    HAVE_AI_PROVIDERS = True
+except ImportError:
+    HAVE_AI_PROVIDERS = False
+    _ai_providers = None  # type: ignore[assignment]
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "argus_data"
 CACHE_DIR = ROOT / "argus_cache"
@@ -289,6 +299,14 @@ AI_SERVER_BASE = f"http://{AI_SERVER_HOST}:{AI_SERVER_PORT}"
 AI_HISTORY_MAX = 50          # cap conversation lines persisted
 AI_PAGE_TEXT_MAX = 4096      # chars of page.toPlainText() included as context
 AI_PAGE_TEXT_TIMEOUT_MS = 2000  # 2s, then send without page text
+
+# Direct-BYOK settings file. Distinct from the legacy
+# ``netguard_ai_settings.json`` so users can opt into in-process providers
+# without disturbing an existing netguard_ai_server.py setup.
+AI_SETTINGS_FILE = DATA_DIR / "ai_settings.json"
+# Hard cap on screenshot data URI we stuff into a /screenshot turn — Qt's
+# QPixmap.toBase64 result balloons fast and most providers reject >5MB.
+AI_SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024
 
 # Default home URL — loaded when a new tab is created. Points to the local
 # NetGuard dashboard HTML; the dashboard JS handles the "NetGuard backend
@@ -1183,27 +1201,121 @@ class AIHistoryManager:
 
 # ── AI HTTP worker (background thread) ───────────────────────────────────
 class AIChatWorker(QObject):
-    """Posts a chat message to netguard_ai_server on a background thread.
+    """Posts a chat message on a background thread.
 
-    Emits `done(reply)` on success or `failed(error)` on any failure. Kept
-    intentionally minimal — no streaming, the backend doesn't expose SSE.
+    Two modes, picked automatically:
+
+    * **direct** (preferred when ``ai_settings.json`` or env vars expose
+      an API key): calls Claude / OpenAI / Gemini directly via
+      ``argus_ai_providers``. Supports SSE streaming for Claude + GPT.
+    * **server** (fallback): POSTs to ``netguard_ai_server.py`` at
+      ``AI_SERVER_BASE/api/chat``. No streaming.
+
+    Signals
+    -------
+    chunk(str) — emitted only when streaming. The text is a *delta*, not
+        a cumulative string. UI accumulates it onto the in-progress bubble.
+    done(reply, raw) — final reply and raw provider response dict.
+    failed(error) — non-recoverable error.
     """
+    chunk = pyqtSignal(str)        # streaming delta (direct mode only)
     done = pyqtSignal(str, dict)   # (reply_text, raw_result_dict)
     failed = pyqtSignal(str)       # error string
 
     def __init__(self, messages: list[dict], lang: str = "fr",
-                 timeout: float = 60.0, parent=None):
+                 timeout: float = 60.0, parent=None,
+                 force_mode: str | None = None,
+                 system_prompt: str | None = None,
+                 stream: bool | None = None):
         super().__init__(parent)
         self.messages = messages
         self.lang = lang
         self.timeout = timeout
+        self.force_mode = force_mode  # "direct" | "server" | None
+        self.system_prompt = system_prompt or ""
         self._thread: threading.Thread | None = None
+        # Streaming opt-in defaults to "yes if direct + provider supports it".
+        self._stream_pref = stream
 
+    # ── Public API ───────────────────────────────────────────────────
     def start(self):
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    # ── Mode selection ───────────────────────────────────────────────
+    def _pick_mode(self) -> str:
+        """Decide between direct-BYOK and the legacy HTTP backend.
+
+        Priority:
+          1. caller override (``force_mode``)
+          2. providers module unavailable → server
+          3. any API key configured (env or settings.json) → direct
+          4. fallback → server
+        """
+        if self.force_mode in ("direct", "server"):
+            return self.force_mode
+        if not HAVE_AI_PROVIDERS:
+            return "server"
+        try:
+            if _ai_providers and _ai_providers.has_any_api_key():
+                return "direct"
+        except Exception:
+            return "server"
+        return "server"
+
     def _run(self):
+        mode = self._pick_mode()
+        if mode == "direct":
+            self._run_direct()
+        else:
+            self._run_server()
+
+    # ── Direct-BYOK path ─────────────────────────────────────────────
+    def _run_direct(self):
+        """Resolve the active provider, stream when supported, fall back
+        to a blocking call otherwise. Errors are translated to ``failed``
+        with a French message that matches the existing UI tone."""
+        try:
+            settings = _ai_providers.load_settings()
+            provider = _ai_providers.active_provider(settings)
+            api_key = provider.get_api_key(settings)
+            if not api_key:
+                self.failed.emit(
+                    f"Clé API manquante pour {provider.label}. "
+                    "Configure-la via le ⚙ du panneau IA "
+                    "(ou la variable d'env appropriée)."
+                )
+                return
+            model = provider.get_model(settings)
+            stream = self._stream_pref
+            if stream is None:
+                stream = bool(provider.supports_streaming)
+            if stream and provider.supports_streaming:
+                def on_chunk(delta: str):
+                    if delta:
+                        self.chunk.emit(delta)
+                result = provider.call_stream(
+                    self.messages, self.system_prompt, model, api_key,
+                    on_chunk=on_chunk, timeout=int(self.timeout),
+                )
+            else:
+                result = provider.call(
+                    self.messages, self.system_prompt, model, api_key,
+                    timeout=int(self.timeout),
+                )
+        except Exception as e:  # belt-and-suspenders — providers shouldn't raise
+            self.failed.emit(f"Erreur provider {type(e).__name__}: {e}")
+            return
+        if not result.get("ok", False):
+            err = result.get("error", "unknown")
+            reply = result.get("reply", "")
+            snippet = reply[:200] if isinstance(reply, str) else ""
+            self.failed.emit(f"{provider.label} error: {err} — {snippet}")
+            return
+        self.done.emit(result.get("reply", ""), result)
+
+    # ── Legacy HTTP backend path ─────────────────────────────────────
+    def _run_server(self):
         body = json.dumps({
             "messages": self.messages,
             "lang": self.lang,
@@ -2608,8 +2720,17 @@ class AIPanel(QFrame):
         self.is_open = False
         self._worker: AIChatWorker | None = None
         self._pending_user_msg: str | None = None
+        # Streaming state — accumulated reply for the in-progress assistant
+        # bubble. None when no stream is active.
+        self._streaming_buf: str | None = None
         # Provided by the browser owner via set_page_provider().
         self._page_provider: callable | None = None
+        # Optional callable returning the current page screenshot as a
+        # data: URI (set by ArgusBrowser via set_screenshot_provider).
+        self._screenshot_provider: callable | None = None
+        # Optional callable returning current selection text (set by
+        # ArgusBrowser via set_selection_provider).
+        self._selection_provider: callable | None = None
 
         self.setFixedWidth(0)
         self.setMinimumWidth(0)
@@ -2620,7 +2741,7 @@ class AIPanel(QFrame):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
-        # Header — provider combo + Clear
+        # Header — provider combo + ⚙ settings + Clear
         header = QFrame()
         header.setObjectName("aiPanelHeader")
         header.setFixedHeight(40)
@@ -2630,17 +2751,32 @@ class AIPanel(QFrame):
         title = QLabel("AI")
         title.setObjectName("aiPanelTitle")
         self.provider_combo = QComboBox()
-        for _name, label in AI_PROVIDER_FALLBACK:
-            self.provider_combo.addItem(label)
+        for name, label in AI_PROVIDER_FALLBACK:
+            # itemData = canonical provider name ("anthropic"/"openai"/"google")
+            self.provider_combo.addItem(label, name)
         self.provider_combo.setToolTip(
-            "Provider actif. Le choix réel se règle via netguard_ai_settings.json (clés API)."
+            "Provider actif. Choisis Claude / GPT / Gemini.  "
+            "Ajoute ta clé API via le ⚙ ci-contre."
         )
+        # Restore the persisted provider, then wire change handler. We do
+        # this before connecting currentIndexChanged so the restoration
+        # itself doesn't fire a save back (causing churn on first open).
+        self._restore_provider_selection()
+        self.provider_combo.currentIndexChanged.connect(
+            self._on_provider_changed
+        )
+        settings_btn = QPushButton("⚙")
+        settings_btn.setObjectName("aiSettingsBtn")
+        settings_btn.setToolTip("Clés API & modèles")
+        settings_btn.setFixedWidth(28)
+        settings_btn.clicked.connect(self._open_ai_settings_dialog)
         clear_btn = QPushButton("Clear")
         clear_btn.setObjectName("aiClearBtn")
         clear_btn.setToolTip("Vider la conversation")
         clear_btn.clicked.connect(self._clear_conversation)
         h.addWidget(title)
         h.addWidget(self.provider_combo, 1)
+        h.addWidget(settings_btn)
         h.addWidget(clear_btn)
         v.addWidget(header)
 
@@ -2704,6 +2840,70 @@ class AIPanel(QFrame):
         """Register a callable returning (url, view) for the current tab."""
         self._page_provider = fn
 
+    def set_screenshot_provider(self, fn):
+        """Register a callable returning a ``data:image/png;base64,...``
+        URI for the current tab. Used by the ``/screenshot`` slash
+        command. ``None`` to disable screenshots.
+        """
+        self._screenshot_provider = fn
+
+    def set_selection_provider(self, fn):
+        """Register a callable that resolves the current page selection.
+
+        Signature: ``fn(callback)`` — the panel passes a callback expecting
+        a single ``str`` arg. The provider should call it once with the
+        current selection text (empty string when nothing is selected).
+        Async on QtWebEngine because ``runJavaScript`` is async.
+        """
+        self._selection_provider = fn
+
+    # ── Provider selection bridge (combo ↔ ai_settings.json) ────────
+    def _restore_provider_selection(self):
+        """Read ``argus_data/ai_settings.json`` and pre-select the matching
+        item in ``provider_combo``. Falls back to index 0 when the file is
+        absent or names an unknown provider — keeps boot resilient when
+        the user hasn't run the AI panel yet."""
+        if not HAVE_AI_PROVIDERS:
+            return
+        try:
+            settings = _ai_providers.load_settings()
+        except Exception:
+            return
+        active = settings.get("provider", "anthropic")
+        for i in range(self.provider_combo.count()):
+            if self.provider_combo.itemData(i) == active:
+                self.provider_combo.setCurrentIndex(i)
+                return
+
+    def _on_provider_changed(self, _idx: int):
+        """Persist the selected provider to ``ai_settings.json`` so the
+        next AI worker picks it up. We don't refresh the running worker
+        — provider switches take effect on the *next* message."""
+        if not HAVE_AI_PROVIDERS:
+            return
+        name = self.provider_combo.currentData()
+        if not name:
+            return
+        try:
+            settings = _ai_providers.load_settings()
+            settings["provider"] = name
+            _ai_providers.save_settings(settings)
+        except Exception:
+            pass
+
+    def _open_ai_settings_dialog(self):
+        """Show the BYOK settings dialog. Constructed lazily so we don't
+        pay the import cost up front when the user never opens it."""
+        try:
+            dlg = AISettingsDialog(self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                # Re-sync the combo with whatever the dialog persisted —
+                # the user might have changed the active provider there.
+                self._restore_provider_selection()
+        except Exception as e:
+            self.history.append("error", f"Settings dialog error: {e}")
+            self._render_history()
+
     # ── UX behaviour ────────────────────────────────────────────────
     def eventFilter(self, obj, event):
         # Enter (no modifier)  → send
@@ -2762,19 +2962,126 @@ class AIPanel(QFrame):
 
     # ── Send ────────────────────────────────────────────────────────
     def _send_clicked(self):
+        """Send the current input. Resolves ``/url`` / ``/selection`` /
+        ``/screenshot`` slash commands first by injecting their values
+        into the message before we ship it off to the worker.
+
+        Flow:
+          1. Read input text.
+          2. Strip leading slash commands (parse_slash_commands).
+          3. If commands present, resolve them asynchronously (selection +
+             screenshot are both async-capable) and dispatch.
+          4. Otherwise: legacy path — capture page text via toPlainText
+             callback.
+        """
         text = self.input.toPlainText().strip()
         if not text or self._worker is not None:
             return
-        # Capture page text asynchronously (callable returns view; we call toPlainText with a 2s timeout fallback).
         self._pending_user_msg = text
         self.input.clear()
-        # Append user msg immediately
+
+        # Slash command extraction (only if providers module is loaded —
+        # otherwise the user is on the legacy server backend which doesn't
+        # need them; fallback gracefully to plain send).
+        cmds: list[str] = []
+        residual = text
+        if HAVE_AI_PROVIDERS:
+            cmds, residual = _ai_providers.parse_slash_commands(text)
+
+        if not cmds:
+            # No slash commands — same flow as before. We still record the
+            # original text in history so the user sees what they typed.
+            self.history.append("user", text)
+            self._render_history()
+            self.send_btn.setEnabled(False)
+            self._set_typing(True)
+            self._capture_page_and_send(text)
+            return
+
+        # Slash-command path: build an enriched user message that the
+        # model sees, but show the original (pre-expansion) line in
+        # history. We resolve commands sequentially because /selection
+        # and /screenshot may both be async.
         self.history.append("user", text)
         self._render_history()
         self.send_btn.setEnabled(False)
-        # Show typing indicator
         self._set_typing(True)
-        # Try to get page text; fall back to URL only if it doesn't return in time.
+
+        url, view = self._current_page_info()
+        accumulated: dict = {"url": url, "selection": None, "screenshot": None}
+        # Track which commands still need async resolution.
+        pending = [c for c in cmds]
+
+        def maybe_dispatch():
+            if pending:
+                return
+            # All resolved — build context block and ship.
+            self._send_with_slash_context(residual or text, accumulated)
+
+        def resolve_url():
+            # /url is synchronous — already captured into accumulated["url"].
+            pending.remove("/url")
+            maybe_dispatch()
+
+        def resolve_selection():
+            if self._selection_provider is None:
+                accumulated["selection"] = ""
+                pending.remove("/selection")
+                maybe_dispatch()
+                return
+
+            def on_sel(text_sel: str):
+                accumulated["selection"] = (text_sel or "")[:AI_PAGE_TEXT_MAX]
+                if "/selection" in pending:
+                    pending.remove("/selection")
+                maybe_dispatch()
+
+            try:
+                self._selection_provider(on_sel)
+            except Exception:
+                accumulated["selection"] = ""
+                if "/selection" in pending:
+                    pending.remove("/selection")
+                maybe_dispatch()
+            # Selection async fallback: if the provider hangs, finish
+            # without it after the same 2s budget we use for page text.
+            QTimer.singleShot(
+                AI_PAGE_TEXT_TIMEOUT_MS,
+                lambda: ("/selection" in pending
+                          and (accumulated.update(selection=""),
+                               pending.remove("/selection"),
+                               maybe_dispatch())),
+            )
+
+        def resolve_screenshot():
+            if self._screenshot_provider is None:
+                accumulated["screenshot"] = ""
+                pending.remove("/screenshot")
+                maybe_dispatch()
+                return
+            try:
+                data_uri = self._screenshot_provider() or ""
+            except Exception:
+                data_uri = ""
+            # Cap size — vendor APIs reject big images.
+            if len(data_uri) > AI_SCREENSHOT_MAX_BYTES:
+                data_uri = ""  # silently drop if oversized
+            accumulated["screenshot"] = data_uri
+            pending.remove("/screenshot")
+            maybe_dispatch()
+
+        # Kick off resolution for each requested command.
+        for cmd in cmds:
+            if cmd == "/url":
+                resolve_url()
+            elif cmd == "/selection":
+                resolve_selection()
+            elif cmd == "/screenshot":
+                resolve_screenshot()
+
+    def _capture_page_and_send(self, text: str):
+        """Original page-text capture path. Extracted from _send_clicked so
+        the slash-command path doesn't have to duplicate it."""
         url, view = self._current_page_info()
         if view is not None:
             received = {"done": False}
@@ -2803,6 +3110,34 @@ class AIPanel(QFrame):
         else:
             self._send_to_backend(text, url, "")
 
+    def _send_with_slash_context(self, residual: str, accumulated: dict):
+        """Build a user message enriched with the resolved slash-command
+        context, then hand off to ``_send_to_backend``. The original page
+        context block is *not* added — the slash commands are already an
+        explicit ask, and stuffing both makes prompts noisy."""
+        ctx_lines = ["[Slash context]"]
+        if accumulated.get("url"):
+            ctx_lines.append(f"URL: {accumulated['url']}")
+        sel = accumulated.get("selection")
+        if sel:
+            ctx_lines.append("Selection:")
+            ctx_lines.append(sel)
+        ss = accumulated.get("screenshot")
+        if ss:
+            # We pass the data URI inline — providers that don't accept
+            # images will see a base64 blob and may reason about it as
+            # text. Real multimodal support is a follow-up.
+            ctx_lines.append(f"Screenshot (data URI, {len(ss)} bytes):")
+            ctx_lines.append(ss[:512] + "...")
+        ctx_lines.append("[/Slash context]\n\n")
+        ctx_block = "\n".join(ctx_lines)
+        # Enrich the *last* turn (just appended above) without rewriting
+        # the visible history.
+        msgs = self.history.for_api()
+        if msgs and msgs[-1]["role"] == "user":
+            msgs[-1] = {"role": "user", "content": f"{ctx_block}{residual}"}
+        self._launch_worker(msgs)
+
     def _current_page_info(self):
         if self._page_provider is None:
             return ("", None)
@@ -2819,11 +3154,19 @@ class AIPanel(QFrame):
         if msgs and msgs[-1]["role"] == "user":
             ctx_block = self._format_ctx(url, page_text)
             msgs[-1] = {"role": "user", "content": f"{ctx_block}{user_msg}"}
-        # Lang from system locale would be better; default to French for this build.
+        self._launch_worker(msgs)
+
+    def _launch_worker(self, msgs: list[dict]):
+        """Spawn the AIChatWorker with the prepared message list. Wires
+        streaming, done, and failed signals. Centralised so the regular
+        path and the slash-command path share identical lifecycle."""
         worker = AIChatWorker(messages=msgs, lang="fr")
+        worker.chunk.connect(self._on_worker_chunk)
         worker.done.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
         self._worker = worker
+        # Reset streaming buffer — populated as chunks arrive.
+        self._streaming_buf = ""
         worker.start()
 
     @staticmethod
@@ -2839,19 +3182,43 @@ class AIPanel(QFrame):
         parts.append("[/Page context]\n\n")
         return "\n".join(parts)
 
+    def _on_worker_chunk(self, delta: str):
+        """Append a streaming delta to the in-progress assistant bubble.
+
+        The chunk is shown live but *not* written to history until the
+        worker finishes — that way a mid-stream failure doesn't poison
+        the persisted conversation with a half-message.
+        """
+        if self._streaming_buf is None:
+            self._streaming_buf = ""
+        self._streaming_buf += delta
+        # Re-render with the live partial bubble. We don't persist yet.
+        self._render_history()
+
     def _on_worker_done(self, reply: str, _raw: dict):
         self._worker = None
         self._set_typing(False)
         self.send_btn.setEnabled(True)
-        if not reply:
-            reply = "(Réponse vide)"
-        self.history.append("assistant", reply)
+        # When streaming, prefer the fully-accumulated buffer if the
+        # provider's final ``reply`` came back empty (some implementations
+        # emit deltas only and don't echo the full string at the end).
+        final = reply or (self._streaming_buf or "")
+        self._streaming_buf = None
+        if not final:
+            final = "(Réponse vide)"
+        self.history.append("assistant", final)
         self._render_history()
 
     def _on_worker_failed(self, error: str):
         self._worker = None
         self._set_typing(False)
         self.send_btn.setEnabled(True)
+        # If we got partial streamed text before the failure, keep it as
+        # an assistant turn followed by the error so the user can copy
+        # what was salvageable.
+        if self._streaming_buf:
+            self.history.append("assistant", self._streaming_buf)
+            self._streaming_buf = None
         self.history.append("error", error)
         self._render_history()
 
@@ -2900,7 +3267,18 @@ class AIPanel(QFrame):
                     f'<div class="row-a"><span class="bubble-e">{safe}'
                     f'<a href="argus://retry" class="retry">Retry</a></span></div>'
                 )
-        if getattr(self, "_typing", False):
+        # In-progress streaming bubble — shown live while the assistant
+        # is mid-reply. Distinct from the typing dots so the user sees
+        # actual text accumulating.
+        if self._streaming_buf:
+            buf_safe = (self._streaming_buf
+                         .replace("&", "&amp;")
+                         .replace("<", "&lt;")
+                         .replace(">", "&gt;"))
+            html_parts.append(
+                f'<div class="row-a"><span class="bubble-a">{buf_safe}<span class="typing">▌</span></span></div>'
+            )
+        elif getattr(self, "_typing", False):
             html_parts.append('<div class="row-a"><span class="typing">…</span></div>')
 
         self.history_view.setHtml("\n".join(html_parts))
@@ -2924,6 +3302,155 @@ class AIPanel(QFrame):
                 self._prefill(m["content"])
                 self._send_clicked()
                 return
+
+
+# ── AI BYOK settings dialog ──────────────────────────────────────────────
+class AISettingsDialog(QDialog):
+    """Per-provider API key + model entry. Persists to
+    ``argus_data/ai_settings.json`` via ``argus_ai_providers.save_settings``.
+
+    Layout: one tab per provider (Claude / GPT / Gemini), each with an
+    API key line edit (echo masked) and a model combo seeded from the
+    provider's ``models`` list. Plus a "Default provider" combo at the
+    top so the user can switch which one the panel actually uses.
+
+    No verification round-trip — entering a bogus key just fails on
+    the next message with the provider's own error string in the chat.
+    Better than blocking the dialog on a network call the user might
+    not even need (e.g. they're configuring two keys at once).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Argus AI — Clés API & modèles")
+        self.setObjectName("aiSettingsDialog")
+        self.resize(520, 360)
+        # Load current settings — empty dict if none saved yet.
+        self._settings = (_ai_providers.load_settings()
+                           if HAVE_AI_PROVIDERS else {})
+        # Per-provider widgets we'll read on accept.
+        self._key_edits: dict[str, QLineEdit] = {}
+        self._model_combos: dict[str, QComboBox] = {}
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+
+        # Default provider row
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Provider par défaut:"))
+        self._default_combo = QComboBox()
+        for name, label in AI_PROVIDER_FALLBACK:
+            self._default_combo.addItem(label, name)
+        active = self._settings.get("provider", "anthropic")
+        for i in range(self._default_combo.count()):
+            if self._default_combo.itemData(i) == active:
+                self._default_combo.setCurrentIndex(i)
+                break
+        top.addWidget(self._default_combo, 1)
+        v.addLayout(top)
+
+        # Per-provider tabs.
+        tabs = QTabWidget()
+        if HAVE_AI_PROVIDERS:
+            for name, label in AI_PROVIDER_FALLBACK:
+                tabs.addTab(self._make_provider_tab(name), label)
+        else:
+            # Defensive fallback — shouldn't happen because the panel
+            # only opens this dialog after checking HAVE_AI_PROVIDERS,
+            # but keeps the dialog importable in tests.
+            disabled = QLabel(
+                "Module argus_ai_providers indisponible — "
+                "réinstalle Argus pour activer les providers BYOK."
+            )
+            disabled.setWordWrap(True)
+            tabs.addTab(disabled, "Indisponible")
+        v.addWidget(tabs, 1)
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._save_and_close)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+    def _make_provider_tab(self, name: str) -> QWidget:
+        provider = _ai_providers.PROVIDERS.get(name)
+        wrap = QWidget()
+        form = QFormLayout(wrap)
+        form.setContentsMargins(12, 12, 12, 12)
+
+        prov_settings = (self._settings.get("providers") or {}).get(name, {}) or {}
+
+        # API key — masked. We DO NOT pre-fill the actual key for safety;
+        # show a placeholder when one already exists so the user knows
+        # they don't need to re-enter it. New value overrides.
+        key_edit = QLineEdit()
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        existing_key = prov_settings.get("api_key") if isinstance(prov_settings, dict) else None
+        if isinstance(existing_key, str) and existing_key.strip():
+            key_edit.setPlaceholderText("•••••• (déjà configuré — laisse vide pour conserver)")
+        else:
+            key_edit.setPlaceholderText("Colle la clé API ici")
+        form.addRow("API key:", key_edit)
+        self._key_edits[name] = key_edit
+
+        # Model combo — seeded from provider.models, with the saved choice
+        # selected when present.
+        model_combo = QComboBox()
+        model_combo.setEditable(True)  # allow custom (e.g. Claude future model)
+        if provider and provider.models:
+            for m in provider.models:
+                model_combo.addItem(m)
+        saved_model = prov_settings.get("model") if isinstance(prov_settings, dict) else None
+        if isinstance(saved_model, str) and saved_model.strip():
+            idx = model_combo.findText(saved_model)
+            if idx >= 0:
+                model_combo.setCurrentIndex(idx)
+            else:
+                model_combo.setEditText(saved_model)
+        elif provider:
+            idx = model_combo.findText(provider.default_model)
+            if idx >= 0:
+                model_combo.setCurrentIndex(idx)
+        form.addRow("Modèle:", model_combo)
+        self._model_combos[name] = model_combo
+
+        # Help link
+        env_keys = provider.env_keys if provider else []
+        help_url = SECRET_HELP_URLS.get(env_keys[0]) if env_keys else None
+        if help_url:
+            link = QLabel(f'<a href="{help_url}">Obtenir une clé API</a>')
+            link.setOpenExternalLinks(True)
+            form.addRow("", link)
+
+        return wrap
+
+    def _save_and_close(self):
+        if not HAVE_AI_PROVIDERS:
+            self.accept()
+            return
+        # Merge with existing settings rather than overwrite — keeps any
+        # extra fields a future migration may have added.
+        settings = _ai_providers.load_settings()
+        settings["provider"] = self._default_combo.currentData() or "anthropic"
+        providers = settings.setdefault("providers", {})
+        for name, edit in self._key_edits.items():
+            slot = providers.setdefault(name, {})
+            new_key = edit.text().strip()
+            if new_key:
+                slot["api_key"] = new_key
+            # else: leave existing key untouched (placeholder told the user
+            # an empty input means "keep current")
+            model_combo = self._model_combos.get(name)
+            if model_combo is not None:
+                model = model_combo.currentText().strip()
+                if model:
+                    slot["model"] = model
+        _ai_providers.save_settings(settings)
+        self.accept()
 
 
 # ── Vault auto-switch banner ─────────────────────────────────────────────
@@ -3701,6 +4228,10 @@ class ArgusBrowser(QMainWindow):
         ma_layout.addWidget(page_column, 1)
         self.ai_panel = AIPanel(self.ai_history_mgr)
         self.ai_panel.set_page_provider(self._current_page_info_for_ai)
+        # Slash-command bridges: /selection runs JS in the page; /screenshot
+        # snapshots the QWebEngineView via QWidget.grab().
+        self.ai_panel.set_selection_provider(self._ai_get_selection_async)
+        self.ai_panel.set_screenshot_provider(self._ai_get_screenshot_data_uri)
         ma_layout.addWidget(self.ai_panel)
         v.addWidget(main_area, 1)
 
@@ -4563,6 +5094,59 @@ class ArgusBrowser(QMainWindow):
         if view is None:
             return ("", None)
         return (view.url().toString(), view)
+
+    def _ai_get_selection_async(self, callback):
+        """Resolve the current page text selection asynchronously. Used by
+        the AI panel's ``/selection`` slash command.
+
+        QtWebEngine's ``runJavaScript`` invokes ``callback`` on the GUI
+        thread once the page returns the selection string. If no view is
+        active (or runJavaScript raises), we invoke the callback with an
+        empty string immediately so the slash-command resolver completes.
+        """
+        view = self._current_view()
+        if view is None:
+            try:
+                callback("")
+            except Exception:
+                pass
+            return
+        try:
+            page = view.page()
+            page.runJavaScript(
+                "window.getSelection ? window.getSelection().toString() : ''",
+                lambda result: callback(result if isinstance(result, str) else ""),
+            )
+        except Exception:
+            try:
+                callback("")
+            except Exception:
+                pass
+
+    def _ai_get_screenshot_data_uri(self) -> str:
+        """Return a ``data:image/png;base64,...`` URI of the current view.
+
+        ``QWidget.grab()`` works even on QWebEngineView because the engine
+        renders into the widget's surface. Returns an empty string if no
+        view is active or the grab fails — the panel handles that as
+        "no screenshot available" without raising.
+        """
+        view = self._current_view()
+        if view is None:
+            return ""
+        try:
+            pix: QPixmap = view.grab()
+            if pix.isNull():
+                return ""
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            ok = pix.save(buf, "PNG")
+            if not ok:
+                return ""
+            b64 = bytes(buf.data().toBase64()).decode("ascii")
+            return f"data:image/png;base64,{b64}"
+        except Exception:
+            return ""
 
     def _apply_display_settings(self):
         s = self.settings_mgr
