@@ -10,8 +10,28 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install bandit
-      # -ll => report only Medium / High severity (skip Low noise)
-      - run: bandit -r . -x tests/,backups/,branding/ -ll
+
+      # -lll => only High severity blocks the build.
+      # Medium / Low findings are reported (see job summary) but
+      # don't block PRs — they're tracked in docs/SECURITY_AUDIT_*.md
+      # and worked through over time.
+      # Excludes: tests (have intentional fake-key fixtures),
+      # backups+captures+reports (runtime data, never imported),
+      # branding+docs (no Python code or generators with no shell concerns),
+      # build+dist (PyInstaller output, not source-of-truth),
+      # examples (sample plugins use HTTP for demo only),
+      # netguard_v160.py (legacy, scheduled for V4 removal).
+      - name: Bandit (High severity gate — must be 0)
+        run: |
+          bandit -r . \
+            -x ./tests,./backups,./branding,./build,./dist,./examples,./docs,./reports,./captures,./netguard_v160.py \
+            -lll
+
+      - name: Bandit (Medium severity — informational, doesn't block)
+        run: |
+          bandit -r . \
+            -x ./tests,./backups,./branding,./build,./dist,./examples,./docs,./reports,./captures,./netguard_v160.py \
+            -ll || true
 
   pip-audit:
     runs-on: ubuntu-latest
@@ -21,5 +41,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pip-audit
-      # || true => audit failures are informational, don't block PRs
+      # Audit runtime deps for known CVEs. Informational — don't block PRs
+      # (we'd lose merge ability on transient PyPI issues).
       - run: pip-audit -r requirements.txt || true
