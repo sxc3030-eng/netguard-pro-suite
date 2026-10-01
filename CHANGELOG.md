@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-09-30 — NetGuard AI : audit mémoire + superaudit (branche `netguard-ai`)
+
+**Renommage** : « NetGuard Pro » devient **NetGuard AI** partout (exécutable `NetGuardAI.exe`, tâche planifiée, titres). Les règles de pare-feu gardent le préfixe `NetGuard_*`.
+
+**Mémoire** (`docs/AUDIT_MEMOIRE_2026-09-30.md`) : éviction périodique de toutes les tables indexées par IP, un seul worker de géolocalisation (plus de thread par paquet), verrou sur l'accumulateur d'anomalies, compteur pcap, rotation réelle des captures et des journaux IA, purge de la carte.
+
+**Sécurité** (`docs/SUPERAUDIT_2026-09-30.md`) : garde liste blanche + limite de débit sur les blocages automatiques, table de flux anti-usurpation, assainissement de toutes les chaînes réseau (XSS stocké), confinement des chemins (backups, rapports, forensique), liste blanche `update_param`, serveur IA authentifié par jeton avec liste blanche de fichiers et signature d'approbation des outils, échappement HTML dans tous les tableaux de bord, SRI sur les CDN.
+
+**Store** : dossier de données inscriptible (`%LOCALAPPDATA%\NetGuard AI`), détection admin/Npcap exposée dans l'interface, arrêt propre, `--remove-firewall-rules` à la désinstallation, `--demo` accepté, tueur Npcap en opt-in, `geo_online_enabled`, politique de confidentialité (`PRIVACY_POLICY_NETGUARD_AI.md`) et licences tierces (`THIRD_PARTY_LICENSES.md`).
+
+**Dépôt** : fichiers sensibles (`netguard_users.json`, `netguard_license.json`, `netguard_settings.json`) et copies obsolètes (`captures/`, `reports/`, `backups/`, `netguard_v160.py`) retirés du suivi ; `netguard_settings.json.example` fourni.
+
 ## [3.0.0] — 2026-04-29
 
 The first release where the Argus modes (`Normal` / `Privé` / `Coffre`) are
