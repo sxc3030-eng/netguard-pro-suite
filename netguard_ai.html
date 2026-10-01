@@ -276,6 +276,9 @@ const CAP_KEYS = {
 };
 
 const API = location.origin;
+// Token injected server-side (<meta name="ng-token">); every /api call must carry it.
+const NG_TOKEN = (document.querySelector('meta[name="ng-token"]') || {}).content || '';
+function ngHeaders(extra){ return Object.assign({'X-NetGuard-Token': NG_TOKEN}, extra || {}); }
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -333,7 +336,7 @@ let providersCache = null;
 
 async function loadProviders(){
   try {
-    const r = await fetch(API + '/api/providers');
+    const r = await fetch(API + '/api/providers', {headers: ngHeaders()});
     providersCache = await r.json();
   } catch {
     providersCache = {active: 'anthropic', providers: []};
@@ -445,7 +448,7 @@ btnSave.addEventListener('click', async () => {
     if (key) body.api_key = key;
     const r = await fetch(API + '/api/settings', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: ngHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify(body),
     });
     const j = await r.json();
@@ -571,7 +574,7 @@ sendBtn.addEventListener('click', send);
 
 async function checkHealth(){
   try{
-    const r = await fetch(API + '/api/health');
+    const r = await fetch(API + '/api/health', {headers: ngHeaders()});
     const j = await r.json();
     serverHasKey = !!j.has_key;
     dot.className = 'status-dot ' + (j.has_key ? 'ok' : 'warn');
@@ -588,7 +591,7 @@ async function checkHealth(){
 
 async function loadCapabilities(){
   try{
-    const r = await fetch(API + '/api/capabilities');
+    const r = await fetch(API + '/api/capabilities', {headers: ngHeaders()});
     const j = await r.json();
     cachedCaps = j.capabilities || [];
     capsEl.innerHTML = '';
@@ -611,7 +614,7 @@ async function runCapability(name, label){
   try{
     const r = await fetch(API + '/api/capability/' + name, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: ngHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({lang}),
     });
     const j = await r.json();
@@ -637,7 +640,7 @@ async function send(){
   try{
     const r = await fetch(API + '/api/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: ngHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({messages: history.slice(0, -1), message: text, lang}),
     });
     const j = await r.json();

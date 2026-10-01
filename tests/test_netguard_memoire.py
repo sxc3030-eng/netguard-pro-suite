@@ -68,13 +68,18 @@ class TestPruneIpTables:
         dropped = netguard.prune_ip_tables()
         assert dropped >= 1
         S = netguard.STATE
-        for d in (S.ip_last_seen, S.bytes_per_ip, S.bytes_per_ip_per_sec, S.process_per_ip,
+        for d in (S.bytes_per_ip, S.bytes_per_ip_per_sec, S.process_per_ip,
                   S.active_conns, S._port_scan_tracker, S._dns_tracker, S.ip_risk_scores,
                   S.ip_intel, S.ip_hit_counter, S.ip_recent_packets, S.ip_first_seen_ts,
                   netguard.ATTACK_CHAINS, netguard.JA3_CACHE, netguard.IP_BEHAVIOR_PROFILES,
                   netguard.IP_BASELINES):
             assert idle not in d, f"idle IP still in {d!r}"
             assert active in d, f"active IP wrongly evicted from {d!r}"
+        # ip_last_seen is kept 24 h (drives the long-TTL cache eviction)
+        assert idle in S.ip_last_seen and active in S.ip_last_seen
+        S.ip_last_seen[idle] = time.time() - 2 * 86400
+        netguard.prune_ip_tables()
+        assert idle not in S.ip_last_seen
 
     def test_blocked_ip_keeps_hit_counter_and_intel(self, seeded_ip_tables):
         idle, _ = seeded_ip_tables

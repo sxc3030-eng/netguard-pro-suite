@@ -6206,6 +6206,8 @@ function dcRenderAnalysis() {
 
 // ═══ AI Chat Drawer (inline) ══════════════════════════════════════════════
 const AI_API = 'http://127.0.0.1:8770';
+// Every AI API call carries the NetGuard token (same trust domain as the WebSocket).
+function aiHeaders(extra){ return Object.assign({'X-NetGuard-Token': (localStorage.getItem('ng_token') || '')}, extra || {}); }
 const AI_T = {
   fr: {
     open: 'Demander à l\'IA', title: 'Assistant IA', placeholder: 'Pose une question…',
@@ -6290,7 +6292,7 @@ function buildDashboardContext(){
 
 async function aiEnsureServer(){
   try {
-    const r = await fetch(AI_API + '/api/health', {cache:'no-store'});
+    const r = await fetch(AI_API + '/api/health', {cache:'no-store', headers: aiHeaders()});
     if (r.ok) return await r.json();
   } catch {}
   if (window.pywebview && window.pywebview.api && window.pywebview.api.start_ai_server) {
@@ -6299,7 +6301,7 @@ async function aiEnsureServer(){
   for (let i = 0; i < 20; i++) {
     await new Promise(r => setTimeout(r, 250));
     try {
-      const r = await fetch(AI_API + '/api/health', {cache:'no-store'});
+      const r = await fetch(AI_API + '/api/health', {cache:'no-store', headers: aiHeaders()});
       if (r.ok) return await r.json();
     } catch {}
   }
@@ -6411,7 +6413,7 @@ async function aiCallChat(){
   try {
     const r = await fetch(AI_API + '/api/chat', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: aiHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({messages: aiHistory, lang: currentLang, agent_mode: aiAgentMode}),
     });
     const j = await r.json();
@@ -6499,8 +6501,8 @@ async function aiToolDecide(call, approve, card){
     if (approve) {
       const r = await fetch(AI_API + '/api/tool-execute', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({name: call.name, input: call.input, tool_use_id: call.id, decision: 'approve'}),
+        headers: aiHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({name: call.name, input: call.input, tool_use_id: call.id, decision: 'approve', approval: call.approval || ''}),
       });
       const j = await r.json();
       payloadResult = j.tool_result || JSON.stringify(j.raw || {});

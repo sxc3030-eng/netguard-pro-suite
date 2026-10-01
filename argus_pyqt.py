@@ -1322,10 +1322,17 @@ class AIChatWorker(QObject):
             "lang": self.lang,
             "agent_mode": False,
         }).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        try:  # netguard_ai_server requires the NetGuard token on every /api call
+            tok = (Path(__file__).resolve().parent / ".netguard_token").read_text(encoding="utf-8").strip()
+            if tok:
+                headers["X-NetGuard-Token"] = tok
+        except OSError:
+            pass
         req = urllib.request.Request(
             f"{AI_SERVER_BASE}/api/chat",
             data=body, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:

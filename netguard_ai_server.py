@@ -9,10 +9,14 @@ rewriting the server.
 from __future__ import annotations
 
 import datetime as _dt
+import hmac
 import http.server
+import ipaddress
 import json
 import os
+import secrets
 import socketserver
+import tempfile
 import threading
 import urllib.error
 import urllib.parse
@@ -103,6 +107,12 @@ def _cap_ai_memory_sections(text: str) -> str:
 
 
 def _append_ai_memory(section: str, note: str) -> bool:
+    """Thread-safe wrapper: concurrent requests must not lose notes (read-modify-write)."""
+    with _MEMORY_LOCK:
+        return _append_ai_memory_unlocked(section, note)
+
+
+def _append_ai_memory_unlocked(section: str, note: str) -> bool:
     """Insert a timestamped note at the top of `section` (newest first). Creates file/section if missing."""
     if section not in _AI_MEMORY_VALID_SECTIONS:
         return False
@@ -411,23 +421,46 @@ def _ws_send_sync(payload: dict, timeout: float = 5.0) -> dict:
     return asyncio.run(_go())
 
 
+class _RequestAborted(Exception):
+    """Raised after a response was already sent (e.g. 413) to stop the handler."""
+
+
+def _clean_ip(value: Any) -> str:
+    """Return a canonical IP string or '' (never pass raw strings to NetGuard)."""
+    if not isinstance(value, str):
+        return ""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return ""
+
+
+def _clean_text(value: Any, limit: int) -> str:
+    """Single line, control characters stripped, length-capped (log-injection safe)."""
+    if not isinstance(value, str):
+        return ""
+    value = " ".join(value.split())            # newlines/tabs → single spaces (not glued)
+    cleaned = "".join(ch for ch in value if ch.isprintable())
+    return cleaned[:limit]
+
+
 def _execute_tool(name: str, args: dict) -> dict:
     """Translate a tool call to a NetGuard cmd via WebSocket."""
-    args = args or {}
+    args = args if isinstance(args, dict) else {}
     if name == "get_state":
         return _ws_send_sync({"cmd": "get_state"}, timeout=3.0)
     if name == "list_blocked_ips":
         return _ws_send_sync({"cmd": "get_blocked_ips"})
     if name == "block_ip":
-        ip = args.get("ip", "").strip()
-        reason = args.get("reason", "AI-suggested block").strip()
+        ip = _clean_ip(args.get("ip"))
+        reason = _clean_text(args.get("reason"), 200) or "AI-suggested block"
         if not ip:
-            return {"ok": False, "error": "missing_ip"}
+            return {"ok": False, "error": "invalid_ip"}
         return _ws_send_sync({"cmd": "block_ip", "ip": ip, "reason": reason})
     if name == "unblock_ip":
-        ip = args.get("ip", "").strip()
+        ip = _clean_ip(args.get("ip"))
         if not ip:
-            return {"ok": False, "error": "missing_ip"}
+            return {"ok": False, "error": "invalid_ip"}
         return _ws_send_sync({"cmd": "unblock_ip", "ip": ip})
     if name == "clear_threats":
         return _ws_send_sync({"cmd": "clear_threats"})
@@ -446,8 +479,10 @@ def _execute_tool(name: str, args: dict) -> dict:
         text = _read_ai_memory()
         return {"ok": True, "data": {"memory": text, "bytes": len(text.encode("utf-8")), "path": str(_AI_MEMORY_FILE)}}
     if name == "save_memory_note":
-        section = (args.get("section") or "Findings").strip()
-        note = (args.get("note") or "").strip()
+        section = _clean_text(args.get("section") or "Findings", 32)
+        # Single line: an embedded "\n## Decisions\n- ..." would forge sections
+        # in the memory file that is injected into every future system prompt.
+        note = _clean_text(args.get("note"), 1000)
         if section not in _AI_MEMORY_VALID_SECTIONS:
             return {"ok": False, "error": f"invalid_section: must be one of {_AI_MEMORY_VALID_SECTIONS}"}
         if not note:
@@ -627,7 +662,7 @@ def _append_jsonl(path: Path, record: dict) -> None:
 
 
 def _log_action(event: str, payload: dict) -> None:
-    record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
+    record = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"), "event": event, **payload}
     _append_jsonl(ACTIONS_LOG, record)
 
 
@@ -638,9 +673,16 @@ def _load_settings() -> dict:
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             return _migrate_legacy_settings(data) if isinstance(data, dict) else {}
-        except json.JSONDecodeError:
+        except (OSError, ValueError):   # locked file, bad encoding, bad JSON
             pass
     return {}
+
+
+def _mtime_or_zero(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:          # deleted between glob() and stat()
+        return 0.0
 
 
 def _migrate_legacy_settings(data: dict) -> dict:
@@ -663,10 +705,25 @@ def _migrate_legacy_settings(data: dict) -> dict:
 
 
 def _save_settings(data: dict) -> None:
-    SETTINGS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    """Atomic write (temp file + os.replace) under a lock; owner-only perms where supported."""
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    with _SETTINGS_LOCK:
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(SETTINGS_FILE.parent), prefix=".ai_settings_", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, SETTINGS_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 # ── Provider abstraction ────────────────────────────────────────────────────
@@ -828,7 +885,8 @@ class GoogleProvider(Provider):
     env_keys = ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
 
     def call(self, messages, system, model, api_key, tools=None):
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={urllib.parse.quote(api_key)}"
+        # Key goes in a header, never in the URL (proxy logs, error reprs).
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{urllib.parse.quote(model, safe='')}:generateContent"
         contents = []
         for m in messages:
             role = m.get("role", "user")
@@ -842,7 +900,7 @@ class GoogleProvider(Provider):
         }
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
         status, raw = _http_post(url, headers, body)
         if status >= 400:
             return {"ok": False, "error": f"http_{status}", "reply": raw}
@@ -879,14 +937,14 @@ def _active_provider(settings: dict | None = None) -> Provider:
 
 
 def _audit(event: str, payload: dict) -> None:
-    record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
+    record = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat().replace("+00:00", "Z"), "event": event, **payload}
     _append_jsonl(AUDIT_LOG, record)
 
 
 def _read_recent_captures(limit: int = 5) -> list[dict]:
     if not CAPTURES_DIR.exists():
         return []
-    files = sorted(CAPTURES_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(CAPTURES_DIR.glob("*.json"), key=_mtime_or_zero, reverse=True)
     out: list[dict] = []
     for p in files[:limit]:
         try:
@@ -901,7 +959,7 @@ def _read_recent_reports(limit: int = 5) -> list[dict]:
         return []
     files = sorted(
         (p for p in AUDIT_DIR.glob("*.json") if p.name != AUDIT_LOG.name),
-        key=lambda p: p.stat().st_mtime,
+        key=_mtime_or_zero,
         reverse=True,
     )
     out: list[dict] = []
@@ -1003,41 +1061,184 @@ def register_capability(name: str, label: str, description: str, handler: Callab
 
 # ── HTTP layer ──────────────────────────────────────────────────────────────
 
-class _Handler(http.server.SimpleHTTPRequestHandler):
+# ── Auth / origin hardening (superaudit 2026-09-30) ─────────────────────────
+# Before: SimpleHTTPRequestHandler served EVERY file of the install dir (API keys,
+# .netguard_token, users, settings), every JSON response carried
+# `Access-Control-Allow-Origin: *`, and /api/tool-execute trusted the client's
+# `decision` field. Any web page in the user's browser could block IPs or read
+# the keys (DNS rebinding / CSRF against 127.0.0.1:8770).
+#
+# Now: every /api/* request must carry X-NetGuard-Token (the NetGuard WS token
+# when netguard.py is running, else a per-launch secret injected into the served
+# page), Host must be loopback, Origin (when present) must be loopback or null,
+# only an allowlist of static files is served, and side-effecting tools need a
+# server-issued approval signature that proves the call came from /api/chat.
+
+_LAUNCH_SECRET = secrets.token_urlsafe(32)
+_STATIC_ALLOWLIST = {
+    "/netguard_ai.html": ("netguard_ai.html", "text/html; charset=utf-8"),
+    "/netguard_ai_icon.png": ("netguard_ai_icon.png", "image/png"),
+    "/netguard_ai_icon.ico": ("netguard_ai_icon.ico", "image/x-icon"),
+}
+_MAX_BODY_BYTES = 1024 * 1024
+_SETTINGS_LOCK = threading.Lock()
+_MEMORY_LOCK = threading.Lock()
+
+
+def _api_token() -> str:
+    """Token clients must present: NetGuard's WS token if available, else per-launch secret."""
+    return _read_ws_token() or _LAUNCH_SECRET
+
+
+def _approval_sig(tool_use_id: str, name: str, args: Any) -> str:
+    """HMAC proving a tool call was issued by this server from a /api/chat reply."""
+    canonical = json.dumps([tool_use_id, name, args], sort_keys=True, ensure_ascii=False)
+    return hmac.new(_LAUNCH_SECRET.encode("utf-8"), canonical.encode("utf-8"), "sha256").hexdigest()
+
+
+def _host_is_loopback(host_header: str) -> bool:
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):                      # [::1]:port
+        host = host.split("]")[0].lstrip("[")
+    else:
+        host = host.rsplit(":", 1)[0]
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
+def _origin_allowed(origin: str) -> bool:
+    if not origin or origin == "null":            # pywebview / file:// dashboards
+        return True
+    parsed = urllib.parse.urlsplit(origin)
+    return parsed.scheme in ("http", "https") and _host_is_loopback(parsed.netloc)
+
+
+class _Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "NetGuardAI/1.0"
+    sys_version = ""
+
     def log_message(self, fmt: str, *args: Any) -> None:
         return
+
+    # -- helpers ---------------------------------------------------------
+    def _cors(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and _origin_allowed(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
 
     def _json(self, status: int, body: dict) -> None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        self._cors()
         self.end_headers()
         self.wfile.write(data)
 
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
         if length <= 0:
             return {}
-        raw = self.rfile.read(length).decode("utf-8")
+        if length > _MAX_BODY_BYTES:
+            self._json(413, {"ok": False, "error": "body_too_large"})
+            raise _RequestAborted()
+        raw = self.rfile.read(length).decode("utf-8", errors="replace")
         try:
-            return json.loads(raw)
+            data = json.loads(raw)
         except json.JSONDecodeError:
             return {}
+        return data if isinstance(data, dict) else {}
 
+    def _authorized(self) -> bool:
+        """Loopback Host + allowed Origin + valid X-NetGuard-Token, else 403."""
+        if not _host_is_loopback(self.headers.get("Host", "")):
+            self._json(403, {"ok": False, "error": "bad_host"})
+            return False
+        if not _origin_allowed(self.headers.get("Origin", "")):
+            self._json(403, {"ok": False, "error": "bad_origin"})
+            return False
+        presented = (self.headers.get("X-NetGuard-Token") or "").strip()
+        if not presented or not hmac.compare_digest(presented, _api_token()):
+            self._json(401, {"ok": False, "error": "unauthorized"})
+            return False
+        return True
+
+    def _serve_static(self, key: str) -> None:
+        filename, ctype = _STATIC_ALLOWLIST[key]
+        try:
+            data = (ROOT / filename).read_bytes()
+        except OSError:
+            return self._json(404, {"ok": False, "error": "not_found"})
+        if filename.endswith(".html"):
+            # Inject the API token so the page can authenticate its fetches.
+            tag = f'<meta name="ng-token" content="{_api_token()}">'
+            data = data.replace(b"<head>", b"<head>\n" + tag.encode("utf-8"), 1)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if filename.endswith(".html"):
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+                "font-src https://fonts.gstatic.com; img-src 'self' data:; "
+                "connect-src 'self'; frame-ancestors 'none'",
+            )
+        self.end_headers()
+        self.wfile.write(data)
+
+    # -- verbs -----------------------------------------------------------
     def do_OPTIONS(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if not _host_is_loopback(self.headers.get("Host", "")) or not _origin_allowed(origin):
+            self.send_response(403)
+            self.end_headers()
+            return
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-NetGuard-Token")
+        self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
 
     def do_GET(self) -> None:
-        if self.path == "/" or self.path.startswith("/?"):
-            self.path = "/netguard_ai.html"
-            return super().do_GET()
-        if self.path == "/api/health":
+        try:
+            self._do_GET()
+        except _RequestAborted:
+            pass
+
+    def do_POST(self) -> None:
+        try:
+            self._do_POST()
+        except _RequestAborted:
+            pass
+        except Exception as e:  # never leak a traceback / kill the handler thread
+            _audit("server_error", {"path": self.path, "error": type(e).__name__})
+            try:
+                self._json(500, {"ok": False, "error": "internal_error"})
+            except Exception:
+                pass
+
+    def _do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/":
+            path = "/netguard_ai.html"
+        if path in _STATIC_ALLOWLIST:
+            if not _host_is_loopback(self.headers.get("Host", "")):
+                return self._json(403, {"ok": False, "error": "bad_host"})
+            return self._serve_static(path)
+        if not path.startswith("/api/"):
+            return self._json(404, {"ok": False, "error": "not_found"})
+        if not self._authorized():
+            return
+        if path == "/api/health":
             settings = _load_settings()
             provider = _active_provider(settings)
             return self._json(200, {
@@ -1078,9 +1279,13 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
                     for t in TOOLS
                 ],
             })
-        return super().do_GET()
+        return self._json(404, {"ok": False, "error": "not_found"})
 
-    def do_POST(self) -> None:
+    def _do_POST(self) -> None:
+        if not self.path.startswith("/api/"):
+            return self._json(404, {"ok": False, "error": "not_found"})
+        if not self._authorized():
+            return
         if self.path == "/api/settings":
             payload = self._read_json()
             settings = _load_settings()
@@ -1090,22 +1295,34 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             if isinstance(new_active, str) and new_active in PROVIDERS:
                 settings["provider"] = new_active
 
-            target_name = (payload.get("target") or settings.get("provider") or "anthropic").lower()
+            target_raw = payload.get("target") or settings.get("provider") or "anthropic"
+            if not isinstance(target_raw, str):
+                return self._json(400, {"ok": False, "error": "bad_type"})
+            target_name = target_raw.lower()
             if target_name not in PROVIDERS:
                 return self._json(400, {"ok": False, "error": "unknown_provider"})
             target = PROVIDERS[target_name]
             scope = providers.setdefault(target_name, {})
 
-            new_key = (payload.get("api_key") or "").strip()
+            new_key = payload.get("api_key") or ""
+            new_model = payload.get("model") or ""
+            if not isinstance(new_key, str) or not isinstance(new_model, str):
+                return self._json(400, {"ok": False, "error": "bad_type"})
+            new_key = new_key.strip()
+            new_model = new_model.strip()
             if new_key:
+                if len(new_key) > 512 or any(c.isspace() for c in new_key):
+                    return self._json(400, {"ok": False, "error": "invalid_key_format"})
                 if target_name == "anthropic" and not new_key.startswith("sk-ant-"):
                     return self._json(400, {"ok": False, "error": "invalid_key_format"})
                 if target_name == "openai" and not new_key.startswith("sk-"):
                     return self._json(400, {"ok": False, "error": "invalid_key_format"})
                 scope["api_key"] = new_key
 
-            new_model = (payload.get("model") or "").strip()
             if new_model:
+                # Allowlist: the model name is interpolated into provider URLs (Google).
+                if new_model not in target.models:
+                    return self._json(400, {"ok": False, "error": "unknown_model"})
                 scope["model"] = new_model
 
             try:
@@ -1133,11 +1350,19 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             user_msg = payload.get("message")
             lang = payload.get("lang", "fr")
             agent_mode = bool(payload.get("agent_mode", False))
+            if not isinstance(messages, list) or not isinstance(lang, str):
+                return self._json(400, {"ok": False, "error": "bad_type"})
             if user_msg is not None and user_msg != "":
+                if not isinstance(user_msg, str):
+                    return self._json(400, {"ok": False, "error": "bad_type"})
                 messages.append({"role": "user", "content": user_msg})
             if not messages:
                 return self._json(400, {"ok": False, "error": "empty_messages"})
             result = _call_active(messages, _system_prompt(lang), tools=agent_mode)
+            # Sign every tool call so /api/tool-execute can prove it came from here.
+            for tc in result.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    tc["approval"] = _approval_sig(str(tc.get("id") or ""), str(tc.get("name") or ""), tc.get("input", {}))
             _audit("chat", {
                 "lang": lang,
                 "provider": result.get("provider"),
@@ -1152,12 +1377,25 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path == "/api/tool-execute":
             payload = self._read_json()
-            name = (payload.get("name") or "").strip()
+            name = payload.get("name") or ""
             args = payload.get("input") or {}
-            decision = (payload.get("decision") or "approve").lower()
+            decision = payload.get("decision") or "approve"
             tool_use_id = payload.get("tool_use_id") or ""
+            approval = payload.get("approval") or ""
+            if not all(isinstance(x, str) for x in (name, decision, tool_use_id, approval)) \
+                    or not isinstance(args, dict):
+                return self._json(400, {"ok": False, "error": "bad_type"})
+            name = name.strip()
+            decision = decision.lower()
             if name not in _TOOL_BY_NAME:
                 return self._json(404, {"ok": False, "error": "unknown_tool"})
+            # Server-side gate: a side-effecting tool runs only with the signature
+            # issued by /api/chat for this exact (id, name, input) triple.
+            if _tool_needs_approval(name):
+                expected = _approval_sig(tool_use_id, name, args)
+                if not approval or not hmac.compare_digest(approval, expected):
+                    _log_action("tool_refused", {"name": name, "tool_use_id": tool_use_id, "reason": "no_valid_approval"})
+                    return self._json(403, {"ok": False, "error": "approval_required"})
 
             if decision != "approve":
                 _log_action("tool_rejected", {"name": name, "input": args, "tool_use_id": tool_use_id})

@@ -799,7 +799,38 @@ def _schedule_geo_lookup(ip: str):
         _GEO_QUEUE.put_nowait(ip)
     except queue.Full:
         # Queue saturated: leave the placeholder, it will be retried later
-        _geo_city_cache[ip]["_retry_at"] = now + _GEO_RETRY_SEC
+        entry = _geo_city_cache.get(ip)
+        if entry is not None:
+            entry["_retry_at"] = now + _GEO_RETRY_SEC
+
+
+# ── Threat-intel lookup worker (VirusTotal): same pattern as the geo worker ─
+_INTEL_QUEUE: "queue.Queue[str]" = queue.Queue(maxsize=2000)
+_INTEL_WORKER_STARTED = False
+
+
+def _intel_worker():
+    while True:
+        ip = _INTEL_QUEUE.get()
+        try:
+            _vt_check_ip(ip)
+        except Exception as e:
+            log.debug(f"[INTEL] worker error for {ip}: {e}")
+        finally:
+            _INTEL_QUEUE.task_done()
+
+
+def _schedule_intel_lookup(ip: str):
+    global _INTEL_WORKER_STARTED
+    if not _INTEL_WORKER_STARTED:
+        with _GEO_WORKER_LOCK:
+            if not _INTEL_WORKER_STARTED:
+                threading.Thread(target=_intel_worker, name="intel-worker", daemon=True).start()
+                _INTEL_WORKER_STARTED = True
+    try:
+        _INTEL_QUEUE.put_nowait(ip)
+    except queue.Full:
+        _CHECKED_IPS.discard(ip)   # let a later packet retry
 
 
 def _fetch_city_async(ip: str):
@@ -813,6 +844,13 @@ def _fetch_city_async(ip: str):
         except Exception as e:
             log.debug(f"[GEO] {provider.__name__} failed for {ip}: {e}")
             continue
+    if result:
+        # Provider strings are rendered in dashboards: sanitise before caching
+        # (ip-api.com answers over plain HTTP — an on-path attacker controls them).
+        for k in ("country_name", "city", "org", "asn"):
+            if k in result:
+                result[k] = _safe_str(result[k], 120)
+        result["country_code"] = _safe_str(result.get("country_code"), 8).upper()
     if not result:
         # All providers failed: write a NEGATIVE entry so the packet path stops
         # re-scheduling this IP on every packet. Retried after _GEO_RETRY_SEC.
@@ -1024,6 +1062,12 @@ class NetState:
         self._dns_tracker          = defaultdict(list)
         self.ip_hit_counter        = defaultdict(int)
         self.ip_last_seen          = {}   # ip -> last packet ts (drives prune_ip_tables)
+        # Anti-spoofing: flows WE initiated. Key (remote_ip, remote_port, local_port) -> ts.
+        # An inbound packet whose reverse key is here belongs to a real conversation;
+        # a blind spoofer cannot know the ephemeral-port pairing.
+        self.flows                 = {}
+        self.outbound_seen         = {}   # remote ip -> ts of our last packet TO it
+        self.block_failures        = 0    # netsh/iptables returned non-zero (no admin?)
         self.dpi_alerts            = deque(maxlen=200)
         self.suricata_alerts       = deque(maxlen=200)
         self.record_active         = False
@@ -1416,6 +1460,7 @@ def suricata_add_custom_rule(msg: str, pattern_str: str, proto: str = "TCP",
                               severity: str = "high", action: str = "alert") -> dict:
     """Ajoute une règle personnalisée"""
     global SURICATA_LOADED
+    msg = _safe_str(msg, 120)
     try:
         sid = 9900000 + len(SURICATA_CUSTOM_RULES) + 1
         pattern = re.compile(pattern_str.encode() if isinstance(pattern_str, str) else pattern_str,
@@ -1533,10 +1578,16 @@ def _get_backup_fernet():
         log.error(f"[BACKUP] Cannot init backup encryption: {e}")
         return None
 
+_BACKUP_BASENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
 def backup_create(name: str = "", include: list = None) -> dict:
-    """Create a backup of NetGuard Pro configuration"""
+    """Create a backup of NetGuard configuration"""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if name and (not isinstance(name, str) or not _BACKUP_BASENAME_RE.match(name) or ".." in name):
+        return {"ok": False, "error": "Nom de backup invalide (lettres/chiffres/_/.- seulement)"}
+    if not isinstance(include, (list, type(None))):
+        return {"ok": False, "error": "include invalide"}
     backup_name = name or f"netguard_backup_{ts}"
     backup_path = os.path.join(BACKUP_DIR, f"{backup_name}.json")
 
@@ -1620,12 +1671,17 @@ def backup_restore(filename: str) -> dict:
             _secure_json_write(SETTINGS_FILE, data["settings"])
 
         if "blocked_ips" in data:
-            BLOCKED_IPS.clear()
-            BLOCKED_IPS.update(data["blocked_ips"])
+            ips = data["blocked_ips"]
+            if isinstance(ips, list):            # a string would add one entry per character
+                BLOCKED_IPS.clear()
+                BLOCKED_IPS.update(ip for ip in ips if isinstance(ip, str) and _validate_ip(ip))
 
         if "geo_countries" in data:
             global GEO_BLOCKED_COUNTRIES
-            GEO_BLOCKED_COUNTRIES = set(data["geo_countries"])
+            countries = data["geo_countries"]
+            if isinstance(countries, list):
+                GEO_BLOCKED_COUNTRIES = {c.upper() for c in countries
+                                         if isinstance(c, str) and re.fullmatch(r"[A-Za-z]{2}", c)}
 
         load_settings()
         log.info(f"[BACKUP] Restored: {filename}")
@@ -1649,9 +1705,16 @@ def backup_list() -> list:
     return backups
 
 def backup_delete(filename: str) -> dict:
-    """Delete a backup file"""
-    path = os.path.join(BACKUP_DIR, filename)
-    if os.path.exists(path):
+    """Delete a backup file (same containment rules as backup_restore).
+    Before: os.path.join(BACKUP_DIR, filename) with an absolute or ../ filename
+    deleted ANY file reachable by the process."""
+    if not isinstance(filename, str) or not _BACKUP_NAME_RE.match(filename):
+        return {"ok": False, "error": "Nom de backup invalide"}
+    base_real = os.path.realpath(BACKUP_DIR)
+    path = os.path.realpath(os.path.join(BACKUP_DIR, filename))
+    if os.path.dirname(path) != base_real:
+        return {"ok": False, "error": "Chemin hors du dossier de backups"}
+    if os.path.isfile(path):
         os.remove(path)
         return {"ok": True}
     return {"ok": False, "error": "File not found"}
@@ -1995,10 +2058,18 @@ def record_list() -> list:
     except Exception:
         return []
 
-def auto_block_check(src_ip: str):
+def _flow_established(src_ip: str, src_port: int, dst_port: int) -> bool:
+    """True when we previously sent a packet to (src_ip, src_port) from dst_port."""
+    return (src_ip, src_port, dst_port) in STATE.flows
+
+def auto_block_check(src_ip: str, established: bool = False):
     if not CFG.auto_block_enabled:
         return
     if is_whitelisted(src_ip) or is_private(src_ip):
+        return
+    # Evidence from a packet that is NOT part of a conversation we initiated is
+    # spoofable: never let it block a server we are actively talking to.
+    if not established and src_ip in STATE.outbound_seen:
         return
     STATE.ip_hit_counter[src_ip] += 1
     if STATE.ip_hit_counter[src_ip] >= CFG.auto_block_hits:
@@ -2082,6 +2153,8 @@ def _label_special_ip(ip: str) -> str:
 
 def _validate_ip(ip: str) -> bool:
     """Valide qu'une chaîne est une adresse IP légitime (anti-injection)"""
+    if not isinstance(ip, str):        # JSON int 16843009 would parse as 1.1.1.1
+        return False
     try:
         ipaddress.ip_address(ip)
         return True
@@ -2089,27 +2162,122 @@ def _validate_ip(ip: str) -> bool:
         log.error(f"[SECURITY] IP invalide rejetée: {ip!r}")
         return False
 
-def block_ip_os(ip: str, reason: str):
+_NET_STR_MAX = 200
+
+def _safe_str(value, limit: int = _NET_STR_MAX) -> str:
+    """Network-derived strings (DNS names, geo city/org, hostnames, rule messages,
+    honeypot banners) end up in dashboards via innerHTML and in log lines.
+    Strip control characters and HTML delimiters, collapse to one line, cap length.
+    (superaudit 2026-09-30: stored XSS via DNS qname / ip-api.com city / PTR hostname)"""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    value = re.sub(r"\s+", " ", value)          # tabs/newlines become separators, not glue
+    cleaned = "".join(ch for ch in value if ch.isprintable() and ch not in "<>\"'`")
+    return " ".join(cleaned.split())[:limit]
+
+def _as_int(value, default: int, lo: int, hi: int) -> int:
+    """Coerce a client-supplied value to a bounded int (never raises)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+# ── Automatic blocking guard rails (superaudit 2026-09-30) ───────────────
+# Before: any detector could call block_ip_os() on any public IP, including the
+# whitelist (8.8.8.8, 1.1.1.1), with no rate limit, and the netsh call ran under
+# STATE.lock inside the sniff callback. A spoofed-source flood could lock the
+# user out of its own DNS / CDN / update servers and stall packet capture.
+_AUTO_BLOCK_WINDOW: deque = deque(maxlen=500)   # timestamps of recent auto-blocks
+_AUTO_BLOCK_MAX_PER_MIN = 20
+_OS_RULE_QUEUE: "queue.Queue[tuple]" = queue.Queue(maxsize=2000)
+_OS_RULE_WORKER_STARTED = False
+_OS_RULE_LOCK = threading.Lock()
+
+def _apply_os_rule(action: str, ip: str) -> bool:
+    """Run the firewall command for one IP. Returns True when the OS accepted it."""
+    try:
+        if IS_LINUX:
+            flag = "-I" if action == "block" else "-D"
+            tool = "ip6tables" if ":" in ip else "iptables"
+            r = _subprocess.run([tool, flag, "INPUT", "-s", ip, "-j", "DROP"],
+                                capture_output=True, timeout=10)
+        elif IS_WINDOWS:
+            rule_name = f"NetGuard_Block_{ip.replace('.', '_').replace(':', '-')}"
+            if action == "block":
+                r = _subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
+                                     f"name={rule_name}", "dir=in", "action=block",
+                                     f"remoteip={ip}", "enable=yes"],
+                                    capture_output=True, timeout=10)
+            else:
+                r = _subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule",
+                                     f"name={rule_name}"],
+                                    capture_output=True, timeout=10)
+        else:
+            return False
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or b"").decode(errors="replace").strip()[:200]
+            log.error(f"[FIREWALL] {action} {ip} refusé par l'OS (code {r.returncode}): {err}")
+            STATE.block_failures += 1
+            STATE.timeline_events.appendleft({
+                "ts": datetime.now().strftime("%H:%M:%S"), "type": "block_failed",
+                "ip": ip, "country": "", "severity": "high",
+            })
+            return False
+        return True
+    except Exception as e:
+        log.error(f"[FIREWALL] Erreur {action} OS pour {ip}: {e}")
+        STATE.block_failures += 1
+        return False
+
+def _os_rule_worker():
+    while True:
+        action, ip = _OS_RULE_QUEUE.get()
+        try:
+            _apply_os_rule(action, ip)
+        finally:
+            _OS_RULE_QUEUE.task_done()
+
+def _enqueue_os_rule(action: str, ip: str):
+    """Firewall commands run on a worker thread so the sniff callback (which holds
+    STATE.lock) never blocks on netsh (up to 10 s each)."""
+    global _OS_RULE_WORKER_STARTED
+    if not _OS_RULE_WORKER_STARTED:
+        with _OS_RULE_LOCK:
+            if not _OS_RULE_WORKER_STARTED:
+                threading.Thread(target=_os_rule_worker, name="os-rule-worker", daemon=True).start()
+                _OS_RULE_WORKER_STARTED = True
+    try:
+        _OS_RULE_QUEUE.put_nowait((action, ip))
+    except queue.Full:
+        log.error(f"[FIREWALL] file de règles saturée, {action} {ip} non appliqué")
+
+def block_ip_os(ip: str, reason: str, manual: bool = False):
+    """Add `ip` to the blocklist and schedule the OS rule.
+    Automatic blocks (manual=False) never touch private / whitelisted IPs and are
+    rate-limited to _AUTO_BLOCK_MAX_PER_MIN per minute."""
     if ip in BLOCKED_IPS:
         return
     if not _validate_ip(ip):
         return
+    if not manual:
+        if is_private(ip) or is_whitelisted(ip):
+            log.info(f"[BLOCK] ignoré (privée/liste blanche): {ip} — {reason}")
+            return
+        now = time.time()
+        while _AUTO_BLOCK_WINDOW and _AUTO_BLOCK_WINDOW[0] < now - 60:
+            _AUTO_BLOCK_WINDOW.popleft()
+        if len(_AUTO_BLOCK_WINDOW) >= _AUTO_BLOCK_MAX_PER_MIN:
+            log.warning(f"[BLOCK] limite de {_AUTO_BLOCK_MAX_PER_MIN} blocages/min atteinte, {ip} non bloquée")
+            return
+        _AUTO_BLOCK_WINDOW.append(now)
     BLOCKED_IPS.add(ip)
-    log.warning(f"[BLOCK] {ip} — {reason}")
+    log.warning(f"[BLOCK] {ip} — {_safe_str(reason)}")
     if not CFG.can_block:
         return
-    try:
-        if IS_LINUX:
-            _subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
-                            capture_output=True, timeout=10)
-        elif IS_WINDOWS:
-            rule_name = f"NetGuard_Block_{ip.replace('.','_')}"
-            _subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
-                             f"name={rule_name}", "dir=in", "action=block",
-                             f"remoteip={ip}", "enable=yes"],
-                            capture_output=True, timeout=10)
-    except Exception as e:
-        log.error(f"Erreur blocage OS pour {ip}: {e}")
+    _enqueue_os_rule("block", ip)
 
 def unblock_ip_os(ip: str):
     if not _validate_ip(ip):
@@ -2127,7 +2295,21 @@ def unblock_ip_os(ip: str):
     except Exception as e:
         log.error(f"Erreur déblocage OS pour {ip}: {e}")
 
+_THREAT_LAST: dict = {}          # (ip, type) -> (ts, threat dict)
+_THREAT_COOLDOWN_SEC = 10        # same (ip, type) at most once per 10 s
+
 def add_threat(src_ip: str, threat_type: str, description: str, severity: str, rule_key: str = None):
+    threat_type = _safe_str(threat_type, 120)
+    description = _safe_str(description, 300)
+    # Per-(ip, type) cooldown: a spoofed feed/OTX IP at 10k pps would otherwise
+    # create one threat + one log line + one webhook thread per packet.
+    key = (src_ip, threat_type)
+    now_ts = time.time()
+    last = _THREAT_LAST.get(key)
+    if last and now_ts - last[0] < _THREAT_COOLDOWN_SEC:
+        return last[1]
+    if len(_THREAT_LAST) > 10000:
+        _THREAT_LAST.clear()
     country = get_country(src_ip) or ""
     now = datetime.now()
     threat = {
@@ -2141,6 +2323,7 @@ def add_threat(src_ip: str, threat_type: str, description: str, severity: str, r
         "country":     country,
     }
     STATE.threats.appendleft(threat)
+    _THREAT_LAST[key] = (now_ts, threat)
     if rule_key and rule_key in RULES:
         RULES[rule_key]["hits"] += 1
 
@@ -2534,8 +2717,11 @@ def _fetch_threat_feeds():
             log.info(f"[THREAT-FEED] {name}: {len(new_ips)} IPs")
         except Exception as e:
             log.warning(f"[THREAT-FEED] Erreur {name}: {e}")
-    THREAT_FEED_IPS = new_ips
-    THREAT_FEED_LAST_UPDATE = time.time()
+    if new_ips:                       # both feeds down → keep the previous list
+        THREAT_FEED_IPS = new_ips
+        THREAT_FEED_LAST_UPDATE = time.time()
+    else:
+        log.warning("[THREAT-FEED] aucun feed téléchargé, liste précédente conservée")
     log.info(f"[THREAT-FEED] Total: {len(THREAT_FEED_IPS)} IPs de threat feeds")
 
 def _schedule_feed_refresh():
@@ -2966,6 +3152,16 @@ def analyze_packet(pkt):
         else:
             STATE.bytes_out += pkt_len
 
+        # Flow table (anti-spoofing): remember conversations WE initiate.
+        _now_flow = time.time()
+        if is_private(src_ip) and not is_private(dst_ip):
+            STATE.outbound_seen[dst_ip] = _now_flow
+            if dst_port or src_port:
+                STATE.flows[(dst_ip, dst_port, src_port)] = _now_flow
+            established = False
+        else:
+            established = _flow_established(src_ip, src_port, dst_port)
+
         if src_ip in BLOCKED_IPS:
             decision = "block"
             reason   = "IP blacklistée"
@@ -2985,18 +3181,18 @@ def analyze_packet(pkt):
             decision = "block"
             add_threat(src_ip, "OTX IOC", f"IP trouvée dans AlienVault OTX", "high")
 
-        # v3.0 — Threat intel (async, first-time only)
+        # v3.0 — Threat intel (async, first-time only, single worker + bounded queue)
         if not is_private(src_ip) and src_ip not in _CHECKED_IPS:
             _CHECKED_IPS.add(src_ip)
             if CFG.virustotal_enabled:
-                threading.Thread(target=_vt_check_ip, args=(src_ip,), daemon=True).start()
+                _schedule_intel_lookup(src_ip)
 
         # ── DNS Blackhole ───────────────────────────────────────────────
         if RULES.get("detect_malicious_dns", {}).get("enabled", True) and pkt.haslayer("DNS"):
             try:
                 from scapy.layers.dns import DNS, DNSQR
                 if pkt[DNS].qr == 0 and pkt.haslayer(DNSQR):
-                    queried = pkt[DNSQR].qname.decode(errors="replace").rstrip(".")
+                    queried = _safe_str(pkt[DNSQR].qname.decode(errors="replace").rstrip("."), 253)
                     if dns_blackhole_check(queried):
                         decision = "block"
                         reason   = f"DNS Blackhole: {queried}"
@@ -3022,7 +3218,9 @@ def analyze_packet(pkt):
             RULES["block_p2p"]["hits"] += 1
         else:
             if not is_private(src_ip):
-                scan_reason = detect_port_scan(src_ip, dst_port)
+                # Only SYN packets count as scan probes: server replies to our own
+                # ephemeral ports (any page load = 15+ ports in 10 s) are not a scan.
+                scan_reason = detect_port_scan(src_ip, dst_port) if is_syn else None
                 if scan_reason:
                     decision = "block"
                     reason   = scan_reason
@@ -3068,7 +3266,7 @@ def analyze_packet(pkt):
                     STATE.dpi_alerts.appendleft(alert)
                     if hit["type"] == "attack":
                         add_threat(src_ip, f"DPI: {hit['detail']}", f"Payload suspect", "high")
-                        auto_block_check(src_ip)
+                        auto_block_check(src_ip, established)
 
         # ── Suricata IDS ───────────────────────────────────────────────
         if SURICATA_ENABLED and decision == "allow":
@@ -3087,7 +3285,7 @@ def analyze_packet(pkt):
                     STATE.suricata_alerts.appendleft(alert)
                     add_threat(src_ip, f"IDS: {hit['msg']}", f"Règle #{hit['sid']} déclenchée", hit["severity"])
                     if hit["severity"] in ("critical", "high"):
-                        auto_block_check(src_ip)
+                        auto_block_check(src_ip, established)
 
         # v3.0 — JA3 Fingerprinting
         if CFG.ja3_enabled and pkt.haslayer(Raw):
@@ -3104,13 +3302,13 @@ def analyze_packet(pkt):
         # v3.0 — DNS entropy
         if CFG.entropy_enabled and pkt.haslayer(DNS) and pkt[DNS].qr == 0:
             try:
-                qname = pkt[DNS].qd.qname.decode(errors="replace").rstrip(".")
+                qname = _safe_str(pkt[DNS].qd.qname.decode(errors="replace").rstrip("."), 253)
                 entropy_check_dns(src_ip, qname)
             except Exception:
                 pass
 
         if decision == "block" and not is_private(src_ip):
-            auto_block_check(src_ip)
+            auto_block_check(src_ip, established)
             # Track geo hits for attacker stats
             country = get_country(src_ip)
             if country:
@@ -3171,13 +3369,13 @@ def analyze_packet(pkt):
             "src":      src_ip, "dst": dst_ip,
             "sport":    src_port, "dport": dst_port,
             "proto":    proto, "size": f"{pkt_len}B",
-            "status":   decision, "reason": reason, "flags": flags,
+            "status":   decision, "reason": _safe_str(reason), "flags": flags,
             "country":  country_code,
-            "city":     city,
-            "location": location,
+            "city":     _safe_str(city, 80),
+            "location": _safe_str(location, 120),
             "lat":      lat,
             "lon":      lon,
-            "process":  process_label,  # NEW — "chrome.exe (1234)" or "" if unknown
+            "process":  _safe_str(process_label, 120),  # "chrome.exe (1234)" or "" if unknown
         }
         STATE.recent_packets.appendleft(_pkt_entry)
         # Per-IP ring buffer: each IP keeps its own 4 newest packets. Chatty IPs
@@ -3194,7 +3392,13 @@ REPORTS_DIR = pathlib.Path("reports")
 def ensure_reports_dir():
     REPORTS_DIR.mkdir(exist_ok=True)
 
+_REPORT_TYPES = ("full", "packets", "threats")
+_REPORT_FORMATS = ("json", "csv")
+
 def _report_filename(report_type: str, fmt: str) -> pathlib.Path:
+    # Both values come from the WebSocket client and are embedded in a path.
+    if report_type not in _REPORT_TYPES or fmt not in _REPORT_FORMATS:
+        raise ValueError("report_type/format invalide")
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return REPORTS_DIR / f"netguard_{report_type}_{ts}.{fmt}"
 
@@ -3239,15 +3443,32 @@ def prune_ip_tables(now: float = None) -> int:
     cache_cutoff = now - _IP_CACHE_TTL_SEC
     with STATE.lock:
         idle = [ip for ip, ts in STATE.ip_last_seen.items() if ts < live_cutoff]
-        # Hard cap: drop the oldest beyond _IP_TABLE_MAX even if not idle
-        if len(STATE.ip_last_seen) - len(idle) > _IP_TABLE_MAX:
-            excess = len(STATE.ip_last_seen) - len(idle) - _IP_TABLE_MAX
+        # Hard cap on LIVE entries (bytes_per_ip is the largest live table)
+        live_count = len(STATE.bytes_per_ip)
+        if live_count > _IP_TABLE_MAX:
+            excess = live_count - _IP_TABLE_MAX
             oldest = sorted(
-                ((ts, ip) for ip, ts in STATE.ip_last_seen.items() if ts >= live_cutoff)
+                ((STATE.ip_last_seen.get(ip, 0), ip) for ip in STATE.bytes_per_ip)
             )[:excess]
             idle.extend(ip for _, ip in oldest)
-        for ip in idle:
+            idle = list(dict.fromkeys(idle))
+        # ip_last_seen itself is kept for _IP_CACHE_TTL_SEC (it drives the 24 h
+        # cache eviction below); the live tables are dropped after _IP_TABLE_TTL_SEC.
+        for ip in [ip for ip, ts in STATE.ip_last_seen.items() if ts < cache_cutoff]:
             STATE.ip_last_seen.pop(ip, None)
+        if len(STATE.ip_last_seen) > 50000:
+            for ip in list(STATE.ip_last_seen)[: len(STATE.ip_last_seen) - 50000]:
+                STATE.ip_last_seen.pop(ip, None)
+        # Anti-spoofing flow table: short-lived by design
+        flow_cutoff = now - 300
+        for key in [k for k, ts in STATE.flows.items() if ts < flow_cutoff]:
+            del STATE.flows[key]
+        if len(STATE.flows) > 50000:
+            for key in list(STATE.flows)[: len(STATE.flows) - 50000]:
+                del STATE.flows[key]
+        for ip in [ip for ip, ts in STATE.outbound_seen.items() if ts < now - 600]:
+            del STATE.outbound_seen[ip]
+        for ip in idle:
             STATE.bytes_per_ip.pop(ip, None)
             STATE.bytes_per_ip_per_sec.pop(ip, None)
             STATE.process_per_ip.pop(ip, None)
@@ -3591,7 +3812,7 @@ def scan_lan() -> list:
                 for sent, received in result:
                     hostname = ""
                     try:
-                        hostname = socket.gethostbyaddr(received.psrc)[0]
+                        hostname = _safe_str(socket.gethostbyaddr(received.psrc)[0], 253)
                     except Exception:
                         pass
                     devices.append({
@@ -3628,7 +3849,7 @@ def scan_lan() -> list:
                     if result.returncode == 0:
                         hostname = ""
                         try:
-                            hostname = socket.gethostbyaddr(ip)[0]
+                            hostname = _safe_str(socket.gethostbyaddr(ip)[0], 253)
                         except Exception:
                             pass
                         return {"ip": ip, "mac": "—", "hostname": hostname, "vendor": "—", "status": "up", "open_ports": []}
@@ -3688,7 +3909,7 @@ class HoneypotServer:
         # Log l'intrusion
         hit = {
             "ts":      datetime.now().strftime("%H:%M:%S"),
-            "ip":      ip,
+            "ip":      _safe_str(ip, 45),
             "port":    self.port,
             "service": self.service_name,
             "country": get_country(ip) or "?",
@@ -3744,8 +3965,27 @@ async def start_honeypots():
         asyncio.create_task(hp.start())
     log.info(f"[HONEYPOT] {len(HONEYPOT_SERVERS)} services honeypot démarrés")
 
+# Scalar tuning knobs the dashboard may change via update_param. Paths, secrets,
+# the whitelist and can_block are deliberately NOT in this list.
+_UPDATABLE_PARAMS = frozenset({
+    "port_scan_threshold", "port_scan_window", "brute_force_threshold", "brute_force_window",
+    "syn_flood_threshold", "syn_flood_window", "dns_tunnel_threshold", "auto_block_hits",
+    "record_rotate_min", "record_max_files", "anomaly_zscore", "anomaly_baseline_min",
+    "correlation_window", "discord_min_severity", "telegram_min_severity",
+})
+
+_MAIN_LOOP = None   # asyncio loop serving the WebSocket clients (set in ws_handler)
+
+def _ws_loop():
+    """Loop to hand to run_coroutine_threadsafe from worker threads.
+    asyncio.get_event_loop() inside a plain thread raises on Python 3.10+."""
+    return _MAIN_LOOP or asyncio.get_event_loop()
+
 async def handle_ws_command(ws, msg: dict):
     global CLIENTS, _VAULT_LOCKED_WARNED
+    if not isinstance(msg, dict):
+        await ws.send(json.dumps({"type": "error", "error": "message invalide"}))
+        return
     cmd = msg.get("cmd")
 
     if cmd == "get_state":
@@ -3757,28 +3997,30 @@ async def handle_ws_command(ws, msg: dict):
             await ws.send(json.dumps({"type": "rule_updated", "rule": key, "enabled": RULES[key]["enabled"]}))
     elif cmd == "block_ip":
         ip = msg.get("ip", "")
-        reason = msg.get("reason", "Blocage manuel")
-        if ip:
-            block_ip_os(ip, reason)
+        reason = _safe_str(msg.get("reason", "Blocage manuel"))
+        if _validate_ip(ip):
+            block_ip_os(ip, reason, manual=True)
             add_threat(ip, "Blocage manuel", reason, "med")
             await ws.send(json.dumps({"type": "ip_blocked", "ip": ip}))
+        else:
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "IP invalide"}))
     elif cmd == "unblock_ip":
         ip = msg.get("ip", "")
-        if ip:
+        if _validate_ip(ip):
             unblock_ip_os(ip)
             await ws.send(json.dumps({"type": "ip_unblocked", "ip": ip}))
     elif cmd == "get_blocked_ips":
         await ws.send(json.dumps({"type": "blocked_ips", "ips": list(BLOCKED_IPS)}))
     elif cmd == "traceroute":
-        ip = (msg.get("ip") or "").strip()
-        max_hops = int(msg.get("max_hops", 30) or 30)
+        ip = (msg.get("ip") or "").strip() if isinstance(msg.get("ip"), str) else ""
+        max_hops = _as_int(msg.get("max_hops", 30), 30, 1, 64)
         # Notify start so the UI can show a spinner
         try:
             await ws.send(json.dumps({"type": "traceroute_started", "target": ip, "max_hops": max_hops}))
         except Exception:
             pass
         # Run blocking scapy.sr() in executor — total ~3-6 seconds wall time
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(None, _traceroute, ip, max_hops)
         await ws.send(json.dumps({"type": "traceroute_result", **result}))
     elif cmd == "clear_threats":
@@ -3811,8 +4053,7 @@ async def handle_ws_command(ws, msg: dict):
     elif cmd == "get_dpi_alerts":
         await ws.send(json.dumps({"type": "dpi_alerts", "alerts": list(STATE.dpi_alerts)[:50]}))
     elif cmd == "set_auto_block_hits":
-        val = int(msg.get("value", 10))
-        CFG.auto_block_hits = max(1, min(50, val))
+        CFG.auto_block_hits = _as_int(msg.get("value", 10), 10, 1, 50)
         await ws.send(json.dumps({"type": "auto_block_updated", "hits": CFG.auto_block_hits}))
     elif cmd == "toggle_auto_block":
         CFG.auto_block_enabled = not CFG.auto_block_enabled
@@ -3820,12 +4061,17 @@ async def handle_ws_command(ws, msg: dict):
     elif cmd == "update_param":
         key = msg.get("key", "")
         val = msg.get("value")
-        if hasattr(CFG, key) and val is not None:
+        # Before: any attribute of CFG was settable, including "__dict__" (wiped
+        # the config), record_dir (pcap written anywhere), whitelist, can_block.
+        if (isinstance(key, str) and key in _UPDATABLE_PARAMS and val is not None
+                and isinstance(val, (int, float, str, bool))):
             try:
                 setattr(CFG, key, type(getattr(CFG, key))(val))
                 await ws.send(json.dumps({"type": "param_updated", "key": key}))
             except Exception as e:
                 await ws.send(json.dumps({"type": "param_error", "error": str(e)}))
+        else:
+            await ws.send(json.dumps({"type": "param_error", "error": "paramètre non modifiable"}))
 
     # ── v1.6.0 — Suricata IDS ─────────────────────────────────────────
     elif cmd == "toggle_suricata":
@@ -3893,7 +4139,7 @@ async def handle_ws_command(ws, msg: dict):
             result = load_et_rules_online(ruleset)
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "et_rules_loaded", "ruleset": ruleset, **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_load, daemon=True).start()
         await ws.send(json.dumps({"type": "et_rules_loading", "ruleset": ruleset}))
@@ -3928,16 +4174,25 @@ async def handle_ws_command(ws, msg: dict):
             devices = scan_lan()
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type":"lan_scan_result","devices":devices,"count":len(devices)})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_do_scan, daemon=True).start()
 
     # ── Honeypot ───────────────────────────────────────────────────────────
     elif cmd == "toggle_honeypot":
-        global HONEYPOT_ENABLED
+        global HONEYPOT_ENABLED, HONEYPOT_SERVERS
         HONEYPOT_ENABLED = not HONEYPOT_ENABLED
         if HONEYPOT_ENABLED and not HONEYPOT_SERVERS:
             asyncio.create_task(start_honeypots())
+        elif not HONEYPOT_ENABLED:
+            # Before: toggling off left 21/22/23/3389/8080 listening forever.
+            for hp in HONEYPOT_SERVERS:
+                try:
+                    if hp.server:
+                        hp.server.close()
+                except Exception:
+                    pass
+            HONEYPOT_SERVERS = []
         await ws.send(json.dumps({"type":"honeypot_toggled","enabled":HONEYPOT_ENABLED,"ports":[p for p,_,_ in HONEYPOT_CONFIGS]}))
 
     elif cmd == "get_honeypot_hits":
@@ -3978,6 +4233,9 @@ async def handle_ws_command(ws, msg: dict):
         # Write to vault when available + unlocked; otherwise fall back to CFG.
         v = _get_vault()
         vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
         if "vt_key" in msg:
             val = msg["vt_key"]
             if vault_writable and val:
@@ -4049,6 +4307,9 @@ async def handle_ws_command(ws, msg: dict):
         url = msg.get("url", "")
         v = _get_vault()
         vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
         if vault_writable and url:
             try:
                 v.set("netguard.discord.webhook_url", url)
@@ -4072,6 +4333,9 @@ async def handle_ws_command(ws, msg: dict):
         chat_id = msg.get("chat_id", "")
         v = _get_vault()
         vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
         if vault_writable and token:
             try:
                 v.set("netguard.telegram.bot_token", token)
@@ -4299,12 +4563,12 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "forensic_reports", "reports": list(STATE.forensic_reports)}))
     elif cmd == "generate_forensic":
         ip = msg.get("ip", "")
-        if ip:
+        if _validate_ip(ip):          # the IP is embedded in the report filename
             def _gen():
                 path = generate_forensic_report(ip, "Manuel")
                 asyncio.run_coroutine_threadsafe(
                     ws.send(json.dumps({"type": "forensic_generated", "ip": ip, "path": path})),
-                    asyncio.get_event_loop()
+                    _ws_loop()
                 )
             threading.Thread(target=_gen, daemon=True).start()
             await ws.send(json.dumps({"type": "forensic_generating", "ip": ip}))
@@ -4318,7 +4582,7 @@ async def handle_ws_command(ws, msg: dict):
         if "endpoint" in msg:
             CFG.wg_endpoint = msg["endpoint"]
         if "listen_port" in msg:
-            CFG.wg_listen_port = int(msg["listen_port"])
+            CFG.wg_listen_port = _as_int(msg["listen_port"], CFG.wg_listen_port, 1, 65535)
         if "address" in msg:
             CFG.wg_address = msg["address"]
         if "dns" in msg:
@@ -4336,7 +4600,7 @@ async def handle_ws_command(ws, msg: dict):
             result = backup_create(name, include)
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "backup_created", **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_backup, daemon=True).start()
         await ws.send(json.dumps({"type": "backup_creating"}))
@@ -4347,7 +4611,7 @@ async def handle_ws_command(ws, msg: dict):
             result = backup_restore(filename)
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "backup_restored", **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_restore, daemon=True).start()
         await ws.send(json.dumps({"type": "backup_restoring"}))
@@ -4689,6 +4953,8 @@ async def ws_handler(websocket):
     except Exception:
         return
     CLIENTS.add(websocket)
+    global _MAIN_LOOP
+    _MAIN_LOOP = asyncio.get_running_loop()
     log.info(f"[WS] Client authenticated: {websocket.remote_address}")
     try:
         await websocket.send(json.dumps(build_state_message()))
@@ -4697,7 +4963,16 @@ async def ws_handler(websocket):
                 msg = json.loads(raw)
                 if isinstance(msg, dict) and msg.get("cmd") == "auth":
                     continue  # already authenticated; ignore late auth attempts
-                await handle_ws_command(websocket, msg)
+                try:
+                    await handle_ws_command(websocket, msg)
+                except Exception as e:
+                    # A malformed command must not drop the session (and must not
+                    # leak a traceback to the client).
+                    log.warning(f"[WS] commande {msg.get('cmd') if isinstance(msg, dict) else '?'} en erreur: {type(e).__name__}: {e}")
+                    try:
+                        await websocket.send(json.dumps({"type": "error", "cmd": msg.get("cmd") if isinstance(msg, dict) else None, "error": "commande invalide"}))
+                    except Exception:
+                        pass
             except json.JSONDecodeError:
                 pass
     except Exception as e:
