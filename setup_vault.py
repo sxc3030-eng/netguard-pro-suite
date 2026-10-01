@@ -1,4 +1,4 @@
-"""NetGuard Pro Suite — Secret Vault interactive setup.
+"""NetGuard AI Suite — Secret Vault interactive setup.
 
 Run this in YOUR terminal (CMD / PowerShell / Git Bash):
 
@@ -232,7 +232,7 @@ def summary(vault) -> None:
 
 def main() -> int:
     print()
-    print("  NetGuard Pro Suite — Secret Vault interactive setup")
+    print("  NetGuard AI Suite — Secret Vault interactive setup")
     print()
     if not check_deps():
         return 1

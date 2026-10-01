@@ -1,4 +1,4 @@
-# NetGuard Pro - Brand Mark
+# NetGuard AI - Brand Mark
 
 A shield with a bold center lettermark, framed by a tri-color gradient ring
 and an inner containment line. Designed to swap a single character for each

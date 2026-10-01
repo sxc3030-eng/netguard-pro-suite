@@ -14,11 +14,11 @@ if %errorLevel% neq 0 (
 REM ── Now running as Administrator ─────────────────────────────
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
-title NetGuard Pro (Admin) — sniffer + AI
+title NetGuard AI (Admin) — sniffer + AI
 
 echo.
 echo  +============================================+
-echo  !  NetGuard Pro — ADMIN MODE                 !
+echo  !  NetGuard AI — ADMIN MODE                 !
 echo  !  Sniffer scapy + Claude AI assistant       !
 echo  +============================================+
 echo.

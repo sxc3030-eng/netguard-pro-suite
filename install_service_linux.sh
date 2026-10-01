@@ -3,7 +3,7 @@ set -e
 
 echo ""
 echo " ╔══════════════════════════════════════════════╗"
-echo " ║   NetGuard Pro — Installation Service Linux ║"
+echo " ║   NetGuard AI — Installation Service Linux ║"
 echo " ║   Démarrage automatique via systemd         ║"
 echo " ╚══════════════════════════════════════════════╝"
 echo ""
@@ -54,7 +54,7 @@ echo " [OK] Dépendances installées"
 # Créer le fichier service systemd
 cat > /etc/systemd/system/netguard-pro.service << EOF
 [Unit]
-Description=NetGuard Pro — Surveillance réseau temps réel
+Description=NetGuard AI — Surveillance réseau temps réel
 After=network.target
 Wants=network.target
 
@@ -87,7 +87,7 @@ if systemctl is-active --quiet netguard-pro; then
     echo " ╔══════════════════════════════════════════════╗"
     echo " ║  Installation réussie !                     ║"
     echo " ║                                             ║"
-    echo " ║  NetGuard Pro tourne en arrière-plan.       ║"
+    echo " ║  NetGuard AI tourne en arrière-plan.       ║"
     echo " ║  Démarre automatiquement au boot.           ║"
     echo " ║                                             ║"
     echo " ║  Dashboard : netguard_dashboard.html        ║"

@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Bilan & Historique</title>
+<title>NetGuard AI — Bilan & Historique</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -457,7 +457,7 @@ function exportPDF() {
   const high     = document.getElementById('s-high').textContent;
   const countries= document.getElementById('s-countries').textContent;
 
-  w.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Rapport ${period}</title>
+  w.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Rapport ${period}</title>
   <style>
     body{font-family:Arial,sans-serif;color:#1a1a2e;padding:30px;max-width:900px;margin:0 auto}
     h1{color:#1a1a2e;border-bottom:3px solid #4d9fff;padding-bottom:10px;margin-bottom:20px}
@@ -472,7 +472,7 @@ function exportPDF() {
     tr:nth-child(even) td{background:#f8f9ff}
     .footer{margin-top:30px;font-size:11px;color:#aaa;border-top:1px solid #eee;padding-top:10px;text-align:center}
   </style></head><body>
-  <h1>🛡️ NetGuard Pro — Rapport de sécurité</h1>
+  <h1>🛡️ NetGuard AI — Rapport de sécurité</h1>
   <p style="color:#888;margin-bottom:20px">Période : <strong>${period}</strong> — Généré le ${new Date().toLocaleString('fr')}</p>
   <div class="stat-row">
     <div class="stat"><div class="stat-val">${total}</div><div class="stat-lbl">Menaces totales</div></div>
@@ -491,7 +491,7 @@ function exportPDF() {
     <td>${CNAMES[h.country]||h.country||'?'}</td>
     <td>${h.blocked?'BLOQUÉ':'Détecté'}</td>
   </tr>`).join('')}</tbody></table>
-  <div class="footer">NetGuard Pro v2.1.0 — Rapport généré automatiquement</div>
+  <div class="footer">NetGuard AI v2.1.0 — Rapport généré automatiquement</div>
   <script>window.onload=()=>{window.print()}<\/script>
   </body></html>`);
   w.document.close();

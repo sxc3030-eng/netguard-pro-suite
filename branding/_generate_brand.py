@@ -1,5 +1,5 @@
 """
-NetGuard Pro - Master Brand Generator
+NetGuard AI - Master Brand Generator
 =====================================
 
 Generates the complete branding asset set:
@@ -689,7 +689,7 @@ def render_variants_grid() -> Image.Image:
     scale_label_font = ImageFont.truetype("C:/Windows/Fonts/segoeuil.ttf", 12)
 
     # ---- Header ----
-    draw.text((pad, 38), "NetGuard Pro", font=head_font, fill=(245, 248, 255, 255))
+    draw.text((pad, 38), "NetGuard AI", font=head_font, fill=(245, 248, 255, 255))
     draw.text((pad, 78),
               "Brand mark system  /  shield + lettermark  /  per-module variant",
               font=sub_font, fill=(150, 158, 178, 255))

@@ -1,5 +1,5 @@
 @echo off
-title NetGuard Pro — Desinstallation Service
+title NetGuard AI — Desinstallation Service
 echo.
 net session >nul 2>&1
 if %errorLevel% neq 0 (
@@ -9,8 +9,8 @@ if %errorLevel% neq 0 (
 )
 
 :: Arreter et supprimer la tache
-schtasks /end /tn "NetGuardPro" >nul 2>&1
-schtasks /delete /tn "NetGuardPro" /f >nul 2>&1
+schtasks /end /tn "NetGuardAI" >nul 2>&1
+schtasks /delete /tn "NetGuardAI" /f >nul 2>&1
 
 :: Tuer le processus Python si actif
 taskkill /f /im python.exe /fi "WINDOWTITLE eq netguard*" >nul 2>&1
@@ -18,7 +18,7 @@ taskkill /f /im python.exe /fi "WINDOWTITLE eq netguard*" >nul 2>&1
 :: Supprimer le launcher VBS
 if exist "%~dp0netguard_service.vbs" del "%~dp0netguard_service.vbs"
 
-echo  [OK] Service NetGuard Pro desinstalle.
+echo  [OK] Service NetGuard AI desinstalle.
 echo  [OK] Il ne demarrera plus au boot.
 echo.
 pause

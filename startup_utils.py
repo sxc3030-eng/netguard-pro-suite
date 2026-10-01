@@ -83,10 +83,10 @@ def toggle_startup(program_name: str, bat_path: str) -> bool:
 
 
 def get_all_startup_states() -> dict:
-    """Get startup states for all NetGuard Pro programs"""
+    """Get startup states for all NetGuard AI programs"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return {
-        "NetGuard Pro": is_startup_enabled("NetGuard Pro"),
+        "NetGuard AI": is_startup_enabled("NetGuard AI"),
         "MailShield Pro": is_startup_enabled("MailShield Pro"),
         "CleanGuard Pro": is_startup_enabled("CleanGuard Pro"),
         "VPN Guard Pro": is_startup_enabled("VPN Guard Pro"),
@@ -112,7 +112,7 @@ def create_tray_icon(program_name: str, on_show=None, on_quit=None):
 
     # Create a simple colored icon
     colors = {
-        "NetGuard Pro": "#4d9fff",
+        "NetGuard AI": "#4d9fff",
         "MailShield Pro": "#3dffb4",
         "CleanGuard Pro": "#ffb347",
         "VPN Guard Pro": "#00d4ff",

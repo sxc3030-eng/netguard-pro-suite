@@ -84,7 +84,7 @@ logger = logging.getLogger("SentinelOS.Cortex")
 # Agent definitions
 AGENTS = {
     "netguard": {
-        "name": "NetGuard Pro",
+        "name": "NetGuard AI",
         "port": 8765,
         "script": os.path.join(BASE_DIR, "netguard.py"),
         "icon": "shield",

@@ -1,4 +1,4 @@
-"""NetGuard Pro Suite — Unified Brand Icon Generator (v3, distinct modules)
+"""NetGuard AI Suite — Unified Brand Icon Generator (v3, distinct modules)
 
 Wraps `branding/modules/_generate_modules.py:render_module_icon` to emit
 multi-size .ico files for every module in the suite. Each module has its

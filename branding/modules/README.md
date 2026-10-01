@@ -1,4 +1,4 @@
-# NetGuard Pro Suite - Module Marks
+# NetGuard AI Suite - Module Marks
 
 Per-module brand marks. Same shield silhouette and color system as the master
 mark in `branding/`, but each module carries its own pictorial metaphor

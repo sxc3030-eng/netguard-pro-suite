@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MailShield Pro - Client Email Securise avec Filtrage Intelligent
-Partie de l'ecosysteme NetGuard Pro
+Partie de l'ecosysteme NetGuard AI
 """
 
 import imaplib

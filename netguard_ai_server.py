@@ -1,4 +1,4 @@
-"""NetGuard Pro — AI window backend.
+"""NetGuard AI — AI window backend.
 
 Local HTTP server that bridges the AI window (netguard_ai.html) to one of
 several LLM providers (Anthropic, OpenAI, Google). Built around a pluggable
@@ -43,7 +43,7 @@ DEFAULT_MAX_TOKENS = 2048
 
 SYSTEM_PROMPTS = {
     "fr": (
-        "Tu es l'assistant IA de NetGuard Pro, une suite de cybersécurité réseau. "
+        "Tu es l'assistant IA de NetGuard AI, une suite de cybersécurité réseau. "
         "Tu aides l'utilisateur à comprendre l'état de son réseau, identifier les menaces, "
         "et recommander des actions concrètes. "
         "Réponds en français, sois direct et opérationnel. "
@@ -52,7 +52,7 @@ SYSTEM_PROMPTS = {
         "et termine toujours par 1-3 actions recommandées."
     ),
     "en": (
-        "You are the AI assistant for NetGuard Pro, a network cybersecurity suite. "
+        "You are the AI assistant for NetGuard AI, a network cybersecurity suite. "
         "You help the user understand the state of their network, identify threats, "
         "and recommend concrete actions. "
         "Answer in English, be direct and operational. "
@@ -61,7 +61,7 @@ SYSTEM_PROMPTS = {
         "and always end with 1-3 recommended actions."
     ),
     "es": (
-        "Eres el asistente IA de NetGuard Pro, una suite de ciberseguridad de red. "
+        "Eres el asistente IA de NetGuard AI, una suite de ciberseguridad de red. "
         "Ayudas al usuario a comprender el estado de su red, identificar amenazas "
         "y recomendar acciones concretas. "
         "Responde en español, sé directo y operacional. "
@@ -253,7 +253,7 @@ def _cap_prompt(name: str, lang: str | None, ctx: str) -> str:
 TOOLS = [
     {
         "name": "get_state",
-        "description": "Read the current NetGuard Pro state — counters, recent threats, blocked IPs, suspicious sources. Read-only, no side effects. Always safe to call.",
+        "description": "Read the current NetGuard AI state — counters, recent threats, blocked IPs, suspicious sources. Read-only, no side effects. Always safe to call.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
         "needs_approval": False,
     },
@@ -310,7 +310,7 @@ TOOLS = [
     },
     {
         "name": "audit_program",
-        "description": "Run a configuration audit on NetGuard Pro. Reads settings, blocked IPs, and active rules. Returns structured findings with severity (critical/high/medium/low), category, and a `suggested_fix` field that names a tool you can call next (e.g. block_ip, toggle_auto_block) to remediate. Read-only, no side effects, no approval required.",
+        "description": "Run a configuration audit on NetGuard AI. Reads settings, blocked IPs, and active rules. Returns structured findings with severity (critical/high/medium/low), category, and a `suggested_fix` field that names a tool you can call next (e.g. block_ip, toggle_auto_block) to remediate. Read-only, no side effects, no approval required.",
         "input_schema": {"type": "object", "properties": {}, "required": []},
         "needs_approval": False,
     },
@@ -1468,7 +1468,7 @@ def run(port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="NetGuard Pro — AI window backend")
+    parser = argparse.ArgumentParser(description="NetGuard AI — AI window backend")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()

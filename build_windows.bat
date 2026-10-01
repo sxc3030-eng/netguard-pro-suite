@@ -1,10 +1,10 @@
 @echo off
-title NetGuard Pro — Build Windows .exe
+title NetGuard AI — Build Windows .exe
 color 0B
 
 echo.
 echo ==========================================
-echo   NetGuard Pro — Build Installateur
+echo   NetGuard AI — Build Installateur
 echo ==========================================
 echo.
 
@@ -40,7 +40,7 @@ echo [INFO] Compilation en cours...
 pyinstaller ^
     --onefile ^
     --noconsole ^
-    --name "NetGuardPro" ^
+    --name "NetGuardAI" ^
     --icon "netguard_icon.ico" ^
     --add-data "*.html;." ^
     --add-data "netguard_settings.json;." ^
@@ -67,7 +67,7 @@ if errorlevel 1 (
 echo.
 echo ==========================================
 echo   Build réussi!
-echo   Fichier: dist\NetGuardPro.exe
+echo   Fichier: dist\NetGuardAI.exe
 echo ==========================================
 echo.
 

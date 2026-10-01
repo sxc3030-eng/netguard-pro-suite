@@ -1,4 +1,4 @@
-# NetGuard Pro Suite — Aggressive Windows icon cache flush.
+# NetGuard AI Suite — Aggressive Windows icon cache flush.
 # Run when desktop / taskbar still shows old icons after replacing .ico files.
 #
 # Effects:

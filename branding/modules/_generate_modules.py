@@ -1,5 +1,5 @@
 """
-NetGuard Pro - Module Icon Generator
+NetGuard AI - Module Icon Generator
 ====================================
 
 Generates 13 per-module icons that share the master shield silhouette and
@@ -88,7 +88,7 @@ except ModuleNotFoundError:
 
 MODULES = [
     # slug,            name,                   tagline,                          accent
-    ("netguard",       "NetGuard Pro",         "Master suite",                   None),
+    ("netguard",       "NetGuard AI",         "Master suite",                   None),
     ("netguard-tray",  "NetGuard Tray",        "System-tray launcher",           None),
     ("netguard-ai",    "AI Assistant",         "On-device intelligence",         "violet"),
     ("mailshield",     "MailShield Pro",       "Mail threat barrier",            None),
@@ -1222,7 +1222,7 @@ def render_overview() -> Image.Image:
     scale_label_font = ImageFont.truetype("C:/Windows/Fonts/segoeuil.ttf", 11)
 
     # Header
-    draw.text((pad, 38), "NetGuard Pro Suite",
+    draw.text((pad, 38), "NetGuard AI Suite",
               font=head_font, fill=(245, 248, 255, 255))
     draw.text((pad, 80),
               "Module marks  /  shared shield, distinct metaphor  /  13-up overview",

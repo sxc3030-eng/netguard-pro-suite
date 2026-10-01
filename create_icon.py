@@ -1,4 +1,4 @@
-"""NetGuard Pro — Icon Generator (.ico)
+"""NetGuard AI — Icon Generator (.ico)
 Generates netguard_icon.ico with multiple sizes for Windows.
 Requires: pip install Pillow
 """

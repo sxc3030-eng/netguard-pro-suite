@@ -1,5 +1,5 @@
 r"""
-NetGuard Pro — Mode Fantôme (System Tray).
+NetGuard AI — Mode Fantôme (System Tray).
 
 Ghost Mode : NetGuard runs silent in background, sleeps unless an anomaly
 arrives, lives only as a tray icon. Click → opens dashboard or Argus.
@@ -329,7 +329,7 @@ def main():
     )
 
     _tray_icon = pystray.Icon(
-        name="NetGuardPro",
+        name="NetGuardAI",
         icon=img,
         title=title,
         menu=menu,
@@ -338,7 +338,7 @@ def main():
     # Background poller — updates icon color + sends balloon notifications
     threading.Thread(target=_polling_loop, daemon=True).start()
 
-    print("NetGuard Pro — Mode Fantôme actif (icône système)")
+    print("NetGuard AI — Mode Fantôme actif (icône système)")
     _tray_icon.run()
 
 

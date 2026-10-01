@@ -1,4 +1,4 @@
-# NetGuard Pro Suite - Recreate ALL desktop shortcuts with v3 distinct icons.
+# NetGuard AI Suite - Recreate ALL desktop shortcuts with v3 distinct icons.
 # Drops a fresh .lnk on the user desktop for each module that has a launcher.
 # Run: powershell -ExecutionPolicy Bypass -File create_suite_shortcuts.ps1
 
@@ -15,8 +15,8 @@ if (-not (Test-Path (Join-Path $scriptDir "netguard_icon.ico"))) {
 }
 
 $shortcuts = @(
-    @{ Name="NetGuard Pro";              Bat="LANCER_NETGUARD.bat";    Icon="netguard_icon.ico";                     Desc="NetGuard Pro - Network Security Monitor v4.1" },
-    @{ Name="NetGuard AI";               Bat="LANCER_NETGUARD_AI.bat"; Icon="netguard_ai_icon.ico";                  Desc="NetGuard Pro - AI Assistant (Claude API)" },
+    @{ Name="NetGuard AI";              Bat="LANCER_NETGUARD.bat";    Icon="netguard_icon.ico";                     Desc="NetGuard AI - Network Security Monitor v4.1" },
+    @{ Name="NetGuard AI";               Bat="LANCER_NETGUARD_AI.bat"; Icon="netguard_ai_icon.ico";                  Desc="NetGuard AI - AI Assistant (Claude API)" },
     @{ Name="MailShield Pro";            Bat="LANCER_MAILSHIELD.bat";  Icon="sentinel\icons\mailshield.ico";         Desc="Secure Email Client" },
     @{ Name="CleanGuard Pro";            Bat="LANCER_CLEANGUARD.bat";  Icon="sentinel\icons\cleanguard.ico";         Desc="System Cleaner & Malware Scanner" },
     @{ Name="SentinelOS";                Bat="LANCER_SENTINEL.bat";    Icon="sentinel\SentinelOS.ico";               Desc="Threat Intelligence & SOAR" },

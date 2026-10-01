@@ -1,6 +1,6 @@
 # Argus tracker blocklist — seed file (V1)
 #
-# Copyright (C) 2026 NetGuard Pro Suite contributors
+# Copyright (C) 2026 NetGuard AI Suite contributors
 # Licensed under GNU General Public License v3 or later.
 # This file is shipped with Argus as the default tracker blocklist.
 #

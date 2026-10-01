@@ -1,6 +1,6 @@
 # Security Policy
 
-This document covers responsible disclosure for the NetGuard Pro Suite
+This document covers responsible disclosure for the NetGuard AI Suite
 (NetGuard, Argus, Sentinel, CleanGuard, MailShield, VPNGuard, FIM,
 Honeypot, Strikeback, Recorder) and our threat model in plain English.
 
@@ -172,6 +172,6 @@ All algorithm choices are conservative defaults, not vendor lock-in.
 
 ---
 
-> Copyright © 2026 NetGuard Pro Suite contributors
+> Copyright © 2026 NetGuard AI Suite contributors
 > This file is part of the suite and is licensed under the
 > GNU General Public License v3.0. See `LICENSE` for the full text.

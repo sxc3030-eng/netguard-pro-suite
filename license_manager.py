@@ -1,5 +1,5 @@
 """
-NetGuard Pro Suite — License Manager
+NetGuard AI Suite — License Manager
 Trial period (30 days) + feature gating + Ed25519-signed license activation
 + multi-PC seat management (HMAC-signed local activation registry).
 """
@@ -939,7 +939,7 @@ def get_trial_banner() -> str:
         d = state["trial_days_left"]
         return f"Periode d'essai : {d} jour{'s' if d > 1 else ''} restant{'s' if d > 1 else ''}. Activez votre licence pour continuer."
     if state.get("expired"):
-        return "Periode d'essai terminee. Passez a NetGuard Pro pour debloquer toutes les fonctionnalites."
+        return "Periode d'essai terminee. Passez a NetGuard AI pour debloquer toutes les fonctionnalites."
     return ""
 
 

@@ -4,4 +4,4 @@ systemctl stop netguard-pro 2>/dev/null
 systemctl disable netguard-pro 2>/dev/null
 rm -f /etc/systemd/system/netguard-pro.service
 systemctl daemon-reload
-echo "[OK] Service NetGuard Pro désinstallé."
+echo "[OK] Service NetGuard AI désinstallé."

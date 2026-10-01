@@ -1,7 +1,7 @@
 """
-NetGuard Pro - Moteur de surveillance réseau
+NetGuard AI - Moteur de surveillance réseau
 Capture, analyse et bloque les paquets en temps réel
-Auteur: NetGuard Pro
+Auteur: NetGuard AI
 Version: 4.1.0
 Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
@@ -716,7 +716,7 @@ def _fetch_geo_ipapi_co(ip: str):
     """Provider 1 — ipapi.co (HTTPS, 1000 req/day free, no key). Returns normalized dict or None."""
     import urllib.request
     url = f"https://ipapi.co/{ip}/json/"
-    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.9"})
     with urllib.request.urlopen(req, timeout=3) as r:
         data = json.loads(r.read().decode())
     if data.get("error") or not data.get("country_code"):
@@ -738,7 +738,7 @@ def _fetch_geo_ip_api_com(ip: str):
     import urllib.request
     fields = "status,country,countryCode,city,lat,lon,org,as,isp,query"
     url = f"http://ip-api.com/json/{ip}?fields={fields}"
-    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.9"})
     with urllib.request.urlopen(req, timeout=3) as r:
         data = json.loads(r.read().decode())
     if data.get("status") != "success" or not data.get("countryCode"):
@@ -1434,7 +1434,7 @@ def load_et_rules_online(ruleset_key: str) -> dict:
     if not url:
         return {"ok": False, "error": f"Ruleset inconnu: {ruleset_key}"}
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.6"})
+        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.6"})
         with urllib.request.urlopen(req, timeout=15) as r:
             content = r.read().decode("utf-8", errors="ignore")
         rules = []
@@ -2736,7 +2736,7 @@ def _fetch_threat_feeds():
     new_ips = set()
     for name, url in feeds.items():
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "NetGuard-Pro/3.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "NetGuard-AI/3.0"})
             resp = urllib.request.urlopen(req, timeout=15)
             for line in resp.read().decode(errors="replace").splitlines():
                 line = line.strip()
@@ -2787,7 +2787,7 @@ def _vt_check_ip(ip: str):
         url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
         req = urllib.request.Request(url, headers={
             "x-apikey": vt_key,
-            "User-Agent": "NetGuard-Pro/3.0",
+            "User-Agent": "NetGuard-AI/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
@@ -2822,7 +2822,7 @@ def _otx_fetch_pulses():
         url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50"
         req = urllib.request.Request(url, headers={
             "X-OTX-API-KEY": otx_key,
-            "User-Agent": "NetGuard-Pro/3.0",
+            "User-Agent": "NetGuard-AI/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=15)
         data = json.loads(resp.read().decode())
@@ -2900,7 +2900,7 @@ def _send_discord_alert(threat: dict):
                     {"name": "Sévérité", "value": threat.get("severity", "?").upper(), "inline": True},
                     {"name": "Pays", "value": threat.get("country", "?"), "inline": True},
                 ],
-                "footer": {"text": "NetGuard Pro v3.0"},
+                "footer": {"text": "NetGuard AI v3.0"},
                 "timestamp": threat.get("timestamp", datetime.now().isoformat()),
             }]
         }).encode()
@@ -4363,7 +4363,7 @@ async def handle_ws_command(ws, msg: dict):
         save_settings()
         await ws.send(json.dumps({"type": "discord_saved", "enabled": CFG.discord_enabled, "vault_used": vault_writable}))
     elif cmd == "test_discord":
-        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
+        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard AI", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_discord_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "discord_test_sent"}))
     elif cmd == "set_telegram":
@@ -4390,7 +4390,7 @@ async def handle_ws_command(ws, msg: dict):
         save_settings()
         await ws.send(json.dumps({"type": "telegram_saved", "enabled": CFG.telegram_enabled, "vault_used": vault_writable}))
     elif cmd == "test_telegram":
-        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
+        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard AI", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_telegram_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "telegram_test_sent"}))
 
@@ -4777,13 +4777,13 @@ class NetGuardAPI:
     def get_startup_state(self):
         if not HAS_STARTUP_UTILS:
             return {"enabled": False, "available": False}
-        return {"enabled": is_startup_enabled("NetGuard Pro"), "available": True}
+        return {"enabled": is_startup_enabled("NetGuard AI"), "available": True}
 
     def toggle_startup_boot(self):
         if not HAS_STARTUP_UTILS:
             return {"enabled": False, "available": False}
         bat_path = resource_path("LANCER_NETGUARD.bat")
-        new_state = toggle_startup_reg("NetGuard Pro", bat_path)
+        new_state = toggle_startup_reg("NetGuard AI", bat_path)
         return {"enabled": new_state, "available": True}
 
     def minimize_to_tray(self):
@@ -4792,7 +4792,7 @@ class NetGuardAPI:
         def _on_quit():
             if self._window:
                 self._window.destroy()
-        minimize_to_tray(self._window, "NetGuard Pro", on_quit=_on_quit)
+        minimize_to_tray(self._window, "NetGuard AI", on_quit=_on_quit)
         return {"success": True}
 
     def get_all_startup_states(self):
@@ -5394,7 +5394,7 @@ def main_webview():
     try:
         print("""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.1.0 -- Fenetre native (pywebview)      |
+|       NetGuard AI v4.1.0 -- Fenetre native (pywebview)      |
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5403,7 +5403,7 @@ def main_webview():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.1.0] Demarrage (pywebview)...")
+        print("[NetGuard AI v4.1.0] Demarrage (pywebview)...")
 
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
 
@@ -5458,7 +5458,7 @@ def main_webview():
     dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(
-        "NetGuard Pro v4.1.0",
+        "NetGuard AI v4.1.0",
         dashboard_path,
         js_api=api,
         width=1360,
@@ -5481,7 +5481,7 @@ def main_webview():
         api._stop_broadcast = True
         loop.call_soon_threadsafe(loop.stop)
         save_settings()
-        print("[*] NetGuard Pro ferme.")
+        print("[*] NetGuard AI ferme.")
 
 
 def main():
@@ -5501,7 +5501,7 @@ def main():
     try:
         print(f"""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.1.0 -- Mode {mode_label:<24}|
+|       NetGuard AI v4.1.0 -- Mode {mode_label:<24}|
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5510,7 +5510,7 @@ def main():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.1.0] Demarrage...")
+        print("[NetGuard AI v4.1.0] Demarrage...")
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
     try:
         asyncio.run(main_async(interface))

@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Service Manager</title>
+<title>NetGuard AI — Service Manager</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -212,13 +212,13 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
         </div>
         <div class="cmd-block">
           # Vérifier le statut<br>
-          Get-ScheduledTask -TaskName "NetGuardPro" | Select-Object State<br><br>
+          Get-ScheduledTask -TaskName "NetGuardAI" | Select-Object State<br><br>
           # Démarrer<br>
-          Start-ScheduledTask -TaskName "NetGuardPro"<br><br>
+          Start-ScheduledTask -TaskName "NetGuardAI"<br><br>
           # Arrêter<br>
-          Stop-ScheduledTask -TaskName "NetGuardPro"<br><br>
+          Stop-ScheduledTask -TaskName "NetGuardAI"<br><br>
           # Désinstaller<br>
-          Unregister-ScheduledTask -TaskName "NetGuardPro" -Confirm:$false
+          Unregister-ScheduledTask -TaskName "NetGuardAI" -Confirm:$false
           <button class="copy-btn" onclick="copyCmd(this)">Copier</button>
         </div>
       </div>
@@ -315,7 +315,7 @@ function updateUptime() {
 function startService() {
   addLog('[SERVICE] Démarrage en cours…', 'info');
   // Windows: ouvre PowerShell avec la commande
-  const cmd = 'Start-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Start-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--blue)');
   });
@@ -324,7 +324,7 @@ function startService() {
 
 function stopService() {
   addLog('[SERVICE] Arrêt en cours…', 'warn');
-  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--amber)');
   });
@@ -333,7 +333,7 @@ function stopService() {
 
 function restartService() {
   addLog('[SERVICE] Redémarrage en cours…', 'warn');
-  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardPro"; Start-Sleep 2; Start-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardAI"; Start-Sleep 2; Start-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--blue)');
   });
@@ -422,7 +422,7 @@ document.getElementById('info-dir').textContent = window.location.pathname.repla
 
 // ── Init ──────────────────────────────────────────────────────────────────
 addLog('[SERVICE] Interface de gestion démarrée', 'info');
-addLog('[SERVICE] Connexion au backend NetGuard Pro…', 'info');
+addLog('[SERVICE] Connexion au backend NetGuard AI…', 'info');
 connect();
 
 // Polling log toutes les 5s via WS

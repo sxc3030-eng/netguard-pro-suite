@@ -1,4 +1,4 @@
-# Contributing to NetGuard Pro Suite
+# Contributing to NetGuard AI Suite
 
 Thanks for considering a contribution. This document covers everything
 needed to land a patch — code of conduct, dev setup, branch naming,
@@ -121,5 +121,5 @@ message and, where appropriate, in a comment at the top of the file.
 
 ---
 
-> Copyright © 2026 NetGuard Pro Suite contributors. This document is
+> Copyright © 2026 NetGuard AI Suite contributors. This document is
 > part of the suite and is itself licensed under GPL v3.

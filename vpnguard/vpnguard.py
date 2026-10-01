@@ -2,7 +2,7 @@
 """
 VPN Guard Pro v1.0.0 — VPN WireGuard autonome avec Kill Switch, DNS Protection,
 Split Tunneling, Wi-Fi auto-connect, Profils, et Stats temps reel.
-Partie de l'ecosysteme NetGuard Pro.
+Partie de l'ecosysteme NetGuard AI.
 """
 
 import asyncio

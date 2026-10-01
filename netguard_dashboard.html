@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetGuard Pro</title>
+<title>NetGuard AI</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -2241,9 +2241,9 @@ tr:hover td{background:var(--bg4)22}
   </div>
 
   <div class="card" style="padding:16px;border-color:var(--green)33">
-    <h3 style="color:var(--green)" data-t="support_about_title">ℹ️ About NetGuard Pro v4.0</h3>
+    <h3 style="color:var(--green)" data-t="support_about_title">ℹ️ About NetGuard AI v4.0</h3>
     <div style="font-size:12px;color:var(--text2);line-height:1.8;margin-top:8px" data-t="support_about_desc">
-      NetGuard Pro is an advanced network security monitoring tool featuring:<br>
+      NetGuard AI is an advanced network security monitoring tool featuring:<br>
       • Real-time packet capture & analysis (Scapy)<br>
       • 27+ IDS rules (Suricata-compatible)<br>
       • Deep Packet Inspection (SQL injection, XSS, Log4Shell)<br>
@@ -3428,7 +3428,7 @@ function popoutData(type) {
       </table></div>`;
   }
 
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — ${type}</title>${css}</head><body>${html}
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — ${type}</title>${css}</head><body>${html}
     <script>function filterRows(q){document.querySelectorAll('.data-row').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'':'none'})}<\/script>
   </body></html>`);
   win.document.close();
@@ -3832,7 +3832,7 @@ function renderLicenseStatus(msg) {
   if (msg.trial) {
     html += `<div>Mode: <b>Essai</b> — ${msg.trial_days_left} jour(s) restant(s)</div>`;
   } else if (msg.expired) {
-    html += `<div style="color:var(--red)">Essai expire — passez a NetGuard Pro</div>`;
+    html += `<div style="color:var(--red)">Essai expire — passez a NetGuard AI</div>`;
   } else {
     html += `<div>Tier: <b>${tier}</b> | Plan: <b>${plan}</b></div>`;
     html += `<div>Sieges: <b>${used} / ${max}</b> ${seatBar}</div>`;
@@ -4772,12 +4772,12 @@ function toggleAutostart() {
   const btn   = document.getElementById('autostart-btn');
   const active = dot.style.background === 'var(--green)' || dot.style.background === 'rgb(61, 255, 180)';
   if (active) {
-    const cmd = 'Unregister-ScheduledTask -TaskName "NetGuardPro" -Confirm:$false; Remove-Item "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\NetGuardProTray.vbs" -ErrorAction SilentlyContinue';
+    const cmd = 'Unregister-ScheduledTask -TaskName "NetGuardAI" -Confirm:$false; Remove-Item "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\NetGuardProTray.vbs" -ErrorAction SilentlyContinue';
     navigator.clipboard.writeText(cmd).then(() => showToast('⚠ Commande copiée — colle dans PowerShell Admin', 'var(--amber)'));
     dot.style.background = 'var(--red)'; label.textContent = 'Démarrage désactivé';
     btn.style.color = 'var(--red)';
   } else {
-    navigator.clipboard.writeText('Start-ScheduledTask -TaskName "NetGuardPro"').then(() => showToast('✓ Commande copiée', 'var(--green)'));
+    navigator.clipboard.writeText('Start-ScheduledTask -TaskName "NetGuardAI"').then(() => showToast('✓ Commande copiée', 'var(--green)'));
     dot.style.background = 'var(--green)'; label.textContent = 'Démarrage auto';
     btn.style.color = '';
   }
@@ -5924,7 +5924,7 @@ function dcOpenRecording(idx) {
     }).join('')}</div>`;
   }
 
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Session ${date.toLocaleDateString('fr-FR')}</title>${css}</head><body>
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Session ${date.toLocaleDateString('fr-FR')}</title>${css}</head><body>
     <h2>⏺ Session du ${date.toLocaleDateString('fr-FR')} ${date.toLocaleTimeString('fr-FR')}</h2>
     <p style="color:#5a5a72;margin-bottom:16px">Durée: ${m}m${String(s).padStart(2,'0')}s</p>
 
@@ -6110,7 +6110,7 @@ function dcExportThreatReport() {
   const blocked = lastState.blocked_ips || [];
   const win = window.open('', 'ng_threat_report', 'width=900,height=700');
   if (!win) return;
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Threat Report</title>
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Threat Report</title>
     <style>body{font-family:system-ui;padding:30px;max-width:800px;margin:0 auto}
     h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
     h2{font-size:16px;margin-top:20px;color:#666}
@@ -6121,7 +6121,7 @@ function dcExportThreatReport() {
     .stat b{display:block;font-size:20px}
     @media print{body{padding:10px}}
     </style></head><body>
-    <h1>Rapport de menaces — NetGuard Pro</h1>
+    <h1>Rapport de menaces — NetGuard AI</h1>
     <p style="color:#888">Généré le ${new Date().toLocaleString('fr-FR')}</p>
     <div style="margin:16px 0">
       <div class="stat"><b>${threats.length}</b>Menaces</div>
@@ -6135,7 +6135,7 @@ function dcExportThreatReport() {
     <h2>IPs bloquées (${blocked.length})</h2>
     <p style="font-family:monospace;font-size:12px;word-break:break-all">${esc(blocked.join(', ')) || 'Aucune'}</p>
     <hr style="margin-top:30px;border:none;border-top:1px solid #ddd">
-    <p style="color:#aaa;font-size:11px;margin-top:8px">NetGuard Pro v4.0 — Rapport de sécurité automatique</p>
+    <p style="color:#aaa;font-size:11px;margin-top:8px">NetGuard AI v4.0 — Rapport de sécurité automatique</p>
     <script>setTimeout(()=>window.print(),500)<\\/script>
   </body></html>`);
   win.document.close();

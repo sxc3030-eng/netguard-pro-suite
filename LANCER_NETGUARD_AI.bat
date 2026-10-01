@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
-title NetGuard Pro — AI Assistant
+title NetGuard AI — AI Assistant
 
 echo.
 echo  +============================================+
-echo  !      NetGuard Pro — AI Assistant           !
+echo  !      NetGuard AI — AI Assistant           !
 echo  !      Claude API + Capabilities             !
 echo  +============================================+
 echo.

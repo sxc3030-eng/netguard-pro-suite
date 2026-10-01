@@ -1,4 +1,4 @@
-# NetGuard Pro Suite — Create Desktop Shortcuts for ALL modules
+# NetGuard AI Suite — Create Desktop Shortcuts for ALL modules
 # Run: powershell -ExecutionPolicy Bypass -File create_all_shortcuts.ps1
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -18,7 +18,7 @@ if (-not (Test-Path $iconPath)) {
 }
 
 $shortcuts = @(
-    @{ Name="NetGuard Pro";       Bat="LANCER_NETGUARD.bat";    Desc="Network Security Monitor v3.0" },
+    @{ Name="NetGuard AI";       Bat="LANCER_NETGUARD.bat";    Desc="Network Security Monitor v3.0" },
     @{ Name="MailShield Pro";     Bat="LANCER_MAILSHIELD.bat";  Desc="Secure Email Client v2.0" },
     @{ Name="CleanGuard";        Bat="LANCER_CLEANGUARD.bat";  Desc="System Cleaner & Malware Scanner" },
     @{ Name="Sentinel OS";       Bat="LANCER_SENTINEL.bat";    Desc="Threat Intelligence & SOAR" },

@@ -1,4 +1,4 @@
-# 🛡️ NetGuard Pro
+# 🛡️ NetGuard AI
 
 > Tableau de bord de surveillance réseau en temps réel avec détection et blocage automatique des menaces — conçu pour les réseaux domestiques et la cybersécurité.
 
@@ -11,7 +11,7 @@
 
 ## 📸 Aperçu
 
-NetGuard Pro combine la puissance de **tcpdump/Wireshark** avec un système de blocage automatique, le tout dans un tableau de bord moderne inspiré de Windows 11.
+NetGuard AI combine la puissance de **tcpdump/Wireshark** avec un système de blocage automatique, le tout dans un tableau de bord moderne inspiré de Windows 11.
 
 **Ce qu'il fait :**
 - 📡 Capture tous les paquets réseau en temps réel (via Scapy)
@@ -122,7 +122,7 @@ dns_tunnel_threshold:   int = 50    # requêtes DNS/sec (alerte)
 
 ## ⚠️ Avertissement légal
 
-NetGuard Pro est conçu pour surveiller **uniquement les réseaux dont vous êtes propriétaire ou pour lesquels vous avez une autorisation explicite**. L'utilisation de cet outil sur des réseaux tiers sans autorisation est illégale. L'auteur décline toute responsabilité pour un usage abusif.
+NetGuard AI est conçu pour surveiller **uniquement les réseaux dont vous êtes propriétaire ou pour lesquels vous avez une autorisation explicite**. L'utilisation de cet outil sur des réseaux tiers sans autorisation est illégale. L'auteur décline toute responsabilité pour un usage abusif.
 
 ---
 

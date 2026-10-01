@@ -61,7 +61,7 @@ def _download_edition(edition_id: str, out_filename: str, key: str, account_id: 
     print(f"  fetch  {edition_id} ...", end=" ", flush=True)
 
     def _try(use_basic_auth: bool):
-        headers = {"User-Agent": "NetGuardPro/1.9 (geoip-update)"}
+        headers = {"User-Agent": "NetGuardAI/1.9 (geoip-update)"}
         if use_basic_auth and account_id:
             creds = base64.b64encode(f"{account_id}:{key}".encode()).decode()
             headers["Authorization"] = f"Basic {creds}"

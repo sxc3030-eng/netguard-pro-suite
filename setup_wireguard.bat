@@ -1,8 +1,8 @@
 @echo off
-title NetGuard Pro — Configuration WireGuard VPN
+title NetGuard AI — Configuration WireGuard VPN
 echo.
 echo  +================================================+
-echo  ^|   NetGuard Pro — Setup WireGuard VPN           ^|
+echo  ^|   NetGuard AI — Setup WireGuard VPN           ^|
 echo  ^|   Generation des cles et configuration         ^|
 echo  +================================================+
 echo.
@@ -102,7 +102,7 @@ echo  ^|  Cles serveur : wireguard/server_keys.json     ^|
 echo  ^|  Config serveur: wireguard/wg0.conf            ^|
 echo  ^|                                                ^|
 echo  ^|  Pour ajouter des peers :                      ^|
-echo  ^|    1. Lance NetGuard Pro (python netguard.py)  ^|
+echo  ^|    1. Lance NetGuard AI (python netguard.py)  ^|
 echo  ^|    2. Va dans l'onglet WireGuard               ^|
 echo  ^|    3. Ajoute un peer avec un nom               ^|
 echo  ^|    4. Copie la config client generee           ^|

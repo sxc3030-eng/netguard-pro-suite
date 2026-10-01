@@ -1,4 +1,4 @@
-# NetGuard Pro Suite — Refresh icons on ALL existing desktop shortcuts.
+# NetGuard AI Suite — Refresh icons on ALL existing desktop shortcuts.
 # Matches by .lnk file name (module keyword), updates IconLocation regardless of
 # the shortcut's target path. Skips gracefully on access-denied (Public Desktop
 # entries created by an installer require elevation).

@@ -1,7 +1,7 @@
 # Argus Browser - Brand Assets
 
 Visual identity for the **Argus Panoptes** browser, the privacy-first
-cybersecurity workbench in the NetGuard Pro Suite.
+cybersecurity workbench in the NetGuard AI Suite.
 
 > *Argus Panoptes (Greek: Ἄργος Πανόπτης, "the all-seeing")* — the hundred-eyed
 > giant of myth, never asleep, charged with watching what others would harm.
@@ -153,7 +153,7 @@ If you edit the SVG, eyeball the PNG against it.
   public domain.
 
 If you fork or modify, retain the GPL v3 notice and credit `sxc3030-eng` /
-the NetGuard Pro Suite project.
+the NetGuard AI Suite project.
 
 ---
 

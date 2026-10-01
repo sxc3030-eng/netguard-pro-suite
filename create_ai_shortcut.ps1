@@ -1,4 +1,4 @@
-# NetGuard Pro — AI Assistant Desktop Shortcut Creator
+# NetGuard AI — AI Assistant Desktop Shortcut Creator
 # Creates a shortcut on the Windows desktop that launches the AI window.
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -21,7 +21,7 @@ $Shortcut = $WshShell.CreateShortcut($lnkPath)
 $Shortcut.TargetPath       = $batPath
 $Shortcut.WorkingDirectory = $scriptDir
 $Shortcut.IconLocation     = "$iconPath,0"
-$Shortcut.Description      = "NetGuard Pro - AI Assistant (Claude API)"
+$Shortcut.Description      = "NetGuard AI - AI Assistant (Claude API)"
 $Shortcut.WindowStyle      = 7  # Minimized
 $Shortcut.Save()
 

@@ -1,11 +1,11 @@
 @echo off
 chcp 65001 >nul 2>&1
 set PYTHONUTF8=1
-title NetGuard Pro v4.1.0
+title NetGuard AI v4.1.0
 
 echo.
 echo  +============================================+
-echo  !      NetGuard Pro v4.1.0                   !
+echo  !      NetGuard AI v4.1.0                   !
 echo  !      Surveillance Reseau                   !
 echo  +============================================+
 echo.
@@ -24,7 +24,7 @@ echo [*] Verification des dependances...
 python -m pip install scapy websockets pywebview pystray Pillow >nul 2>&1
 
 :: Launch NetGuard (pywebview opens its own window, no browser needed)
-echo [*] Demarrage de NetGuard Pro...
+echo [*] Demarrage de NetGuard AI...
 cd /d "%~dp0"
 python "%~dp0netguard.py"
 

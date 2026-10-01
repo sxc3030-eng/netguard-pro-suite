@@ -1,4 +1,4 @@
-"""NetGuard Pro — AI Assistant Icon Generator (.ico)
+"""NetGuard AI — AI Assistant Icon Generator (.ico)
 
 Generates netguard_ai_icon.ico — the NetGuard shield with a 4-pointed
 sparkle in place of the N lettermark, signalling the AI Assistant window.

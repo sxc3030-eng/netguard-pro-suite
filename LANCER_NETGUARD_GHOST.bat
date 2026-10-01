@@ -1,5 +1,5 @@
 @echo off
-REM NetGuard Pro — Mode Fantôme (auto-elevation pour Npcap admin-only)
+REM NetGuard AI — Mode Fantôme (auto-elevation pour Npcap admin-only)
 REM Lance le tray invisible. Le tray spawn netguard.py backend automatiquement.
 
 REM Auto-elevation

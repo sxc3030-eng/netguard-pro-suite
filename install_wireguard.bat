@@ -1,8 +1,8 @@
 @echo off
-title NetGuard Pro — Installation WireGuard VPN
+title NetGuard AI — Installation WireGuard VPN
 echo.
 echo  +================================================+
-echo  ^|   NetGuard Pro — Installation WireGuard VPN    ^|
+echo  ^|   NetGuard AI — Installation WireGuard VPN    ^|
 echo  ^|   Tunnel VPN chiffre pour protection reseau    ^|
 echo  +================================================+
 echo.
@@ -88,7 +88,7 @@ echo  +================================================+
 echo  ^|  Installation WireGuard terminee !             ^|
 echo  ^|                                                ^|
 echo  ^|  Prochaine etape :                             ^|
-echo  ^|    1. Lance NetGuard Pro (netguard.py)         ^|
+echo  ^|    1. Lance NetGuard AI (netguard.py)         ^|
 echo  ^|    2. Va dans l'onglet WireGuard               ^|
 echo  ^|    3. Configure le endpoint (ton IP publique)  ^|
 echo  ^|    4. Ajoute des peers                         ^|

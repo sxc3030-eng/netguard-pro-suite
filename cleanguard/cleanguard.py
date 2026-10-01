@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CleanGuard Pro v1.0.0 — Nettoyeur Système + Antivirus/Antimalware
-Partie du pack NetGuard Pro
+Partie du pack NetGuard AI
 """
 
 import asyncio

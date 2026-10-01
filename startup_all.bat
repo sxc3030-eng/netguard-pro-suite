@@ -1,16 +1,16 @@
 @echo off
-:: NetGuard Pro Suite - Dual Startup (all modules)
+:: NetGuard AI Suite - Dual Startup (all modules)
 :: Launches NetGuard + all sub-modules at Windows boot
 cd /d "%~dp0"
 
 echo.
 echo  ============================================
-echo    NetGuard Pro Suite v3.0.0 - Demarrage
+echo    NetGuard AI Suite v3.0.0 - Demarrage
 echo  ============================================
 echo.
 
-:: 1. NetGuard Pro (main backend + dashboard)
-echo [1/5] Demarrage NetGuard Pro...
+:: 1. NetGuard AI (main backend + dashboard)
+echo [1/5] Demarrage NetGuard AI...
 start "" /min pythonw netguard.py
 
 :: 2. MailShield Pro
