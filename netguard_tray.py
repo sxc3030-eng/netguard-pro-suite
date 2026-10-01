@@ -29,21 +29,20 @@ try:
     import pystray
     from pystray import MenuItem as item
     from PIL import Image, ImageDraw
-except ImportError:
-    print("Installation des dépendances tray (pystray + pillow)...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "pystray", "pillow"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    import pystray
-    from pystray import MenuItem as item
-    from PIL import Image, ImageDraw
+except ImportError as _e:
+    # Never download code at runtime (Store policy 10.2, and it hangs offline):
+    # pystray + pillow are hard dependencies of the package.
+    print(f"[TRAY] Dépendance manquante ({_e}). Installe-la : pip install pystray pillow", file=sys.stderr)
+    sys.exit(1)
 
 # ── Paths ────────────────────────────────────────────────────────────────
+from netguard_paths import RESOURCE_DIR as _RES, data_path as _data_path, self_command as _self_command
 SCRIPT_DIR = Path(__file__).resolve().parent
-DASHBOARD  = SCRIPT_DIR / "netguard_dashboard.html"
-MAP_FILE   = SCRIPT_DIR / "netguard_map.html"
+DASHBOARD  = Path(_RES) / "netguard_dashboard.html"
+MAP_FILE   = Path(_RES) / "netguard_map.html"
 BACKEND    = SCRIPT_DIR / "netguard.py"
 ARGUS      = SCRIPT_DIR / "argus_pyqt.py"
-TOKEN_FILE = SCRIPT_DIR / ".netguard_token"
+TOKEN_FILE = Path(_data_path(".netguard_token"))   # same place netguard.py writes it
 
 # ── Colors per status ────────────────────────────────────────────────────
 COLOR_OK    = (61, 255, 180)   # green — backend up, no recent threats
@@ -90,7 +89,7 @@ def _spawn_backend():
         return
     try:
         _backend_process = subprocess.Popen(
-            [sys.executable, str(BACKEND)],
+            _self_command(),   # frozen build: the exe itself, not "python netguard.py"
             cwd=str(SCRIPT_DIR),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             stdout=subprocess.DEVNULL,
@@ -244,7 +243,9 @@ def toggle_autostart(icon=None, item=None):
             except FileNotFoundError:
                 pass
         else:
-            cmd = f'"{sys.executable}" "{__file__}"'
+            # Frozen build: __file__ points into a temp extraction dir that is gone at
+            # next boot; register the exe itself (MSIX builds should use StartupTask).
+            cmd = f'"{sys.executable}"' if getattr(sys, "frozen", False) else f'"{sys.executable}" "{__file__}"'
             winreg.SetValueEx(k, RUN_NAME, 0, winreg.REG_SZ, cmd)
     update_icon()
 

@@ -12,6 +12,8 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import queue
+import atexit
+from netguard_paths import DATA_DIR, RESOURCE_DIR, data_path, resource_path, ensure_data_dirs, is_frozen, self_command
 import argparse
 import time
 import threading
@@ -121,7 +123,7 @@ class Config:
     interface:              str   = "auto"
     ws_port:                int   = 8765
     can_block:              bool  = True
-    log_file:               str   = "netguard.log"
+    log_file:               str   = data_path("netguard.log")
     max_packets_log:        int   = 10_000
     port_scan_threshold:    int   = 15
     port_scan_window:       int   = 10
@@ -151,7 +153,7 @@ class Config:
     sensitive_ports:    list = field(default_factory=lambda: [22, 3389, 5900, 23])
     always_block_ports: list = field(default_factory=lambda: [135, 137, 138, 139, 445, 1433, 3306])
     record_enabled:     bool  = False
-    record_dir:         str   = "captures"
+    record_dir:         str   = data_path("captures")
     record_rotate_min:  int   = 60
     record_max_files:   int   = 24
     dpi_enabled:        bool  = True
@@ -188,6 +190,11 @@ class Config:
     isolation_enabled:      bool  = False
     quarantine_enabled:     bool  = False
     auto_forensic_enabled:  bool  = True
+    # Privacy: online geo providers (ip-api.com / ipapi.co) receive every public
+    # IP seen on the wire. MaxMind GeoLite2 (local) is always preferred when present.
+    geo_online_enabled:     bool  = True
+    # Store policy 10.2: never interfere with other software unless the user opts in.
+    npcap_kill_rogue:       bool  = False
     auto_forensic_severity: str   = "critical"
     # v3.0 — WireGuard VPN
     wg_enabled:         bool  = False
@@ -628,8 +635,15 @@ def _traceroute(target_ip: str, max_hops: int = 30) -> dict:
 
 
 # ── MaxMind GeoLite2 (local DB, no rate limit, no internet) ──────────────────
-_MAXMIND_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geoip", "GeoLite2-City.mmdb")
-_MAXMIND_ASN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "geoip", "GeoLite2-ASN.mmdb")
+def _geoip_file(name: str) -> str:
+    """User-downloaded DB (DATA_DIR/geoip) wins over a bundled one (RESOURCE_DIR/geoip)."""
+    for cand in (data_path("geoip", name), resource_path("geoip", name)):
+        if os.path.exists(cand):
+            return cand
+    return data_path("geoip", name)
+
+_MAXMIND_DB_PATH = _geoip_file("GeoLite2-City.mmdb")
+_MAXMIND_ASN_PATH = _geoip_file("GeoLite2-ASN.mmdb")
 _MAXMIND_READER = None
 _MAXMIND_ASN_READER = None
 _MAXMIND_INIT_TRIED = False
@@ -837,6 +851,8 @@ def _fetch_city_async(ip: str):
     """Resolve geo for `ip` via provider chain (ipapi.co → ip-api.com fallback). Caches result."""
     result = None
     for provider in _GEO_PROVIDERS:
+        if provider is not _fetch_geo_maxmind and not CFG.geo_online_enabled:
+            continue   # user opted out of sending IPs to online geo services
         try:
             result = provider(ip)
             if result:
@@ -1068,6 +1084,8 @@ class NetState:
         self.flows                 = {}
         self.outbound_seen         = {}   # remote ip -> ts of our last packet TO it
         self.block_failures        = 0    # netsh/iptables returned non-zero (no admin?)
+        self.capture_error         = ""   # why packet capture is not running (shown in UI)
+        self.is_admin              = False
         self.dpi_alerts            = deque(maxlen=200)
         self.suricata_alerts       = deque(maxlen=200)
         self.record_active         = False
@@ -1092,18 +1110,26 @@ class NetState:
 
 STATE = NetState()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        RotatingFileHandler(
+def _build_log_handlers():
+    """File log is best-effort: a read-only install dir (Store/MSIX) or a locked
+    file must never crash the process at import time."""
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        os.makedirs(os.path.dirname(CFG.log_file) or ".", exist_ok=True)
+        handlers.insert(0, RotatingFileHandler(
             CFG.log_file,
             maxBytes=5 * 1024 * 1024,   # 5 MB
             backupCount=3,
             encoding="utf-8",
-        ),
-        logging.StreamHandler(sys.stdout),
-    ]
+        ))
+    except OSError as e:
+        print(f"[LOG] fichier journal indisponible ({e}) — console seulement", file=sys.stderr)
+    return handlers
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=_build_log_handlers(),
 )
 log = logging.getLogger("netguard")
 
@@ -1517,7 +1543,7 @@ print(f"[SURICATA] {SURICATA_LOADED} règles intégrées chargées")
 # ══════════════════════════════════════════════════════════════════════════════
 
 # ─── Backup & Recovery ────────────────────────────────────────────────────────
-BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
+BACKUP_DIR = data_path("backups")
 BACKUP_SCHEDULE = {"enabled": False, "interval_hours": 24, "last_backup": ""}
 
 
@@ -1544,7 +1570,7 @@ def _secure_json_write(path: str, data, mode: int = 0o600, indent: int = 2):
 
 
 # ── Backup encryption (Phase 5.2) ───────────────────────────────────────────
-_BACKUP_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".netguard_backup_key")
+_BACKUP_KEY_FILE = data_path(".netguard_backup_key")
 _BACKUP_FERNET = None  # lazy cache
 
 
@@ -1908,10 +1934,16 @@ def detect_npcap_uac_spammers() -> list:
             })
             # Rogue trigger: > N relaunches in 5 min, not whitelisted
             if relaunches > _NPCAP_RELAUNCH_THRESHOLD and not _npcap_is_whitelisted(exe):
+                if not CFG.npcap_kill_rogue:
+                    # Opt-in only: Wireshark, nmap or a VPN client would qualify as
+                    # "rogue" and killing them violates Store policy 10.2.
+                    log.warning(f"[NPCAP] Consommateur Npcap suspect: {exe} ({relaunches} relances en {_NPCAP_RELAUNCH_WINDOW_SEC}s) — non tué (npcap_kill_rogue=False)")
+                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches, "killed": False})
+                    continue
                 log.critical(f"[NPCAP] Rogue Npcap consumer: {exe} ({relaunches} relaunches in {_NPCAP_RELAUNCH_WINDOW_SEC}s) — killing PID {pid}")
                 try:
                     proc.kill()
-                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches})
+                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches, "killed": True})
                 except Exception as e:
                     log.error(f"[NPCAP] Failed to kill {exe} PID {pid}: {e}")
         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -3015,21 +3047,22 @@ def unquarantine_ip(ip: str):
 def _cleanup_old_forensic_reports():
     """Keep at most _FORENSIC_MAX_FILES forensic_*.json in reports/ (oldest removed)."""
     try:
+        rdir = str(REPORTS_DIR)
         files = sorted(
-            [f for f in os.listdir("reports") if f.startswith("forensic_") and f.endswith(".json")],
-            key=lambda f: os.path.getmtime(os.path.join("reports", f))
+            [f for f in os.listdir(rdir) if f.startswith("forensic_") and f.endswith(".json")],
+            key=lambda f: os.path.getmtime(os.path.join(rdir, f))
         )
         while len(files) > _FORENSIC_MAX_FILES:
-            os.remove(os.path.join("reports", files.pop(0)))
+            os.remove(os.path.join(rdir, files.pop(0)))
     except Exception as e:
         log.debug(f"[FORENSIC] cleanup: {e}")
 
 def generate_forensic_report(ip: str, trigger: str) -> str:
     """Génère un rapport forensique détaillé pour une IP"""
     try:
-        os.makedirs("reports", exist_ok=True)
+        os.makedirs(str(REPORTS_DIR), exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"reports/forensic_{ip.replace('.','_')}_{ts}.json"
+        filename = str(REPORTS_DIR / f"forensic_{ip.replace('.', '_').replace(':', '-')}_{ts}.json")
         report = {
             "generated_at": datetime.now().isoformat(),
             "target_ip": ip,
@@ -3387,7 +3420,7 @@ def analyze_packet(pkt):
 import csv
 import pathlib
 
-REPORTS_DIR = pathlib.Path("reports")
+REPORTS_DIR = pathlib.Path(data_path("reports"))
 
 def ensure_reports_dir():
     REPORTS_DIR.mkdir(exist_ok=True)
@@ -3629,6 +3662,11 @@ def build_state_message() -> dict:
             "record_active":      STATE.record_active,
             "record_file":        STATE.record_file_path,
             "record_packets":     STATE.record_count,
+            # Health (superaudit): the UI must say when nothing is captured/blocked
+            "capture_error":      STATE.capture_error,
+            "is_admin":           STATE.is_admin,
+            "block_failures":     STATE.block_failures,
+            "data_dir":           DATA_DIR,
             "top_ips":            [_build_top_ip_entry(ip, h) for ip, h in top_ips],
             "dpi_alerts":         list(STATE.dpi_alerts)[:20],
             "suricata_enabled":   SURICATA_ENABLED,
@@ -4744,7 +4782,7 @@ class NetGuardAPI:
     def toggle_startup_boot(self):
         if not HAS_STARTUP_UTILS:
             return {"enabled": False, "available": False}
-        bat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LANCER_NETGUARD.bat")
+        bat_path = resource_path("LANCER_NETGUARD.bat")
         new_state = toggle_startup_reg("NetGuard Pro", bat_path)
         return {"enabled": new_state, "available": True}
 
@@ -4782,13 +4820,17 @@ class NetGuardAPI:
         if _is_up():
             return {"success": True, "already_running": True, "port": port}
 
-        script = os.path.join(here, "netguard_ai_server.py")
-        if not os.path.isfile(script):
-            return {"success": False, "error": "ai_server_missing"}
         flags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
+        if is_frozen():
+            # Packaged build: relaunch ourselves in AI-server mode (there is no .py to run)
+            cmd = [sys.executable, "--ai-server", "--no-browser"]
+        else:
+            script = os.path.join(here, "netguard_ai_server.py")
+            if not os.path.isfile(script):
+                return {"success": False, "error": "ai_server_missing"}
+            cmd = [sys.executable, script, "--no-browser"]
         try:
-            _sp.Popen([sys.executable, script, "--no-browser"],
-                      cwd=here, creationflags=flags)
+            _sp.Popen(cmd, cwd=here, creationflags=flags)
         except Exception as e:
             return {"success": False, "error": f"spawn_failed: {e}"}
         for _ in range(25):
@@ -4863,7 +4905,7 @@ async def broadcast_state():
             CLIENTS -= dead
 
 # ── WebSocket authentication (Phase 1 hardening) ────────────────────────
-_TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".netguard_token")
+_TOKEN_FILE = data_path(".netguard_token")
 WS_TOKEN: str = ""
 
 def _load_or_create_token() -> str:
@@ -5027,11 +5069,32 @@ def auto_select_interface() -> str:
                 return iface
     return ifaces[0] if ifaces else "eth0"
 
+def _is_admin() -> bool:
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return os.geteuid() == 0
+    except Exception:
+        return False
+
+def _capture_failed(msg: str):
+    """sys.exit() inside the capture thread only killed that thread: the window
+    stayed open with 0 packets and no explanation. Surface the error instead."""
+    STATE.capture_error = msg
+    log.error(f"[CAPTURE] {msg}")
+    STATE.timeline_events.appendleft({
+        "ts": datetime.now().strftime("%H:%M:%S"), "type": "capture_error",
+        "ip": "", "country": "", "severity": "critical",
+    })
+
 def start_capture(interface: str):
     if not HAS_SCAPY:
-        log.error("scapy non disponible. Installe avec: pip install scapy")
-        log.error("Sur Windows, installe aussi Npcap: https://npcap.com/#download")
-        sys.exit(1)
+        _capture_failed("scapy non disponible (pip install scapy) ; sur Windows installe aussi Npcap : https://npcap.com/#download")
+        return
+    if not interface:
+        _capture_failed("Aucune interface réseau avec une adresse IPv4 détectée")
+        return
     log.info(f"[CAPTURE] Démarrage sur: {interface}")
 
     def safe_analyze(pkt):
@@ -5043,11 +5106,44 @@ def start_capture(interface: str):
     try:
         sniff(iface=interface, prn=safe_analyze, store=False)
     except PermissionError:
-        log.error("ERREUR: Permissions insuffisantes. Lance en tant qu'Administrateur.")
-        sys.exit(1)
+        _capture_failed("Permissions insuffisantes pour capturer : relance en tant qu'administrateur (Npcap)")
     except Exception as e:
-        log.error(f"Erreur capture: {e}")
-        sys.exit(1)
+        _capture_failed(f"Capture impossible sur {interface}: {e} — Npcap est-il installé ?")
+
+def _shutdown():
+    """atexit: flush the pcap writer and persist settings on every exit path
+    (window close, tray Quit, SIGTERM), not only on Ctrl+C."""
+    try:
+        if STATE.record_active:
+            record_stop()
+    except Exception:
+        pass
+    try:
+        save_settings()
+    except Exception:
+        pass
+
+def remove_all_firewall_rules() -> int:
+    """Delete every NetGuard_* rule from the OS firewall (uninstall / reset).
+    Before: auto-added netsh rules outlived the application forever."""
+    count = 0
+    try:
+        if IS_WINDOWS:
+            ps = ("$r = Get-NetFirewallRule -DisplayName 'NetGuard_*' -ErrorAction SilentlyContinue; "
+                  "$n = ($r | Measure-Object).Count; $r | Remove-NetFirewallRule -ErrorAction SilentlyContinue; $n")
+            r = _subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                                capture_output=True, text=True, timeout=60)
+            try:
+                count = int((r.stdout or "0").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                count = 0
+        elif IS_LINUX:
+            for ip in list(BLOCKED_IPS):
+                if _apply_os_rule("unblock", ip):
+                    count += 1
+    except Exception as e:
+        log.error(f"[FIREWALL] suppression des règles: {e}")
+    return count
 
 async def main_async(interface: str):
     threading.Thread(target=start_capture, args=(interface,), daemon=True).start()
@@ -5088,7 +5184,7 @@ async def main_async(interface: str):
             except Exception as e:
                 log.error(f"[STATE] snapshot_traffic: {e}")
 
-SETTINGS_FILE = "netguard_settings.json"
+SETTINGS_FILE = data_path("netguard_settings.json")
 
 def save_settings():
     """Sauvegarde les settings dans un fichier JSON"""
@@ -5242,11 +5338,28 @@ def load_settings():
 
 def _common_init():
     """Common setup for both pywebview and WebSocket modes"""
-    parser = argparse.ArgumentParser(description="NetGuard Pro — Surveillance réseau")
+    parser = argparse.ArgumentParser(description="NetGuard AI — Surveillance réseau")
     parser.add_argument("--interface", default="auto")
     parser.add_argument("--port",      type=int, default=8765)
     parser.add_argument("--no-block",  action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--demo",      action="store_true", help="Mode démonstration (raccourcis installeur)")
+    parser.add_argument("--ai-server", action="store_true", help="Lance uniquement le serveur de la fenêtre IA")
+    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--remove-firewall-rules", action="store_true",
+                        help="Supprime toutes les règles pare-feu NetGuard_* puis quitte (désinstallation)")
+    # parse_known_args: an unknown flag from a launcher/shortcut must not abort startup
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        log.warning(f"[ARGS] options ignorées: {unknown}")
+
+    if args.remove_firewall_rules:
+        n = remove_all_firewall_rules()
+        print(f"[NetGuard] {n} règle(s) pare-feu NetGuard supprimée(s)")
+        sys.exit(0)
+    if args.ai_server:
+        import netguard_ai_server
+        netguard_ai_server.run(open_browser=not args.no_browser)
+        sys.exit(0)
 
     CFG.ws_port   = args.port
     CFG.can_block = not args.no_block
@@ -5256,11 +5369,21 @@ def _common_init():
         interface = auto_select_interface()
         log.info(f"[AUTO] Interface sélectionnée: {interface}")
 
+    ensure_data_dirs()
     os.makedirs(CFG.record_dir, exist_ok=True)
-    os.makedirs("reports", exist_ok=True)
+    os.makedirs(str(REPORTS_DIR), exist_ok=True)
     load_settings()
     _load_or_create_token()
+    log.info(f"[PATHS] données: {DATA_DIR} — ressources: {RESOURCE_DIR}")
 
+    # Privilege check: packet capture and firewall rules need admin on Windows.
+    STATE.is_admin = _is_admin()
+    if IS_WINDOWS and not STATE.is_admin:
+        log.warning("[ADMIN] Non administrateur : pas de règles pare-feu (surveillance seulement). "
+                    "Relance en tant qu'administrateur pour activer le blocage.")
+        CFG.can_block = False
+
+    atexit.register(_shutdown)
     return interface, args
 
 
@@ -5332,7 +5455,7 @@ def main_webview():
     api = NetGuardAPI()
     api._loop = loop
 
-    dashboard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_dashboard.html")
+    dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(
         "NetGuard Pro v4.1.0",
@@ -5392,8 +5515,13 @@ def main():
     try:
         asyncio.run(main_async(interface))
     except KeyboardInterrupt:
-        log.info("Arrêt de NetGuard Pro — sauvegarde des settings...")
+        log.info("Arrêt de NetGuard — sauvegarde des settings...")
         save_settings()
+    except OSError as e:
+        # Typically: port 8765 already in use (another instance)
+        log.error(f"[WS] Impossible de démarrer le serveur sur le port {CFG.ws_port}: {e}")
+        save_settings()
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

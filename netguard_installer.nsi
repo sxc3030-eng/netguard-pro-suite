@@ -130,6 +130,9 @@ SectionEnd
 Section "Uninstall"
     ; Arrêter le service
     ExecWait 'powershell -WindowStyle Hidden -Command "Stop-ScheduledTask -TaskName NetGuardPro -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName NetGuardPro -Confirm:$false -ErrorAction SilentlyContinue"'
+    ; Retirer toutes les règles pare-feu NetGuard_* ajoutées pendant l'utilisation
+    ExecWait '"$INSTDIR\NetGuardPro.exe" --remove-firewall-rules'
+    ExecWait 'powershell -WindowStyle Hidden -Command "Get-NetFirewallRule -DisplayName NetGuard_* -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue"'
 
     ; Supprimer les fichiers
     Delete "$INSTDIR\NetGuardPro.exe"

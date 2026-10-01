@@ -49,22 +49,33 @@ VERSION = "1.0.0"
 SENTINEL_DIR = os.path.dirname(os.path.abspath(__file__))
 MAP_HTML = os.path.join(SENTINEL_DIR, "sentinel_map.html")
 SETTINGS_FILE = os.path.join(SENTINEL_DIR, "sentinel_settings.json")
-MAP_SAVE_FILE = os.path.join(SENTINEL_DIR, "network_map.json")
+# Writable location (Store/MSIX installs are read-only): shared NetGuard data dir
+try:
+    sys.path.insert(0, os.path.dirname(SENTINEL_DIR))
+    from netguard_paths import data_path as _ng_data_path
+    _DATA_SENTINEL = _ng_data_path("sentinel")
+except Exception:  # standalone use
+    _DATA_SENTINEL = SENTINEL_DIR
+os.makedirs(_DATA_SENTINEL, exist_ok=True)
+MAP_SAVE_FILE = os.path.join(_DATA_SENTINEL, "network_map.json")
 IS_WINDOWS = os.name == 'nt'
 
 COMMON_PORTS = [22, 53, 80, 443, 445, 548, 3389, 5000, 5900, 8080, 8443, 9100]
 
 # Ensure logs dir BEFORE creating the file handler (fresh install crashed here)
-os.makedirs(os.path.join(SENTINEL_DIR, "logs"), exist_ok=True)
+_LOG_DIR = os.path.join(_DATA_SENTINEL, "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
 
+_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _handlers.insert(0, RotatingFileHandler(os.path.join(_LOG_DIR, "mapper.log"),
+                                            maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"))
+except OSError:
+    pass   # read-only location: console only, never crash at import
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        RotatingFileHandler(os.path.join(SENTINEL_DIR, "logs", "mapper.log"),
-                            maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers=_handlers,
 )
 logger = logging.getLogger("SentinelMapper")
 

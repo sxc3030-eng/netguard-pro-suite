@@ -1324,7 +1324,8 @@ class AIChatWorker(QObject):
         }).encode("utf-8")
         headers = {"Content-Type": "application/json"}
         try:  # netguard_ai_server requires the NetGuard token on every /api call
-            tok = (Path(__file__).resolve().parent / ".netguard_token").read_text(encoding="utf-8").strip()
+            from netguard_paths import data_path as _ng_data_path
+            tok = Path(_ng_data_path(".netguard_token")).read_text(encoding="utf-8").strip()
             if tok:
                 headers["X-NetGuard-Token"] = tok
         except OSError:

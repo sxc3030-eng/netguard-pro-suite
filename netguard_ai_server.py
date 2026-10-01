@@ -26,12 +26,15 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable
 
-ROOT = Path(__file__).resolve().parent
-SETTINGS_FILE = ROOT / "netguard_ai_settings.json"
-AUDIT_DIR = ROOT / "reports"
+from netguard_paths import DATA_DIR as _DATA_DIR, RESOURCE_DIR as _RESOURCE_DIR, ensure_data_dirs as _ensure_data_dirs
+
+ROOT = Path(_RESOURCE_DIR)                 # static page + icon (read-only in Store builds)
+DATA = Path(_DATA_DIR)                     # everything we write; shared with netguard.py
+SETTINGS_FILE = DATA / "netguard_ai_settings.json"
+AUDIT_DIR = DATA / "reports"
 AUDIT_LOG = AUDIT_DIR / "ai_audit.log"
 ACTIONS_LOG = AUDIT_DIR / "ai_actions.log"
-CAPTURES_DIR = ROOT / "captures"
+CAPTURES_DIR = DATA / "captures"
 
 NETGUARD_WS_URL = os.environ.get("NETGUARD_WS_URL", "ws://localhost:8765")
 
@@ -70,7 +73,7 @@ SYSTEM_PROMPTS = {
 
 
 # ── Persistent AI memory (cross-session) ────────────────────────────────────
-_AI_MEMORY_FILE = ROOT / "netguard_ai_memory.md"
+_AI_MEMORY_FILE = DATA / "netguard_ai_memory.md"
 _AI_MEMORY_MAX_BYTES = 60_000   # truncate from top if larger (newest entries are kept)
 _AI_MEMORY_VALID_SECTIONS = ("Findings", "Decisions", "Context")
 
@@ -360,7 +363,7 @@ def _tools_openai() -> list[dict]:
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t["input_schema"]}} for t in TOOLS]
 
 
-_TOKEN_FILE = ROOT / ".netguard_token"
+_TOKEN_FILE = DATA / ".netguard_token"
 
 
 def _read_ws_token() -> str:
@@ -494,7 +497,7 @@ def _execute_tool(name: str, args: dict) -> dict:
 
 
 def _read_netguard_settings() -> dict:
-    path = ROOT / "netguard_settings.json"
+    path = DATA / "netguard_settings.json"
     if not path.exists():
         return {}
     try:
@@ -1444,7 +1447,7 @@ class _ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 
 def run(port: int = DEFAULT_PORT, open_browser: bool = True) -> None:
-    os.chdir(ROOT)
+    _ensure_data_dirs()
     server = _ThreadedServer(("127.0.0.1", port), _Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"[NetGuard AI] Server ready on {url}")

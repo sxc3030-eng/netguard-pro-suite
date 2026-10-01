@@ -24,7 +24,11 @@ except Exception:
     pass
 
 # ── Config ──────────────────────────────────────────────────────────
-LICENSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_license.json")
+try:
+    from netguard_paths import data_path as _ng_data_path
+    LICENSE_FILE = _ng_data_path("netguard_license.json")   # writable even in Store/MSIX installs
+except Exception:  # pragma: no cover — standalone use of this module
+    LICENSE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_license.json")
 TRIAL_DAYS = 30
 
 # Activation registry — kept OUTSIDE the vault on purpose so licensing works
@@ -168,6 +172,30 @@ class DeviceFingerprint:
                     line = line.strip()
                     if line and line.upper() != "UUID":
                         return line
+        except Exception:
+            pass
+        # Windows 11 24H2+ removed wmic: same UUID through CIM, then MachineGuid.
+        # (Without this the fingerprint changed after an OS upgrade and a paying
+        # user hit "seat exhausted".)
+        try:
+            if platform.system() == "Windows":
+                out = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                     "(Get-CimInstance Win32_ComputerSystemProduct).UUID"],
+                    stderr=subprocess.DEVNULL, timeout=10,
+                )
+                val = out.decode("utf-8", errors="ignore").strip()
+                if val:
+                    return val
+        except Exception:
+            pass
+        try:
+            if platform.system() == "Windows":
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as k:
+                    val, _ = winreg.QueryValueEx(k, "MachineGuid")
+                    if val:
+                        return str(val)
         except Exception:
             pass
         # Linux
@@ -421,10 +449,13 @@ def _load_license() -> dict:
 
 
 def _save_license(data: dict):
-    """Save license data to file"""
+    """Save license data to file (atomic: a crash mid-write must not reset the trial)"""
     try:
-        with open(LICENSE_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(LICENSE_FILE) or ".", exist_ok=True)
+        tmp = LICENSE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, LICENSE_FILE)
     except Exception as e:
         print(f"[LICENSE] Erreur sauvegarde: {e}")
 
