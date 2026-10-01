@@ -366,13 +366,18 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);heig
 
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js" integrity="sha384-su5kReKyYlIFrI62mbQRKXHzFobMa7BHp1cK6julLPbnYcCW9NIZKJiTODjLPeDh" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js" integrity="sha384-9dCJK6nh7skY14HrcvlLYlFga9/MehJjL9ONWRflmiXNRuf8p2jiF4Y5PR881PTq" crossorigin="anonymous"></script>
 <script>
 const WS_URL = 'ws://localhost:8765';
 let ws, mapReady = false, projection, svg, g, path;
 let currentMode = 'view';
 let allPackets = [];
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 let ipData = {}; // ip -> {hits, status, country, city, lat, lon, asn, org, type}
 let asnData = {}; // asn -> {name, org, country, ips: Set, hits, type}
 let selectedIPs = new Set();
@@ -626,7 +631,7 @@ function renderSelIPList() {
     const d = ipData[ip] || {};
     return `<div class="ip-item selected" onclick="showIPPanel('${ip}')">
       <span style="font-family:'Geist Mono',monospace;flex:1;font-size:11px;color:var(--blue)">${ip}</span>
-      <span style="font-size:10px;color:var(--text3)">${d.city||d.country||'?'}</span>
+      <span style="font-size:10px;color:var(--text3)">${esc(d.city||d.country||'?')}</span>
     </div>`;
   }).join('') || '<div style="padding:12px;font-size:11px;color:var(--text3)">Aucune IP sélectionnée</div>';
 }
@@ -652,7 +657,7 @@ function blockTopASN() {
   let count = 0;
   sorted.forEach(([asn, data]) => {
     data.ips.forEach(ip => {
-      sendCmd({cmd:'block_ip', ip, reason:`Blocage ASN ${asn} — ${data.name}`});
+      sendCmd({cmd:'block_ip', ip, reason:`Blocage ASN ${asn} — ${esc(data.name)}`});
       blockedIPs.add(ip);
       count++;
     });
@@ -722,8 +727,8 @@ function renderASNList() {
     const color = data.type==='gov' ? 'var(--red)' : data.type==='dc' ? 'var(--purple)' : data.type==='vpn' ? 'var(--amber)' : 'var(--blue)';
     return `<div class="asn-group">
       <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-        <span class="tag ${data.tag}">${data.label}</span>
-        <span class="asn-name" style="flex:1">${data.name||asn}</span>
+        <span class="tag ${data.tag}">${esc(data.label)}</span>
+        <span class="asn-name" style="flex:1">${esc(data.name||asn)}</span>
         <button class="btn btn-red" style="padding:2px 6px;font-size:10px" onclick="blockASN('${asn}')">Bloquer</button>
       </div>
       <div class="asn-bar-wrap"><div class="asn-bar" style="width:${pct}%;background:${color}"></div></div>
@@ -826,17 +831,17 @@ async function showIPPanel(ip) {
       <div class="card-body">
         <div class="info-row"><span class="info-key">IP</span><span class="info-val" style="color:var(--blue)">${ip}</span></div>
         <div class="info-row"><span class="info-key">Pays</span><span class="info-val">${FLAGS[d.country]||''} ${COUNTRY_NAMES[d.country]||d.country||'?'}</span></div>
-        <div class="info-row"><span class="info-key">Ville</span><span class="info-val">${d.city||'—'}</span></div>
+        <div class="info-row"><span class="info-key">Ville</span><span class="info-val">${esc(d.city||'—')}</span></div>
         <div class="info-row"><span class="info-key">Coordonnées</span><span class="info-val">${d.lat!=null?d.lat.toFixed(4):'—'}, ${d.lon!=null?d.lon.toFixed(4):'—'}</span></div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-hdr"><span class="card-title">Réseau & Organisation</span><span class="tag ${d.tag||'tag-isp'}">${d.label||'FAI'}</span></div>
+      <div class="card-hdr"><span class="card-title">Réseau & Organisation</span><span class="tag ${d.tag||'tag-isp'}">${esc(d.label||'FAI')}</span></div>
       <div class="card-body">
-        <div class="info-row"><span class="info-key">ASN</span><span class="info-val" style="color:var(--purple)">${d.asn||'—'}</span></div>
-        <div class="info-row"><span class="info-key">Organisation</span><span class="info-val">${d.org||'—'}</span></div>
-        <div class="info-row"><span class="info-key">Type</span><span class="info-val">${d.label||'—'}</span></div>
+        <div class="info-row"><span class="info-key">ASN</span><span class="info-val" style="color:var(--purple)">${esc(d.asn||'—')}</span></div>
+        <div class="info-row"><span class="info-key">Organisation</span><span class="info-val">${esc(d.org||'—')}</span></div>
+        <div class="info-row"><span class="info-key">Type</span><span class="info-val">${esc(d.label||'—')}</span></div>
       </div>
     </div>
 
@@ -845,8 +850,8 @@ async function showIPPanel(ip) {
       <div class="card-body">
         <div class="info-row"><span class="info-key">Hits totaux</span><span class="info-val" style="color:var(--amber)">${d.hits||0}</span></div>
         <div class="info-row"><span class="info-key">Statut</span><span class="info-val" style="color:${isBlocked?'var(--red)':'var(--green)'}">${isBlocked?'🚫 BLOQUÉ':'✓ Actif'}</span></div>
-        <div class="info-row"><span class="info-key">Dernière vue</span><span class="info-val">${d.lastSeen||'—'}</span></div>
-        <div class="info-row"><span class="info-key">Raison</span><span class="info-val">${d.reason||'—'}</span></div>
+        <div class="info-row"><span class="info-key">Dernière vue</span><span class="info-val">${esc(d.lastSeen||'—')}</span></div>
+        <div class="info-row"><span class="info-key">Raison</span><span class="info-val">${esc(d.reason||'—')}</span></div>
       </div>
     </div>
 
@@ -985,9 +990,30 @@ function getEnergy(d) {
 }
 
 // Decay tick — every 600ms, reshape every dot + global meter + apply user filters
+let _ipEvictTick = 0;
+function evictStaleIPs(now) {
+  // ipData/asnData grew forever (one entry per public IP ever seen, O(n) per tick for days).
+  const cutoff = now - 30 * 60000;
+  const entries = Object.entries(ipData);
+  const removable = entries.filter(([ip, d]) => !blockedIPs.has(ip) && !selectedIPs.has(ip));
+  const lastOf = d => (d.recentTs && d.recentTs.length) ? d.recentTs[d.recentTs.length - 1] : (d._firstSeen || 0);
+  const stale = removable.filter(([ip, d]) => lastOf(d) < cutoff);
+  let victims = stale;
+  if (entries.length - stale.length > 5000) {
+    const staleSet = new Set(stale.map(([ip]) => ip));
+    const rest = removable.filter(([ip]) => !staleSet.has(ip)).sort((a, b) => lastOf(a[1]) - lastOf(b[1]));
+    victims = stale.concat(rest.slice(0, entries.length - stale.length - 5000));
+  }
+  for (const [ip, d] of victims) {
+    if (dotElements[ip]) { try { dotElements[ip].remove(); } catch(_) {} delete dotElements[ip]; }
+    if (d.asn && asnData[d.asn] && asnData[d.asn].ips) { asnData[d.asn].ips.delete(ip); if (!asnData[d.asn].ips.size) delete asnData[d.asn]; }
+    delete ipData[ip];
+  }
+}
 setInterval(function noiseTick() {
   if (!mapReady) return;
   const now = Date.now();
+  if (++_ipEvictTick % 100 === 0) evictStaleIPs(now);   // every ~60 s
   const winCutoff = mapFilters.windowMinutes > 0 ? now - mapFilters.windowMinutes * 60000 : 0;
   let totalRecent = 0;
   let visibleCount = 0;
@@ -1252,8 +1278,8 @@ function getNgToken() {
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
   if (!t || t.length < 32) {
     t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
-    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
-    else { localStorage.removeItem('ng_ws_token'); return ''; }
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
   }
   return t;
 }
@@ -1271,7 +1297,7 @@ function connectWS() {
   ws.onclose = () => {
     document.getElementById('dot').classList.add('off');
     document.getElementById('conn-status').textContent = 'Reconnexion…';
-    setTimeout(connectWS, 3000);
+    clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000);
   };
   ws.onmessage = e => {
     try {

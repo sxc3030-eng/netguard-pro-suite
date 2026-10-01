@@ -196,6 +196,11 @@ const TYPE_COLORS = ['#ff4d6a','#ffb347','#b47dff','#4d9fff','#3dffb4','#00d4ff'
 const SEV_COLORS  = {critical:'#ff1a4d',high:'#ff4d6a',med:'#ffb347',medium:'#ffb347',low:'#4d9fff'};
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 function getNgToken() {
   // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
   try {
@@ -209,8 +214,8 @@ function getNgToken() {
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
   if (!t || t.length < 32) {
     t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
-    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
-    else { localStorage.removeItem('ng_ws_token'); return ''; }
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
   }
   return t;
 }
@@ -407,10 +412,10 @@ function renderHistoryTable() {
   tbody.innerHTML = filteredHistory.slice(0,500).map(h => `<tr>
     <td style="color:var(--text3);font-family:'Geist Mono',monospace;white-space:nowrap">${(h.ts||'').replace('T',' ').slice(0,19)}</td>
     <td><span class="sev-badge sev-${h.severity||'low'}">${h.severity||'?'}</span></td>
-    <td style="color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h.type||''}</td>
-    <td style="font-family:'Geist Mono',monospace;color:var(--blue)">${h.ip||''}</td>
+    <td style="color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.type||'')}</td>
+    <td style="font-family:'Geist Mono',monospace;color:var(--blue)">${esc(h.ip||'')}</td>
     <td><span style="font-size:13px">${FLAGS[h.country]||''}</span> <span style="color:var(--text3);font-size:11px">${CNAMES[h.country]||h.country||'?'}</span></td>
-    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${h.desc||''}</td>
+    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${esc(h.desc||'')}</td>
     <td><span style="font-size:10px;padding:2px 6px;border-radius:3px;font-weight:700;${h.blocked?'background:var(--reddim);color:var(--red)':'background:var(--bg4);color:var(--text3)'}">${h.blocked?'🚫 BLOQUÉ':'✓ Détecté'}</span></td>
   </tr>`).join('') || '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text3);font-size:12px">Aucune donnée pour cette période</td></tr>';
 }
@@ -481,8 +486,8 @@ function exportPDF() {
   <tbody>${filteredHistory.slice(0,200).map(h=>`<tr>
     <td>${(h.ts||'').replace('T',' ').slice(0,19)}</td>
     <td>${h.severity||''}</td>
-    <td>${h.type||''}</td>
-    <td><strong>${h.ip||''}</strong></td>
+    <td>${esc(h.type||'')}</td>
+    <td><strong>${esc(h.ip||'')}</strong></td>
     <td>${CNAMES[h.country]||h.country||'?'}</td>
     <td>${h.blocked?'BLOQUÉ':'Détecté'}</td>
   </tr>`).join('')}</tbody></table>

@@ -330,6 +330,11 @@ function getDeviceIcon(vendor, hostname) {
 }
 
 // ── WebSocket connection ───────────────────────────────────────────────────
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 function getNgToken() {
   // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
   try {
@@ -343,8 +348,8 @@ function getNgToken() {
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
   if (!t || t.length < 32) {
     t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
-    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
-    else { localStorage.removeItem('ng_ws_token'); return ''; }
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
   }
   return t;
 }
@@ -369,7 +374,7 @@ function connectWS() {
         if (msg.type === 'network_info') handleNetworkInfo(msg);
       } catch(_) {}
     };
-    ws.onclose = () => { wsConnected = false; ngAuthed = false; setTimeout(connectWS, 3000); };
+    ws.onclose = () => { wsConnected = false; ngAuthed = false; clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000); };
   } catch(_) {}
 }
 
@@ -502,11 +507,11 @@ function renderDevices(devices) {
     <div class="device-item">
       <div class="device-icon" style="background:var(--bg4)">${getDeviceIcon(d.vendor, d.hostname)}</div>
       <div style="flex:1">
-        <div class="device-name">${d.hostname || 'Appareil inconnu'}</div>
+        <div class="device-name">${esc(d.hostname || 'Appareil inconnu')}</div>
         <div style="display:flex;gap:12px;margin-top:2px">
-          <span class="device-ip">${d.ip}</span>
-          ${d.mac && d.mac !== '—' ? `<span class="device-mac">${d.mac}</span>` : ''}
-          ${d.vendor && d.vendor !== 'Gateway' && d.vendor !== 'Local' ? `<span style="font-size:10px;color:var(--text3)">${d.vendor}</span>` : ''}
+          <span class="device-ip">${esc(d.ip)}</span>
+          ${d.mac && d.mac !== '—' ? `<span class="device-mac">${esc(d.mac)}</span>` : ''}
+          ${d.vendor && d.vendor !== 'Gateway' && d.vendor !== 'Local' ? `<span style="font-size:10px;color:var(--text3)">${esc(d.vendor)}</span>` : ''}
         </div>
       </div>
       <div class="${d.online ? 'online-dot' : 'offline-dot'}"></div>

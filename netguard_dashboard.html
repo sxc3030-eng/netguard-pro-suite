@@ -2321,6 +2321,9 @@ function esc(v) {
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c]));
 }
+// Login/users API: no such server ships with NetGuard (port 8080 is the HTTP honeypot). Disabled unless configured.
+const AUTH_API = (() => { try { return localStorage.getItem('ng_auth_api') || ''; } catch(_) { return ''; } })();
+function authFetch(path, opts) { if (!AUTH_API) return Promise.reject(new Error('auth server not configured')); return fetch(AUTH_API + path, opts); }
 let ws, lastState = null, paused = false, currentFilter = 'all', currentLang = localStorage.getItem('ng_lang') || 'fr';
 let inHistory = [], outHistory = [], blockHistory = [], selectedGeoCountries = new Set();
 let nativeMode = false;
@@ -2346,6 +2349,7 @@ function getNgToken() {
     const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
     if (_argusTok && _argusTok.length >= 32) {
       try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      try { const u = new URL(window.location.href); u.searchParams.delete('ng_token'); history.replaceState(null, '', u.toString()); } catch(_) {}
       return _argusTok;
     }
   } catch(_) {}
@@ -2353,8 +2357,8 @@ function getNgToken() {
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
   if (!t || t.length < 32) {
     t = (prompt('NetGuard auth token required.\nOpen .netguard_token in the install dir and paste its content:') || '').trim();
-    if (t.length >= 32) localStorage.setItem('ng_ws_token', t);
-    else { localStorage.removeItem('ng_ws_token'); return ''; }
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
   }
   return t;
 }
@@ -2375,7 +2379,7 @@ function connectWS() {
     document.getElementById('dot').classList.add('offline');
     document.getElementById('conn-status').textContent = t('status_disconnected');
     document.getElementById('conn-status').style.color = 'var(--red)';
-    setTimeout(connectWS, 3000);
+    clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000);
   };
   ws.onerror = () => {};
   ws.onmessage = e => {
@@ -2414,7 +2418,7 @@ function sendCmd(obj) {
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify(obj));
   } else {
-    if (!ws || ws.readyState === 3) connectWS();
+    if (!ws || ws.readyState === 3) { clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, 0); }
     setTimeout(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }, 600);
   }
 }
@@ -3077,17 +3081,17 @@ function renderPackets(pkts, tbodyId, limit) {
     <tr class="pkt-row" onclick="wsSelectPacket(${i}, this)" style="${bgStyle}">
       <td style="color:var(--text3);font-size:10px">${i+1}</td>
       <td style="color:var(--text3)">${p.t||''}</td>
-      <td class="${sc[p.status]||''}" style="cursor:pointer" onclick="event.stopPropagation();wsFilterIP('${p.src}')" title="Click to filter">${p.src||''}</td>
-      <td style="color:${p.process?'var(--purple)':'var(--text3)'};font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis" title="${p.process||'Unknown / external'}">${p.process||'—'}</td>
-      <td style="color:var(--text3);font-size:10px">${p.location||p.country||''}</td>
-      <td style="color:var(--text3)" onclick="event.stopPropagation();wsFilterIP('${p.dst}')" title="Click to filter">${p.dst||''}</td>
+      <td class="${sc[p.status]||''}" style="cursor:pointer" onclick="event.stopPropagation();wsFilterIP('${esc(p.src)}')" title="Click to filter">${esc(p.src||'')}</td>
+      <td style="color:${p.process?'var(--purple)':'var(--text3)'};font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis" title="${esc(p.process||'Unknown / external')}">${esc(p.process||'—')}</td>
+      <td style="color:var(--text3);font-size:10px">${esc(p.location||p.country||'')}</td>
+      <td style="color:var(--text3)" onclick="event.stopPropagation();wsFilterIP('${esc(p.dst)}')" title="Click to filter">${esc(p.dst||'')}</td>
       <td style="color:var(--text3);font-size:10px">${p.sport||''}</td>
       <td style="font-size:10px">${p.dport||''}</td>
-      <td class="${wsColorize?(pc[p.proto]||''):''}" style="font-weight:600">${p.proto||''}</td>
-      <td style="color:var(--text3);font-size:10px">${p.flags||''}</td>
+      <td class="${wsColorize?(pc[p.proto]||''):''}" style="font-weight:600">${esc(p.proto||'')}</td>
+      <td style="color:var(--text3);font-size:10px">${esc(p.flags||'')}</td>
       <td style="color:var(--text3)">${p.size||''}</td>
-      <td class="${sc[p.status]||''}" style="font-size:10px">${sl[p.status]||''} ${p.status||''}</td>
-      <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:10px">${p.reason||_wsInfoString(p)}</td>
+      <td class="${sc[p.status]||''}" style="font-size:10px">${sl[p.status]||''} ${esc(p.status||'')}</td>
+      <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:10px">${esc(p.reason||_wsInfoString(p))}</td>
     </tr>`;
   }).join('') || '<tr><td colspan="13" class="empty-msg">No packets matching filter</td></tr>';
 
@@ -3197,15 +3201,15 @@ function wsSelectPacket(idx, row) {
     <div class="ws-detail-row"><span class="ws-detail-key">Frame ${idx+1}</span><span class="ws-detail-val">${p.size||0} bytes on wire</span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">Arrival Time</span><span class="ws-detail-val">${p.t||''}</span></div>
     <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--green)">► Internet Protocol</span><span class="ws-detail-val"></span></div>
-    <div class="ws-detail-row"><span class="ws-detail-key">  Source</span><span class="ws-detail-val">${p.src||''} ${p.country||p.location?'('+( p.country||p.location)+')':''}</span></div>
-    <div class="ws-detail-row"><span class="ws-detail-key">  Destination</span><span class="ws-detail-val">${p.dst||''}</span></div>
-    <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--blue)">► ${p.proto||'Protocol'}</span><span class="ws-detail-val"></span></div>
+    <div class="ws-detail-row"><span class="ws-detail-key">  Source</span><span class="ws-detail-val">${esc(p.src||'')} ${p.country||p.location?'('+esc(p.country||p.location)+')':''}</span></div>
+    <div class="ws-detail-row"><span class="ws-detail-key">  Destination</span><span class="ws-detail-val">${esc(p.dst||'')}</span></div>
+    <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--blue)">► ${esc(p.proto||'Protocol')}</span><span class="ws-detail-val"></span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Src Port</span><span class="ws-detail-val">${p.sport||'—'}</span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Dst Port</span><span class="ws-detail-val">${p.dport||'—'} ${_wsServiceName(p.dport)}</span></div>
-    ${p.flags ? `<div class="ws-detail-row"><span class="ws-detail-key">  Flags</span><span class="ws-detail-val">[${p.flags}]</span></div>` : ''}
+    ${p.flags ? `<div class="ws-detail-row"><span class="ws-detail-key">  Flags</span><span class="ws-detail-val">[${esc(p.flags)}]</span></div>` : ''}
     <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--amber)">► NetGuard Analysis</span><span class="ws-detail-val"></span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Decision</span><span class="ws-detail-val" style="color:${p.status==='block'?'var(--red)':p.status==='warn'?'var(--amber)':'var(--green)'}">${p.status?.toUpperCase()||'ALLOW'}</span></div>
-    ${p.reason ? `<div class="ws-detail-row"><span class="ws-detail-key">  Reason</span><span class="ws-detail-val" style="color:var(--amber)">${p.reason}</span></div>` : ''}
+    ${p.reason ? `<div class="ws-detail-row"><span class="ws-detail-key">  Reason</span><span class="ws-detail-val" style="color:var(--amber)">${esc(p.reason)}</span></div>` : ''}
   `;
   wsSelectedPkt = idx;
   if (wsHexView) wsRenderHex(idx);
@@ -3220,7 +3224,8 @@ function wsExportCSV() {
   if (!lastState?.recent_packets) return;
   const pkts = lastState.recent_packets;
   const header = 'Time,Source,Destination,SrcPort,DstPort,Protocol,Flags,Size,Status,Reason,Country\n';
-  const rows = pkts.map(p => `"${p.t||''}","${p.src||''}","${p.dst||''}","${p.sport||''}","${p.dport||''}","${p.proto||''}","${p.flags||''}","${p.size||''}","${p.status||''}","${(p.reason||'').replace(/"/g,"'")}","${p.country||p.location||''}"`).join('\n');
+  const csvCell = v => { let x = String(v == null ? '' : v).replace(/"/g, "'"); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return '"' + x + '"'; };  // no spreadsheet formula injection
+  const rows = pkts.map(p => [p.t, p.src, p.dst, p.sport, p.dport, p.proto, p.flags, p.size, p.status, p.reason, p.country||p.location].map(csvCell).join(',')).join('\n');
   const blob = new Blob([header + rows], {type: 'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -3247,11 +3252,11 @@ function dashRenderLiveIPs(pkts) {
   if (!ips.length) { el.innerHTML = '<div class="empty-msg" style="font-size:11px">Waiting for traffic...</div>'; return; }
   const sc = {allow:'var(--green)',block:'var(--red)',warn:'var(--amber)'};
   el.innerHTML = ips.slice(0, 20).map(p => `
-    <div class="live-ip-row" onclick="wsFilterIP('${p.src}')" style="cursor:pointer" title="Click to filter in Packets">
+    <div class="live-ip-row" onclick="wsFilterIP('${esc(p.src)}')" style="cursor:pointer" title="Click to filter in Packets">
       <span style="width:5px;height:5px;border-radius:50%;background:${sc[p.status]||'var(--green)'};flex-shrink:0"></span>
-      <span style="color:${sc[p.status]||'var(--text2)'};min-width:110px">${p.src}</span>
-      <span style="color:var(--text3);font-size:9px;flex:1">${p.country||p.location||''}</span>
-      <span style="color:var(--blue);font-size:10px">${p.proto||''}</span>
+      <span style="color:${sc[p.status]||'var(--text2)'};min-width:110px">${esc(p.src)}</span>
+      <span style="color:var(--text3);font-size:9px;flex:1">${esc(p.country||p.location||'')}</span>
+      <span style="color:var(--blue);font-size:10px">${esc(p.proto||'')}</span>
       <span style="color:var(--text3);font-size:9px">${p.dport||''}</span>
     </div>`).join('');
 }
@@ -3323,7 +3328,7 @@ function popoutData(type) {
     html = `<h2>🌐 Live IPs (${ips.length})</h2>
       <input class="search" placeholder="Search IP..." oninput="filterRows(this.value)">
       <table><tr><th>IP</th><th>Country</th><th>Protocol</th><th>Port</th><th>Status</th><th>Reason</th></tr>
-      ${ips.map(p => `<tr class="data-row"><td class="c-${p.status==='block'?'red':'green'}">${p.src}</td><td>${p.country||p.location||''}</td><td class="c-blue">${p.proto||''}</td><td>${p.dport||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status}</td><td>${p.reason||''}</td></tr>`).join('')}
+      ${ips.map(p => `<tr class="data-row"><td class="c-${p.status==='block'?'red':'green'}">${esc(p.src)}</td><td>${esc(p.country||p.location||'')}</td><td class="c-blue">${esc(p.proto||'')}</td><td>${p.dport||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status}</td><td>${esc(p.reason||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'geocountries') {
     const countries = s.geo_blocked_countries || [];
@@ -3331,11 +3336,11 @@ function popoutData(type) {
     const hits = s.geo_hits || [];
     html = `<h2>🌍 Blocked Countries (${countries.length})</h2>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
-        ${countries.map(c => `<span class="tag tag-red">${c} ${names[c]||c}</span>`).join('')}
+        ${countries.map(c => `<span class="tag tag-red">${esc(c)} ${esc(names[c]||c)}</span>`).join('')}
       </div>
       <h3 style="font-size:14px;margin:12px 0 8px">Geo Hits</h3>
       <table><tr><th>Country</th><th>Name</th><th>Attacks</th></tr>
-      ${hits.map(h => `<tr><td>${h.country}</td><td>${h.name||''}</td><td class="c-red">${h.hits}</td></tr>`).join('')}
+      ${hits.map(h => `<tr><td>${h.country}</td><td>${esc(h.name||'')}</td><td class="c-red">${h.hits}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'idsalerts') {
     const alerts = s.suricata_alerts || [];
@@ -3343,13 +3348,13 @@ function popoutData(type) {
     html = `<h2>🛡️ IDS Alerts (${alerts.length})</h2>
       <input class="search" placeholder="Search alerts..." oninput="filterRows(this.value)">
       <table><tr><th>Time</th><th>Severity</th><th>SID</th><th>Message</th><th>Source IP</th></tr>
-      ${alerts.map(a => `<tr class="data-row"><td>${a.ts||''}</td><td class="${sc[a.severity]||''}" style="font-weight:700;text-transform:uppercase">${a.severity}</td><td class="c-amber">#${a.sid}</td><td>${a.msg||''}</td><td>${a.src||''}</td></tr>`).join('')}
+      ${alerts.map(a => `<tr class="data-row"><td>${a.ts||''}</td><td class="${sc[a.severity]||''}" style="font-weight:700;text-transform:uppercase">${a.severity}</td><td class="c-amber">#${a.sid}</td><td>${esc(a.msg||'')}</td><td>${esc(a.src||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'threatintel') {
     const hits = s.threat_intel_hits || [];
     html = `<h2>🔒 Threat Intelligence Hits (${hits.length})</h2>
       <table><tr><th>Time</th><th>IP</th><th>Source</th><th>Detail</th></tr>
-      ${hits.map(h => `<tr><td>${h.ts||''}</td><td class="c-red">${h.ip||''}</td><td class="c-purple">${h.source||''}</td><td>${h.detail||''}</td></tr>`).join('')}
+      ${hits.map(h => `<tr><td>${h.ts||''}</td><td class="c-red">${esc(h.ip||'')}</td><td class="c-purple">${esc(h.source||'')}</td><td>${esc(h.detail||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'traffic') {
     const history = s.traffic_history || [];
@@ -3419,7 +3424,7 @@ function popoutData(type) {
       <input class="search" placeholder="Filter packets..." oninput="filterRows(this.value)">
       <div style="overflow:auto;max-height:calc(100vh - 120px)">
       <table><tr><th>#</th><th>Time</th><th>Source</th><th>Country</th><th>Destination</th><th>SPort</th><th>DPort</th><th>Proto</th><th>Flags</th><th>Size</th><th>Status</th><th>Reason</th></tr>
-      ${pkts.map((p, i) => `<tr class="data-row"><td>${i+1}</td><td>${p.t||''}</td><td class="c-${p.status==='block'?'red':'green'}">${p.src||''}</td><td>${p.country||p.location||''}</td><td>${p.dst||''}</td><td>${p.sport||''}</td><td>${p.dport||''}</td><td class="c-blue">${p.proto||''}</td><td>${p.flags||''}</td><td>${p.size||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status||''}</td><td>${p.reason||''}</td></tr>`).join('')}
+      ${pkts.map((p, i) => `<tr class="data-row"><td>${i+1}</td><td>${p.t||''}</td><td class="c-${p.status==='block'?'red':'green'}">${p.src||''}</td><td>${esc(p.country||p.location||'')}</td><td>${p.dst||''}</td><td>${p.sport||''}</td><td>${p.dport||''}</td><td class="c-blue">${esc(p.proto||'')}</td><td>${p.flags||''}</td><td>${p.size||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status||''}</td><td>${esc(p.reason||'')}</td></tr>`).join('')}
       </table></div>`;
   }
 
@@ -3436,10 +3441,10 @@ function renderThreats(threats, elId, limit) {
   const sc = {high:'sev-high',med:'sev-med',low:'sev-low',critical:'sev-critical'};
   el.innerHTML = threats.slice(0, limit).map(t => `
     <div class="threat-item">
-      <span class="threat-sev ${sc[t.severity]||'sev-low'}">${t.severity||'?'}</span>
-      <span class="threat-type">${t.type||''}</span>
-      <span class="threat-ip">${t.src_ip||''}</span>
-      <span class="threat-desc">${t.description||''}</span>
+      <span class="threat-sev ${sc[t.severity]||'sev-low'}">${esc(t.severity||'?')}</span>
+      <span class="threat-type">${esc(t.type||'')}</span>
+      <span class="threat-ip">${esc(t.src_ip||'')}</span>
+      <span class="threat-desc">${esc(t.description||'')}</span>
       <span style="font-size:10px;color:var(--text3)">${(t.timestamp||'').replace('T',' ').slice(0,19)}</span>
     </div>`).join('');
 }
@@ -3540,9 +3545,9 @@ function renderDpiAlerts(alerts) {
   el.innerHTML = alerts.slice(0,10).map(a => `
     <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
       <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:55px">${a.ts||''}</span>
-      <span style="color:${a.type==='attack'?'var(--red)':'var(--amber)'};min-width:70px">${a.type||''}</span>
-      <span style="color:var(--text)">${a.detail||''}</span>
-      <span style="margin-left:auto;color:var(--text3)">${a.src||''}</span>
+      <span style="color:${a.type==='attack'?'var(--red)':'var(--amber)'};min-width:70px">${esc(a.type||'')}</span>
+      <span style="color:var(--text)">${esc(a.detail||'')}</span>
+      <span style="margin-left:auto;color:var(--text3)">${esc(a.src||'')}</span>
     </div>`).join('');
 }
 
@@ -3556,8 +3561,8 @@ function renderSuricataAlerts(alerts) {
       <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:55px">${a.ts||''}</span>
       <span style="color:${sc[a.severity]||'var(--text3)'};font-weight:700;min-width:60px;text-transform:uppercase;font-size:10px">${a.severity||''}</span>
       <span style="color:var(--amber);font-family:'Geist Mono',monospace;min-width:55px">#${a.sid||''}</span>
-      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.msg||''}</span>
-      <span style="color:var(--text3);font-family:'Geist Mono',monospace">${a.src||''}</span>
+      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.msg||'')}</span>
+      <span style="color:var(--text3);font-family:'Geist Mono',monospace">${esc(a.src||'')}</span>
     </div>`).join('');
 }
 
@@ -3589,9 +3594,9 @@ function surRenderRules(rules) {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border);font-size:12px;opacity:${r.enabled?1:0.4}">
       <div class="toggle${r.enabled?' on':''}" style="width:32px;min-width:32px;height:16px" onclick="sendCmd({cmd:'suricata_toggle_rule',sid:${r.sid}})"></div>
       <span style="color:var(--amber);font-family:'Geist Mono',monospace;min-width:65px">#${r.sid}</span>
-      <span style="color:${sc[r.severity]||'var(--text3)'};font-weight:700;min-width:55px;font-size:10px;text-transform:uppercase">${r.severity}</span>
-      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.msg}</span>
-      <span style="color:var(--text3);font-size:10px;min-width:30px;text-align:right">${r.proto}</span>
+      <span style="color:${sc[r.severity]||'var(--text3)'};font-weight:700;min-width:55px;font-size:10px;text-transform:uppercase">${esc(r.severity)}</span>
+      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.msg)}</span>
+      <span style="color:var(--text3);font-size:10px;min-width:30px;text-align:right">${esc(r.proto)}</span>
       <span style="color:var(--cyan);font-family:'Geist Mono',monospace;min-width:50px;text-align:right;font-size:11px">${r.hits} hits</span>
       ${r.custom ? `<button onclick="sendCmd({cmd:'suricata_delete_rule',sid:${r.sid}})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px" title="Delete">✕</button>` : '<span style="min-width:26px"></span>'}
     </div>`).join('');
@@ -3798,7 +3803,7 @@ function renderLicenseStatus(msg) {
   if (!sumEl || !devEl) return;
   if (!msg.available) {
     sumEl.innerHTML = '<div style="color:var(--text3)">Licence: '
-      + (msg.error || 'indisponible') + '</div>';
+      + esc(msg.error || 'indisponible') + '</div>';
     devEl.innerHTML = '';
     return;
   }
@@ -3833,12 +3838,12 @@ function renderLicenseStatus(msg) {
     html += `<div>Sieges: <b>${used} / ${max}</b> ${seatBar}</div>`;
     html += `<div>Expire le: <span style="color:${expColor}"><b>${fmtDate(msg.expires_at)}</b></span></div>`;
     if (msg.license_id) {
-      html += `<div style="font-size:11px;color:var(--text3);margin-top:4px">License ID: ${msg.license_id}</div>`;
+      html += `<div style="font-size:11px;color:var(--text3);margin-top:4px">License ID: ${esc(msg.license_id)}</div>`;
     }
   }
   if (msg.seat_exhausted && msg.seat_error) {
     html += `<div style="margin-top:8px;padding:8px;background:#7a1818;border-radius:6px;color:#fff">
-              ⚠ ${msg.seat_error}</div>`;
+              ⚠ ${esc(msg.seat_error)}</div>`;
   }
   sumEl.innerHTML = html;
 
@@ -3860,7 +3865,7 @@ function renderLicenseStatus(msg) {
     const me = d.this_machine
       ? '<span style="color:#5b8cff;font-weight:600">(cette machine)</span>' : '';
     dev += `<tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:6px 4px">${(d.hostname||'?')} ${me}</td>
+              <td style="padding:6px 4px">${esc(d.hostname||'?')} ${me}</td>
               <td style="padding:6px 4px;font-family:monospace">${d.fingerprint_short||''}</td>
               <td style="padding:6px 4px">${fmtDate(d.activated_at)}</td>
               <td style="padding:6px 4px">${fmtDate(d.last_seen)}</td>
@@ -3935,6 +3940,7 @@ function _accumulateThreats(threats) {
     const id = t.id || (t.timestamp + t.src_ip);
     if (_lastThreatIds.has(id)) return; // déjà compté
     _lastThreatIds.add(id);
+    if (_lastThreatIds.size > 5000) _lastThreatIds.clear();   // bounded over long sessions
     const cat = _categorize(t.type);
     if (!_threatAccum[cat]) _threatAccum[cat] = { count: 0, ips: [] };
     _threatAccum[cat].count++;
@@ -3992,8 +3998,8 @@ function renderTimeline(events) {
     <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:11px">
       <span style="color:var(--text3);font-family:'Geist Mono',monospace;min-width:52px">${e.ts||''}</span>
       <span style="width:6px;height:6px;border-radius:50%;background:${sevColors[e.severity]||'#5a5a72'};flex-shrink:0"></span>
-      <span style="color:var(--text2);min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.type||''}</span>
-      <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:100px">${e.ip||''}</span>
+      <span style="color:var(--text2);min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.type||'')}</span>
+      <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:100px">${esc(e.ip||'')}</span>
       <span style="font-size:13px">${GEO_FLAGS[e.country]||''}</span>
     </div>`).join('') || '<div class="empty-msg">Aucun événement</div>';
 }
@@ -4382,12 +4388,12 @@ function renderLanDevices(devices) {
   el.innerHTML = `<table>
     <thead><tr><th>IP</th><th>Hostname</th><th>MAC</th><th>Fabricant</th><th>Statut</th><th>Action</th></tr></thead>
     <tbody>${devices.map(d => `<tr>
-      <td style="color:var(--blue)">${d.ip}</td>
-      <td style="color:var(--text2)">${d.hostname||'—'}</td>
-      <td style="color:var(--text3)">${d.mac||'—'}</td>
-      <td style="color:var(--text2)">${d.vendor||'—'}</td>
+      <td style="color:var(--blue)">${esc(d.ip)}</td>
+      <td style="color:var(--text2)">${esc(d.hostname||'—')}</td>
+      <td style="color:var(--text3)">${esc(d.mac||'—')}</td>
+      <td style="color:var(--text2)">${esc(d.vendor||'—')}</td>
       <td><span style="color:var(--green);font-size:11px">● En ligne</span></td>
-      <td><button class="btn btn-red" style="padding:2px 8px;font-size:10px" onclick="sendCmd({cmd:'block_ip',ip:'${d.ip}',reason:'Blocage LAN manuel'})">Bloquer</button></td>
+      <td><button class="btn btn-red" style="padding:2px 8px;font-size:10px" onclick="sendCmd({cmd:'block_ip',ip:'${esc(d.ip)}',reason:'Blocage LAN manuel'})">Bloquer</button></td>
     </tr>`).join('')}</tbody>
   </table>`;
 }
@@ -4464,7 +4470,7 @@ async function changePassword() {
 
 async function loadUsers() {
   try {
-    const r = await fetch('http://localhost:8080/auth/users');
+    const r = await authFetch('/auth/users');
     const users = await r.json();
     const el = document.getElementById('users-list');
     const cnt = document.getElementById('users-count');
@@ -4501,7 +4507,7 @@ async function createUser() {
   if (!username || !password) { showToast('Remplis tous les champs', 'var(--amber)'); return; }
 
   try {
-    const r = await fetch('http://localhost:8080/auth/users', {
+    const r = await authFetch('/auth/users', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username, name, password, role})
     });
@@ -4523,7 +4529,7 @@ async function createUser() {
 async function deleteUser(username) {
   if (!confirm(`Supprimer l'utilisateur "${username}" ?`)) return;
   try {
-    const r = await fetch('http://localhost:8080/auth/users/delete', {
+    const r = await authFetch('/auth/users/delete', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username})
     });
@@ -4555,7 +4561,7 @@ async function checkAuth() {
   // Vérifier le token si présent, mais ne pas bloquer si backend absent
   if (!_token) return;
   try {
-    const r = await fetch('http://localhost:8080/auth/verify', {
+    const r = await authFetch('/auth/verify', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({token: _token}),
       signal: AbortSignal.timeout(2000)
@@ -4582,7 +4588,7 @@ function openAI() {
 }
 
 function logout() {
-  fetch(`http://localhost:8080/auth/logout`, {
+  authFetch(`/auth/logout`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({token: _token})
   }).finally(() => {
@@ -4822,7 +4828,7 @@ function renderEntropyAlerts(alerts) {
   if (!el) return;
   if (!alerts || !alerts.length) { el.innerHTML = '<div style="color:var(--text3);padding:12px">No entropy alerts</div>'; return; }
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>IP</th><th>Type</th><th>Entropy</th><th>Detail</th></tr>' +
-    alerts.map(a => `<tr><td>${a.ts}</td><td>${a.ip}</td><td>${a.type}</td><td style="color:var(--red)"><b>${a.entropy}</b></td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${a.domain||('port:'+a.port)}</td></tr>`).join('') + '</table>';
+    alerts.map(a => `<tr><td>${esc(a.ts)}</td><td>${esc(a.ip)}</td><td>${esc(a.type)}</td><td style="color:var(--red)"><b>${a.entropy}</b></td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(a.domain||('port:'+a.port))}</td></tr>`).join('') + '</table>';
 }
 
 function renderIntelHits(hits) {
@@ -4830,7 +4836,7 @@ function renderIntelHits(hits) {
   if (!el) return;
   if (!hits || !hits.length) { el.innerHTML = '<div style="color:var(--text3);padding:12px">No threat intel hits</div>'; return; }
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>IP</th><th>Source</th><th>Detail</th><th>Sev</th></tr>' +
-    hits.map(h => `<tr><td>${h.ts}</td><td>${h.ip}</td><td><span class="badge badge-blue">${h.source}</span></td><td style="font-size:12px">${h.detail}</td><td><span class="badge badge-${h.severity==='critical'?'red':h.severity==='high'?'red':'amber'}">${h.severity}</span></td></tr>`).join('') + '</table>';
+    hits.map(h => `<tr><td>${esc(h.ts)}</td><td>${esc(h.ip)}</td><td><span class="badge badge-blue">${esc(h.source)}</span></td><td style="font-size:12px">${esc(h.detail)}</td><td><span class="badge badge-${h.severity==='critical'?'red':h.severity==='high'?'red':'amber'}">${esc(h.severity)}</span></td></tr>`).join('') + '</table>';
 }
 
 function renderIsolationList(lanDevices, isolatedDevices) {
@@ -4840,10 +4846,10 @@ function renderIsolationList(lanDevices, isolatedDevices) {
   el.innerHTML = lanDevices.map(d => {
     const isolated = isolatedDevices && isolatedDevices.includes(d.ip);
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--bg4)">
-      <div><b>${d.ip}</b> <span style="color:var(--text3);font-size:11px">${d.hostname||d.mac||''}</span></div>
+      <div><b>${esc(d.ip)}</b> <span style="color:var(--text3);font-size:11px">${esc(d.hostname||d.mac||'')}</span></div>
       ${isolated
-        ? `<button class="btn btn-sm" style="background:var(--green)" onclick="sendCmd({cmd:'unisolate_device',ip:'${d.ip}'})">\uD83D\uDD13 Lib\u00e9rer</button>`
-        : `<button class="btn btn-sm" style="background:var(--red)" onclick="sendCmd({cmd:'isolate_device',ip:'${d.ip}'})">\uD83D\uDD12 Isoler</button>`
+        ? `<button class="btn btn-sm" style="background:var(--green)" onclick="sendCmd({cmd:'unisolate_device',ip:'${esc(d.ip)}'})">\uD83D\uDD13 Lib\u00e9rer</button>`
+        : `<button class="btn btn-sm" style="background:var(--red)" onclick="sendCmd({cmd:'isolate_device',ip:'${esc(d.ip)}'})">\uD83D\uDD12 Isoler</button>`
       }
     </div>`;
   }).join('');
@@ -5131,11 +5137,11 @@ function renderLogs(logs) {
   const catIcons = {threat:'⚠️',block:'🚫',anomaly:'🔬',intel:'🌐',webhook:'📡',system:'⚙️'};
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>Cat</th><th>Sev</th><th>IP</th><th>Details</th></tr>' +
     logs.slice(0, 200).map(l => `<tr>
-      <td style="white-space:nowrap">${l.ts}</td>
-      <td>${catIcons[l.cat]||'📋'} ${l.cat}</td>
-      <td><span class="badge badge-${l.sev==='critical'||l.sev==='high'?'red':l.sev==='med'?'amber':'blue'}">${l.sev}</span></td>
-      <td style="font-family:monospace;font-size:11px">${l.ip}</td>
-      <td style="font-size:12px;max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.msg}</td>
+      <td style="white-space:nowrap">${esc(l.ts)}</td>
+      <td>${catIcons[l.cat]||'📋'} ${esc(l.cat)}</td>
+      <td><span class="badge badge-${l.sev==='critical'||l.sev==='high'?'red':l.sev==='med'?'amber':'blue'}">${esc(l.sev)}</span></td>
+      <td style="font-family:monospace;font-size:11px">${esc(l.ip)}</td>
+      <td style="font-size:12px;max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.msg)}</td>
     </tr>`).join('') + '</table>';
 }
 
@@ -6124,10 +6130,10 @@ function dcExportThreatReport() {
     </div>
     <h2>Menaces détectées</h2>
     <table><tr><th>Date</th><th>Sévérité</th><th>Type</th><th>IP source</th><th>Description</th></tr>
-    ${threats.map(t => `<tr><td>${(t.timestamp||'').replace('T',' ').slice(0,19)}</td><td style="text-transform:uppercase;font-weight:700;color:${t.severity==='critical'?'red':t.severity==='high'?'#d32f2f':'#f57c00'}">${t.severity}</td><td>${t.type}</td><td>${t.src_ip}</td><td>${t.description||''}</td></tr>`).join('')}
+    ${threats.map(t => `<tr><td>${(t.timestamp||'').replace('T',' ').slice(0,19)}</td><td style="text-transform:uppercase;font-weight:700;color:${t.severity==='critical'?'red':t.severity==='high'?'#d32f2f':'#f57c00'}">${esc(t.severity)}</td><td>${esc(t.type)}</td><td>${esc(t.src_ip)}</td><td>${esc(t.description||'')}</td></tr>`).join('')}
     </table>
     <h2>IPs bloquées (${blocked.length})</h2>
-    <p style="font-family:monospace;font-size:12px;word-break:break-all">${blocked.join(', ') || 'Aucune'}</p>
+    <p style="font-family:monospace;font-size:12px;word-break:break-all">${esc(blocked.join(', ')) || 'Aucune'}</p>
     <hr style="margin-top:30px;border:none;border-top:1px solid #ddd">
     <p style="color:#aaa;font-size:11px;margin-top:8px">NetGuard Pro v4.0 — Rapport de sécurité automatique</p>
     <script>setTimeout(()=>window.print(),500)<\\/script>
