@@ -71,11 +71,14 @@ _tray_icon = None             # set in main()
 
 
 # ── Backend status / control ────────────────────────────────────────────
+BACKEND_PORT = int(os.environ.get("NETGUARD_PORT", "8765") or 8765)   # netguard.py --port
+
+
 def is_running():
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(0.5)
-        ok = s.connect_ex(('localhost', 8765)) == 0
+        ok = s.connect_ex(('127.0.0.1', BACKEND_PORT)) == 0
         s.close()
         return ok
     except Exception:

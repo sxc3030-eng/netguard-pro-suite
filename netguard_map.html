@@ -2,6 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob: file: ; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* https://cdn.jsdelivr.net https://ipapi.co https://ipwho.is https://nominatim.openstreetmap.org http://ip-api.com; frame-src 'none'">
 <title>NetGuard AI — Carte Intelligence</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
@@ -1090,10 +1091,14 @@ function addOrUpdateDot(ip, data) {
   const color = blockedIPs.has(ip) ? '#ff4d6a' : selectedIPs.has(ip) ? '#4d9fff' : data.status==='block' ? '#ff4d6a' : data.status==='warn' ? '#ffb347' : '#3dffb4';
   const r = blockedIPs.has(ip) ? 4 : selectedIPs.has(ip) ? 4 : 3;
 
-  // Ripple animé — toujours affiché
-  g.append('circle').attr('cx',px).attr('cy',py).attr('r',r)
-    .attr('fill','none').attr('stroke',color).attr('stroke-width',1.5).attr('opacity',.8)
-    .transition().duration(900).attr('r',r+12).attr('opacity',0).remove();
+  // Ripple animé — au plus un par IP par seconde (avant : ~400 transitions D3/s en continu)
+  const _rk = data._lastRipple || 0, _rnow = Date.now();
+  if (_rnow - _rk > 1000) {
+    data._lastRipple = _rnow;
+    g.append('circle').attr('cx',px).attr('cy',py).attr('r',r)
+      .attr('fill','none').attr('stroke',color).attr('stroke-width',1.5).attr('opacity',.8)
+      .transition().duration(900).attr('r',r+12).attr('opacity',0).remove();
+  }
 
   // Si le point existe déjà, juste mettre à jour la couleur
   if (dotElements[ip]) {

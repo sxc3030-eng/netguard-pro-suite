@@ -11,7 +11,7 @@
   --text: #e2e8f0; --text2: #94a3b8; --accent: #4d9fff;
   --border: #2a2a3e; --green: #22c55e; --red: #ef4444;
   --orange: #ff6b35; --purple: #a855f7; --yellow: #eab308;
-  --radius: 10px; --sidebar-w: 300px;
+  --radius: 10px; --sidebar-w: 280px; --rsidebar-w: 310px;
 }
 body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 
@@ -21,7 +21,6 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   display: flex; align-items: center; justify-content: space-between; padding: 0 20px; flex-shrink: 0;
 }
 .topbar-left { display: flex; align-items: center; gap: 12px; }
-.topbar-left .logo { font-size: 22px; }
 .topbar-left h1 { font-size: 17px; font-weight: 600; color: var(--text); }
 .topbar-left h1 span { color: var(--accent); }
 .topbar-actions { display: flex; gap: 8px; }
@@ -47,13 +46,9 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 }
 .sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
 .sidebar-section h3 { font-size: 12px; text-transform: uppercase; color: var(--text2); margin-bottom: 10px; letter-spacing: .5px; }
-
-/* Network info */
 .net-info-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
 .net-info-row .label { color: var(--text2); }
 .net-info-row .value { color: var(--text); font-family: 'Cascadia Code', monospace; font-size: 12px; }
-
-/* Device list */
 .device-list { list-style: none; }
 .device-item {
   display: flex; align-items: center; gap: 10px; padding: 8px 10px;
@@ -61,22 +56,54 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 }
 .device-item:hover { background: var(--bg3); }
 .device-item.selected { background: var(--bg3); border-left: 3px solid var(--accent); }
-.device-icon { font-size: 20px; width: 28px; text-align: center; flex-shrink: 0; }
+.device-item.offline { opacity: .5; }
+.device-icon-wrap { position: relative; width: 32px; height: 32px; flex-shrink: 0; }
+.device-icon-wrap svg { width: 32px; height: 32px; }
+.status-led {
+  position: absolute; bottom: -1px; right: -1px; width: 10px; height: 10px;
+  border-radius: 50%; border: 2px solid var(--bg2);
+}
+.status-led.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-led.offline { background: var(--red); box-shadow: 0 0 6px var(--red); }
 .device-info { flex: 1; min-width: 0; }
 .device-name { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .device-ip { font-size: 11px; color: var(--text2); font-family: monospace; }
-.device-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-
-/* Detail panel */
-.detail-panel { padding: 16px; }
+/* ─── RIGHT SIDEBAR (details) ─── */
+.rsidebar {
+  width: var(--rsidebar-w); background: var(--bg2); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto; flex-shrink: 0;
+}
+.rsidebar .sidebar-section { padding: 16px; border-bottom: 1px solid var(--border); }
+.detail-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.detail-header-icon { width: 42px; height: 42px; flex-shrink: 0; position: relative; }
+.detail-header-icon svg { width: 42px; height: 42px; }
+.detail-header-icon .status-led { position: absolute; bottom: -1px; right: -1px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg2); }
+.detail-header-info { flex: 1; min-width: 0; }
+.detail-dev-name {
+  font-size: 15px; font-weight: 600; color: var(--text); cursor: pointer;
+  padding: 2px 6px; border-radius: 4px; border: 1px solid transparent;
+  transition: all .15s; display: flex; align-items: center; gap: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.detail-dev-name:hover { border-color: var(--border); background: var(--bg3); }
+.detail-dev-name .edit-icon { opacity: 0; transition: opacity .15s; flex-shrink: 0; }
+.detail-dev-name:hover .edit-icon { opacity: .5; }
+.detail-dev-type { font-size: 12px; color: var(--accent); }
+.detail-dev-ip { font-size: 12px; color: var(--text2); font-family: monospace; user-select: text; cursor: text; }
+.name-edit-input {
+  width: 100%; padding: 4px 8px; border-radius: 4px; border: 1px solid var(--accent);
+  background: var(--bg3); color: var(--text); font-size: 14px; font-family: inherit;
+  outline: none;
+}
 .detail-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--border); }
 .detail-row .dlabel { color: var(--text2); }
-.detail-row .dvalue { color: var(--text); font-family: monospace; font-size: 12px; text-align: right; max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+.detail-row .dvalue { color: var(--text); font-family: monospace; font-size: 12px; text-align: right; max-width: 170px; overflow: hidden; text-overflow: ellipsis; user-select: text; cursor: text; }
+.device-ip { user-select: text; cursor: text; }
+.net-info-row .value { user-select: text; cursor: text; }
 .port-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-.port-tag {
-  padding: 2px 8px; border-radius: 4px; font-size: 11px;
-  background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
-}
+.port-tag { padding: 2px 8px; border-radius: 4px; font-size: 11px; background: var(--bg3); border: 1px solid var(--border); color: var(--text2); }
 .port-tag.open { border-color: var(--green); color: var(--green); }
 .scan-port-btn {
   margin-top: 10px; width: 100%; padding: 8px; border-radius: 8px;
@@ -84,76 +111,153 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
   cursor: pointer; font-size: 12px; text-align: center; transition: all .2s;
 }
 .scan-port-btn:hover { background: var(--accent); color: #fff; }
+.iface-item { padding: 5px 8px; border-radius: 6px; background: var(--bg3); margin-bottom: 4px; font-size: 12px; }
+.iface-item .iface-name { font-weight: 500; color: var(--accent); }
+.iface-item .iface-detail { color: var(--text2); font-family: monospace; font-size: 11px; }
+.device-network { font-size: 10px; color: var(--text2); opacity: .7; margin-top: 1px; }
 
+/* ─── FIREWALL ─── */
+.fw-overview { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.fw-stat {
+  flex: 1; min-width: 90px; background: var(--bg3); border-radius: 8px; padding: 8px 10px;
+  text-align: center; border: 1px solid var(--border);
+}
+.fw-stat .fw-num { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.fw-stat .fw-lbl { font-size: 10px; color: var(--text2); text-transform: uppercase; letter-spacing: .3px; }
+.fw-stat.danger .fw-num { color: var(--red); }
+.fw-stat.warn .fw-num { color: var(--orange); }
+.fw-stat.ok .fw-num { color: var(--green); }
+.fw-admin-badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px;
+  border-radius: 20px; font-size: 11px; margin-top: 6px;
+}
+.fw-admin-badge.yes { background: rgba(34,197,94,.12); color: var(--green); border: 1px solid rgba(34,197,94,.25); }
+.fw-admin-badge.no { background: rgba(239,68,68,.12); color: var(--red); border: 1px solid rgba(239,68,68,.25); }
+
+/* Firewall controls in detail panel */
+.fw-controls { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.fw-controls h4 { font-size: 11px; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; letter-spacing: .5px; display: flex; align-items: center; gap: 6px; }
+.fw-toggle-btn {
+  width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--border);
+  cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center;
+  justify-content: center; gap: 8px; transition: all .2s;
+}
+.fw-toggle-btn.block { background: rgba(239,68,68,.1); color: var(--red); border-color: rgba(239,68,68,.3); }
+.fw-toggle-btn.block:hover { background: var(--red); color: #fff; }
+.fw-toggle-btn.unblock { background: rgba(34,197,94,.1); color: var(--green); border-color: rgba(34,197,94,.3); }
+.fw-toggle-btn.unblock:hover { background: var(--green); color: #fff; }
+.fw-toggle-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.fw-attempt-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: var(--bg3); border-radius: 8px; padding: 8px 12px; margin-top: 8px;
+  border: 1px solid var(--border);
+}
+.fw-attempt-num { font-size: 20px; font-weight: 700; color: var(--orange); }
+.fw-attempt-lbl { font-size: 11px; color: var(--text2); }
+.fw-attempt-last { font-size: 10px; color: var(--text2); font-family: monospace; }
+
+.fw-ports-section { margin-top: 10px; }
+.fw-port-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.fw-port-name { color: var(--text); }
+.fw-port-num { color: var(--text2); font-family: monospace; font-size: 11px; }
+.fw-port-toggle {
+  width: 36px; height: 20px; border-radius: 10px; border: none; cursor: pointer;
+  position: relative; transition: background .2s;
+}
+.fw-port-toggle.open { background: var(--green); }
+.fw-port-toggle.blocked { background: var(--red); }
+.fw-port-toggle::after {
+  content: ''; position: absolute; top: 2px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; transition: left .2s;
+}
+.fw-port-toggle.open::after { left: 2px; }
+.fw-port-toggle.blocked::after { left: 18px; }
+
+/* Blocked rules list */
+.fw-rules-list { margin-top: 6px; }
+.fw-rule-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: 6px; font-size: 12px; cursor: pointer; transition: background .15s;
+}
+.fw-rule-item:hover { background: var(--bg3); }
+.fw-rule-item .fw-rule-ip { font-family: monospace; color: var(--text); }
+.fw-rule-item .fw-rule-badge {
+  padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+.fw-rule-item .fw-rule-badge.full { background: rgba(239,68,68,.15); color: var(--red); }
+.fw-rule-item .fw-rule-badge.partial { background: rgba(255,107,53,.15); color: var(--orange); }
+.fw-rule-attempts { margin-left: auto; font-size: 11px; color: var(--text2); }
+
+/* Map node firewall indicators */
+.node-shield { pointer-events: none; }
+.node-blocked-ring { fill: none; stroke-width: 2; stroke-dasharray: 4 3; }
+@keyframes blocked-pulse { 0%,100% { opacity: .6; } 50% { opacity: 1; } }
+.node-blocked-ring { animation: blocked-pulse 2s ease infinite; }
+.node-attempt-badge { pointer-events: none; }
+.node-attempt-bg { rx: 8; ry: 8; }
+.node-attempt-text { font-size: 9px; font-weight: 700; text-anchor: middle; dominant-baseline: central; }
 .no-selection { color: var(--text2); font-size: 13px; text-align: center; padding: 30px 0; }
 
 /* ─── MAP AREA ─── */
 .map-container { flex: 1; position: relative; overflow: hidden; background: var(--bg); }
 .map-container svg { width: 100%; height: 100%; }
-
-/* SVG styles */
-.link-line { stroke: rgba(77, 159, 255, 0.15); stroke-width: 2; }
-.link-line:hover { stroke: rgba(77, 159, 255, 0.4); }
+.link-line { stroke: rgba(77, 159, 255, 0.2); stroke-width: 2; stroke-linecap: round; }
+.link-line:hover { stroke: rgba(77, 159, 255, 0.5); stroke-width: 3; }
+.link-line.offline-link { stroke-dasharray: 6 4; stroke: rgba(107, 114, 128, 0.2); }
+.link-line.blocked-link { stroke-dasharray: 8 4; stroke: rgba(239, 68, 68, 0.35); stroke-width: 2.5; }
 .node-group { cursor: grab; }
 .node-group:active { cursor: grabbing; }
-.node-circle { stroke-width: 3; fill: var(--bg2); transition: r .2s; }
-.node-circle.selected { stroke-width: 4; filter: drop-shadow(0 0 12px currentColor); }
-.node-icon { font-size: 22px; text-anchor: middle; dominant-baseline: central; pointer-events: none; user-select: none; }
-.node-label {
-  font-size: 11px; fill: var(--text2); text-anchor: middle;
-  pointer-events: none; user-select: none;
-}
-.node-ip {
-  font-size: 10px; fill: var(--text2); text-anchor: middle;
-  pointer-events: none; user-select: none; opacity: .6;
-  font-family: monospace;
-}
-.node-group:hover .node-circle { r: 32; }
-.node-group.selected .node-circle { r: 34; }
+.node-circle { stroke-width: 3; transition: all .2s; }
+.node-circle.selected { stroke-width: 4; filter: drop-shadow(0 0 14px currentColor); }
+.node-icon { pointer-events: none; user-select: none; }
+.node-label { font-size: 11px; fill: var(--text); text-anchor: middle; pointer-events: none; user-select: none; font-weight: 500; }
+.node-ip { font-size: 10px; fill: var(--text2); text-anchor: middle; pointer-events: none; user-select: none; font-family: monospace; }
+.node-group:hover .node-circle { filter: drop-shadow(0 0 10px currentColor); }
+.node-group.selected .node-circle { filter: drop-shadow(0 0 16px currentColor); }
+.node-group.offline { opacity: .45; }
+.node-group.offline .node-circle { stroke-dasharray: 5 3; }
 
-/* Scan animation */
-.scan-ring {
-  fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0;
-}
-.scan-ring.active {
-  animation: scan-pulse 2s ease-out infinite;
-}
-@keyframes scan-pulse {
-  0% { r: 28; opacity: .8; } 100% { r: 80; opacity: 0; }
-}
+/* Status LED on SVG nodes */
+.node-led { stroke-width: 1.5; }
+.node-led.online { fill: var(--green); stroke: #166534; }
+.node-led.offline { fill: var(--red); stroke: #991b1b; }
 
-/* Node appear animation */
-@keyframes node-appear {
-  0% { transform: scale(0); opacity: 0; }
-  60% { transform: scale(1.2); }
-  100% { transform: scale(1); opacity: 1; }
-}
+/* Animations */
+@keyframes scan-pulse { 0% { r: 30; opacity: .7; } 100% { r: 70; opacity: 0; } }
+.scan-ring { fill: none; stroke-width: 2; opacity: 0; }
+.scan-ring.active { animation: scan-pulse 2s ease-out infinite; }
+@keyframes node-appear { 0% { opacity: 0; } 100% { opacity: 1; } }
 .node-group.new { animation: node-appear .5s ease-out forwards; }
+@keyframes led-glow { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+.node-led.online { animation: led-glow 3s ease infinite; }
 
 /* Tooltip */
 .tooltip {
   position: absolute; background: var(--bg3); border: 1px solid var(--border);
-  border-radius: 8px; padding: 10px 14px; font-size: 12px;
-  pointer-events: none; z-index: 100; display: none; min-width: 160px;
-  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  border-radius: 10px; padding: 12px 16px; font-size: 12px;
+  pointer-events: none; z-index: 100; display: none; min-width: 180px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
-.tooltip .tt-name { font-weight: 600; margin-bottom: 4px; }
+.tooltip .tt-name { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
 .tooltip .tt-ip { color: var(--text2); font-family: monospace; }
-.tooltip .tt-type { color: var(--accent); margin-top: 2px; }
+.tooltip .tt-type { color: var(--accent); margin-top: 3px; }
+.tooltip .tt-status { margin-top: 3px; font-size: 11px; }
 
 /* Legend */
 .map-legend {
   position: absolute; bottom: 16px; right: 16px; background: var(--bg2);
   border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px;
-  display: flex; flex-wrap: wrap; gap: 8px; max-width: 420px;
+  display: flex; flex-wrap: wrap; gap: 10px; max-width: 500px;
 }
 .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text2); }
 .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
 
 /* Zoom controls */
-.zoom-controls {
-  position: absolute; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 4px;
-}
+.zoom-controls { position: absolute; top: 16px; right: 16px; display: flex; flex-direction: column; gap: 4px; }
 .zoom-btn {
   width: 36px; height: 36px; border-radius: 8px; border: 1px solid var(--border);
   background: var(--bg2); color: var(--text); font-size: 18px; cursor: pointer;
@@ -161,24 +265,18 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 }
 .zoom-btn:hover { background: var(--accent); color: #fff; }
 
-/* ─── STATUS BAR ─── */
+/* Status bar */
 .statusbar {
   height: 32px; background: var(--bg2); border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 16px; font-size: 12px; color: var(--text2); flex-shrink: 0;
 }
-
-/* Scan progress */
-.scan-progress {
-  position: absolute; top: 0; left: 0; right: 0; height: 3px;
-  background: var(--bg3); z-index: 50; display: none;
-}
+.scan-progress { position: absolute; top: 0; left: 0; right: 0; height: 3px; background: var(--bg3); z-index: 50; display: none; }
 .scan-progress .bar { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
 .scan-progress.active { display: block; }
-.scan-progress.active .bar { animation: progress-anim 3s ease-in-out forwards; }
-@keyframes progress-anim { 0% { width:0; } 80% { width:90%; } 100% { width:100%; } }
+.scan-progress.active .bar { animation: progress-anim 8s ease-in-out forwards; }
+@keyframes progress-anim { 0% { width:0; } 80% { width:85%; } 100% { width:100%; } }
 
-/* ─── Scrollbar ─── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -190,52 +288,52 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
 <!-- TOPBAR -->
 <div class="topbar">
   <div class="topbar-left">
-    <svg width="22" height="22" viewBox="0 0 16 16" fill="none" style="flex-shrink:0"><circle cx="8" cy="8" r="7" stroke="#4d9fff" stroke-width="1.5"/><path d="M4 8h8M8 4v8" stroke="#4d9fff" stroke-width="1.2"/></svg>
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="flex-shrink:0">
+      <circle cx="12" cy="12" r="10" stroke="#4d9fff" stroke-width="1.5"/>
+      <circle cx="12" cy="12" r="3" fill="#4d9fff"/>
+      <line x1="12" y1="2" x2="12" y2="7" stroke="#4d9fff" stroke-width="1.2"/>
+      <line x1="12" y1="17" x2="12" y2="22" stroke="#4d9fff" stroke-width="1.2"/>
+      <line x1="2" y1="12" x2="7" y2="12" stroke="#4d9fff" stroke-width="1.2"/>
+      <line x1="17" y1="12" x2="22" y2="12" stroke="#4d9fff" stroke-width="1.2"/>
+    </svg>
     <h1>SentinelOS <span>Network Mapper</span></h1>
   </div>
   <div class="topbar-actions">
-    <button class="btn primary" id="btn-scan" onclick="startScan()">
-      Scan
-    </button>
-    <button class="btn" onclick="autoLayoutAll()">
-      Auto Layout
-    </button>
-    <button class="btn" onclick="saveMapState()">
-      Save
-    </button>
-    <button class="btn" onclick="exportPNG()">
-      Export PNG
-    </button>
+    <button class="btn primary" id="btn-scan" onclick="startScan()">Scan</button>
+    <button class="btn" onclick="autoLayoutAll()">Auto Layout</button>
+    <button class="btn" onclick="saveMapState()">Save</button>
+    <button class="btn" onclick="exportPNG()">Export PNG</button>
   </div>
 </div>
 
 <div class="main">
-
   <!-- SIDEBAR -->
   <div class="sidebar">
-    <!-- Network Info -->
     <div class="sidebar-section" id="net-info-section">
-      <h3>RESEAU</h3>
+      <h3>NETWORK / RESEAU</h3>
       <div id="net-info">
-        <div class="net-info-row"><span class="label">Gateway</span><span class="value" id="info-gateway">—</span></div>
-        <div class="net-info-row"><span class="label">Sous-reseau</span><span class="value" id="info-subnet">—</span></div>
-        <div class="net-info-row"><span class="label">IP locale</span><span class="value" id="info-localip">—</span></div>
-        <div class="net-info-row"><span class="label">Interface</span><span class="value" id="info-iface">—</span></div>
+        <div class="net-info-row"><span class="label">Gateway</span><span class="value" id="info-gateway">--</span></div>
+        <div class="net-info-row"><span class="label">Subnet</span><span class="value" id="info-subnet">--</span></div>
+        <div class="net-info-row"><span class="label">Local IP</span><span class="value" id="info-localip">--</span></div>
+        <div class="net-info-row"><span class="label">Interface</span><span class="value" id="info-iface">--</span></div>
       </div>
+      <div id="interfaces-list" style="margin-top:8px;display:none"></div>
     </div>
-
-    <!-- Device List -->
+    <div class="sidebar-section" id="fw-section">
+      <h3 style="display:flex;align-items:center;gap:6px">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" stroke="#4d9fff" stroke-width="2" fill="rgba(77,159,255,.1)"/></svg>
+        FIREWALL
+      </h3>
+      <div class="fw-overview">
+        <div class="fw-stat danger"><div class="fw-num" id="fw-blocked-count">0</div><div class="fw-lbl">Blocked</div></div>
+        <div class="fw-stat warn"><div class="fw-num" id="fw-attempts-count">0</div><div class="fw-lbl">Attempts</div></div>
+      </div>
+      <div id="fw-admin-status"></div>
+      <div class="fw-rules-list" id="fw-rules-list"></div>
+    </div>
     <div class="sidebar-section" style="flex:1; overflow-y:auto;">
-      <h3>APPAREILS (<span id="device-count">0</span>)</h3>
+      <h3>DEVICES / APPAREILS (<span id="device-count">0</span>)</h3>
       <ul class="device-list" id="device-list"></ul>
-    </div>
-
-    <!-- Detail Panel -->
-    <div class="sidebar-section" id="detail-section">
-      <h3>DETAILS</h3>
-      <div id="detail-content">
-        <div class="no-selection">Cliquez sur un appareil</div>
-      </div>
     </div>
   </div>
 
@@ -244,10 +342,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
     <div class="scan-progress" id="scan-progress"><div class="bar"></div></div>
     <svg id="map-svg" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="glow">
-          <feGaussianBlur stdDeviation="3" result="blur"/>
-          <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
+        <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       </defs>
       <g id="map-group">
         <g id="links-group"></g>
@@ -262,78 +357,100 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', syste
     </div>
     <div class="map-legend" id="map-legend"></div>
   </div>
+
+  <!-- RIGHT SIDEBAR — Details -->
+  <div class="rsidebar" id="rsidebar">
+    <div class="sidebar-section" style="flex:1; overflow-y:auto;">
+      <div id="detail-content"><div class="no-selection">Click a device to see details<br><span style="opacity:.6;font-size:11px">Cliquez sur un appareil</span></div></div>
+    </div>
+  </div>
 </div>
 
-<!-- STATUS BAR -->
 <div class="statusbar">
-  <span id="status-text">Pret. Cliquez sur Scan pour decouvrir le reseau.</span>
+  <span id="status-text">Ready — Click Scan to discover the network / Pret — Cliquez Scan</span>
   <span id="status-time"></span>
 </div>
 
 <script>
 // ═══════════════════════════════════════════════════════════
-// STATE
+// DEVICE TYPES — SVG icon paths for each type
 // ═══════════════════════════════════════════════════════════
-
-const DEVICE_TYPES = {
-  router:  { icon: "R",  label: "Routeur",    color: "#ff6b35" },
-  switch:  { icon: "SW", label: "Switch",     color: "#ffa500" },
-  pc:      { icon: "PC", label: "PC",         color: "#4d9fff" },
-  laptop:  { icon: "PC", label: "Laptop",     color: "#4d9fff" },
-  mobile:  { icon: "M",  label: "Mobile",     color: "#a855f7" },
-  printer: { icon: "P",  label: "Imprimante", color: "#22c55e" },
-  server:  { icon: "SV", label: "Serveur",    color: "#ef4444" },
-  iot:     { icon: "IoT",label: "IoT",        color: "#06b6d4" },
-  camera:  { icon: "C",  label: "Camera",     color: "#eab308" },
-  tv:      { icon: "TV", label: "TV/Media",   color: "#8b5cf6" },
-  nas:     { icon: "N",  label: "NAS",        color: "#f97316" },
-  unknown: { icon: "?",  label: "Inconnu",    color: "#6b7280" },
+var DEVICE_TYPES = {
+  router:  { label: "Routeur",    color: "#ff6b35",
+    svg: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" fill="currentColor"/><line x1="12" y1="3" x2="12" y2="8" stroke="currentColor" stroke-width="1.5"/><line x1="12" y1="16" x2="12" y2="21" stroke="currentColor" stroke-width="1.5"/><line x1="3" y1="12" x2="8" y2="12" stroke="currentColor" stroke-width="1.5"/><line x1="16" y1="12" x2="21" y2="12" stroke="currentColor" stroke-width="1.5"/>' },
+  switch:  { label: "Switch",     color: "#ffa500",
+    svg: '<rect x="3" y="7" width="18" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="16" cy="12" r="1.5" fill="currentColor"/>' },
+  pc:      { label: "PC",         color: "#4d9fff",
+    svg: '<rect x="4" y="3" width="16" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="19" x2="16" y2="19" stroke="currentColor" stroke-width="1.5"/><line x1="12" y1="15" x2="12" y2="19" stroke="currentColor" stroke-width="1.5"/>' },
+  laptop:  { label: "Laptop",     color: "#4d9fff",
+    svg: '<path d="M5 5h14v10H5z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M3 17h18l-2 2H5l-2-2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>' },
+  mobile:  { label: "Mobile",     color: "#a855f7",
+    svg: '<rect x="7" y="2" width="10" height="20" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="10" y1="5" x2="14" y2="5" stroke="currentColor" stroke-width="1" opacity=".5"/><circle cx="12" cy="19" r="1" fill="currentColor"/>' },
+  printer: { label: "Imprimante", color: "#22c55e",
+    svg: '<rect x="6" y="10" width="12" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M6 14H4V8a2 2 0 012-2h12a2 2 0 012 2v6h-2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="8" y="2" width="8" height="4" fill="none" stroke="currentColor" stroke-width="1.2"/>' },
+  server:  { label: "Serveur",    color: "#ef4444",
+    svg: '<rect x="5" y="2" width="14" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="9" width="14" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="5" y="16" width="14" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="5" r="1" fill="currentColor"/><circle cx="8" cy="12" r="1" fill="currentColor"/><circle cx="8" cy="19" r="1" fill="currentColor"/>' },
+  iot:     { label: "IoT",        color: "#06b6d4",
+    svg: '<circle cx="12" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 12a5.5 5.5 0 018 0" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5 9a9 9 0 0114 0" fill="none" stroke="currentColor" stroke-width="1.5"/>' },
+  camera:  { label: "Camera",     color: "#eab308",
+    svg: '<rect x="3" y="7" width="18" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="13" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="13" r="1.5" fill="currentColor"/>' },
+  tv:      { label: "TV/Media",   color: "#8b5cf6",
+    svg: '<rect x="3" y="4" width="18" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="20" x2="16" y2="20" stroke="currentColor" stroke-width="1.5"/>' },
+  nas:     { label: "NAS",        color: "#f97316",
+    svg: '<rect x="4" y="3" width="16" height="18" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="4" y1="10" x2="20" y2="10" stroke="currentColor" stroke-width="1"/><line x1="4" y1="14" x2="20" y2="14" stroke="currentColor" stroke-width="1"/><circle cx="17" cy="7" r="1" fill="currentColor"/><circle cx="17" cy="12" r="1" fill="currentColor"/><circle cx="17" cy="17" r="1" fill="currentColor"/>' },
+  unknown: { label: "Inconnu",    color: "#6b7280",
+    svg: '<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/><text x="12" y="16" text-anchor="middle" font-size="12" fill="currentColor" font-weight="bold">?</text>' },
 };
 
-let devices = [];
-let selectedDeviceId = null;
-let isScanning = false;
-
-// SVG pan/zoom state
-let svgScale = 1;
-let svgTranslateX = 0;
-let svgTranslateY = 0;
-let isPanning = false;
-let panStartX = 0, panStartY = 0;
-let isDraggingNode = false;
-let dragTarget = null;
-let dragOffsetX = 0, dragOffsetY = 0;
+var devices = [];
+var selectedDeviceId = null;
+var isScanning = false;
+var svgScale = 1, svgTranslateX = 0, svgTranslateY = 0;
+var isPanning = false, panStartX = 0, panStartY = 0;
+var isDraggingNode = false, dragTarget = null, dragOffsetX = 0, dragOffsetY = 0;
 
 // ═══════════════════════════════════════════════════════════
-// PYWEBVIEW API
+// API
 // ═══════════════════════════════════════════════════════════
-
 function api() { return window.pywebview && window.pywebview.api; }
-
 function callAPI(method) {
   var args = Array.prototype.slice.call(arguments, 1);
   var a = api();
-  if (a && typeof a[method] === 'function') {
-    return a[method].apply(a, args);
-  }
+  if (a && typeof a[method] === 'function') return a[method].apply(a, args);
   return Promise.reject('No API');
+}
+
+// ═══════════════════════════════════════════════════════════
+// SVG ICON BUILDER — creates proper SVG node icons
+// ═══════════════════════════════════════════════════════════
+function replaceSvgColor(svgStr, color) {
+  // Replace currentColor with actual color value for pywebview compatibility
+  return svgStr.replace(/currentColor/g, color);
+}
+
+function buildDeviceSVG(type, color, size) {
+  var dt = DEVICE_TYPES[type] || DEVICE_TYPES.unknown;
+  size = size || 24;
+  return '<svg viewBox="0 0 24 24" width="' + size + '" height="' + size + '">' + replaceSvgColor(dt.svg, color) + '</svg>';
+}
+
+function buildNodeIcon(type, color) {
+  var dt = DEVICE_TYPES[type] || DEVICE_TYPES.unknown;
+  return '<g transform="translate(-12,-12)">' + replaceSvgColor(dt.svg, color) + '</g>';
 }
 
 // ═══════════════════════════════════════════════════════════
 // SCAN
 // ═══════════════════════════════════════════════════════════
-
 function startScan() {
   if (isScanning) return;
   isScanning = true;
-
   var btn = document.getElementById('btn-scan');
   btn.disabled = true;
   btn.classList.add('scanning');
-  btn.innerHTML = 'Scan en cours...';
-
+  btn.innerHTML = 'Scanning...';
   document.getElementById('scan-progress').classList.add('active');
-  document.getElementById('status-text').textContent = 'Scan du reseau en cours...';
+  document.getElementById('status-text').textContent = 'Scanning network...';
 
   callAPI('scan_network').then(function(r) {
     var data = JSON.parse(r);
@@ -342,41 +459,68 @@ function startScan() {
     renderDeviceList();
     renderMap();
     updateNetworkInfo();
-    document.getElementById('status-text').textContent = devices.length + ' appareils decouverts | Dernier scan: ' + new Date().toLocaleTimeString('fr-FR');
+    updateFirewallPanel();
+    var onlineCount = devices.filter(function(d) { return d.status !== 'offline' && d.status !== 'cached'; }).length;
+    var offlineCount = devices.length - onlineCount;
+    var nets = {};
+    devices.forEach(function(d) { if (d.network) nets[d.network] = true; });
+    var netCount = Object.keys(nets).length;
+    var msg = onlineCount + ' online';
+    if (offlineCount > 0) msg += ' + ' + offlineCount + ' offline';
+    if (netCount > 1) msg += ' | ' + netCount + ' interfaces';
+    msg += ' | ' + new Date().toLocaleTimeString('fr-FR');
+    document.getElementById('status-text').textContent = msg;
   }).catch(function(e) {
-    document.getElementById('status-text').textContent = 'Erreur lors du scan: ' + e;
+    document.getElementById('status-text').textContent = 'Erreur: ' + e;
   }).finally(function() {
     isScanning = false;
     btn.disabled = false;
     btn.classList.remove('scanning');
     btn.innerHTML = 'Scan';
-    setTimeout(function() {
-      document.getElementById('scan-progress').classList.remove('active');
-    }, 500);
+    setTimeout(function() { document.getElementById('scan-progress').classList.remove('active'); }, 500);
   });
 }
 
 function updateNetworkInfo() {
   callAPI('get_network_info').then(function(r) {
     var info = JSON.parse(r);
-    document.getElementById('info-gateway').textContent = info.gateway || '-';
-    document.getElementById('info-subnet').textContent = info.subnet || '-';
-    document.getElementById('info-localip').textContent = info.local_ip || '-';
-    document.getElementById('info-iface').textContent = info.interface || '-';
+    document.getElementById('info-gateway').textContent = info.gateway || '--';
+    document.getElementById('info-subnet').textContent = info.subnet || '--';
+    document.getElementById('info-localip').textContent = info.local_ip || '--';
+    document.getElementById('info-iface').textContent = info.interface || '--';
+
+    // Show all detected interfaces
+    var ifacesDiv = document.getElementById('interfaces-list');
+    var ifaces = info.interfaces || [];
+    if (ifaces.length > 1) {
+      ifacesDiv.style.display = 'block';
+      ifacesDiv.innerHTML = '<div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Interfaces (' + ifaces.length + ')</div>';
+      ifaces.forEach(function(iface) {
+        var div = document.createElement('div');
+        div.className = 'iface-item';
+        div.innerHTML = '<span class="iface-name">' + escapeHtml(iface.name) + '</span><br>' +
+          '<span class="iface-detail">' + iface.ip + ' / ' + iface.subnet + '</span>';
+        ifacesDiv.appendChild(div);
+      });
+    } else {
+      ifacesDiv.style.display = 'none';
+    }
   });
 }
 
 // ═══════════════════════════════════════════════════════════
-// DEVICE LIST (sidebar)
+// DEVICE LIST (sidebar) — with SVG icons + LED
 // ═══════════════════════════════════════════════════════════
-
 function renderDeviceList() {
   var list = document.getElementById('device-list');
   list.innerHTML = '';
-  // Sort: router first, then by IP
   var sorted = devices.slice().sort(function(a, b) {
     if (a.type === 'router') return -1;
     if (b.type === 'router') return 1;
+    // Online first
+    var aOff = (a.status === 'offline' || a.status === 'cached') ? 1 : 0;
+    var bOff = (b.status === 'offline' || b.status === 'cached') ? 1 : 0;
+    if (aOff !== bOff) return aOff - bOff;
     var pa = a.ip.split('.').map(function(x){return parseInt(x);});
     var pb = b.ip.split('.').map(function(x){return parseInt(x);});
     return pa[3] - pb[3];
@@ -384,19 +528,35 @@ function renderDeviceList() {
 
   sorted.forEach(function(dev) {
     var dt = DEVICE_TYPES[dev.type] || DEVICE_TYPES.unknown;
+    var isOff = dev.status === 'offline' || dev.status === 'cached';
     var li = document.createElement('li');
-    li.className = 'device-item' + (dev.id === selectedDeviceId ? ' selected' : '');
+    li.className = 'device-item' + (dev.id === selectedDeviceId ? ' selected' : '') + (isOff ? ' offline' : '');
     li.setAttribute('data-id', dev.id);
     li.onclick = function() { selectDevice(dev.id); };
+    li.ondblclick = function(e) { startRenameFromList(e, dev.id); };
 
     var label = dev.custom_label || dev.hostname || dev.ip;
+    var networkTag = '';
+    if (dev.network && hasMultipleNetworks()) {
+      networkTag = '<div class="device-network">' + escapeHtml(dev.network) + '</div>';
+    }
+    var fwTag = '';
+    if (dev.fw_blocked) {
+      fwTag = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="flex-shrink:0" title="Bloque"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="#ef4444" stroke="none"/><line x1="8" y1="9" x2="16" y2="17" stroke="#fff" stroke-width="2"/><line x1="16" y1="9" x2="8" y2="17" stroke="#fff" stroke-width="2"/></svg>';
+    } else if (dev.fw_blocked_ports && dev.fw_blocked_ports.length > 0) {
+      fwTag = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="flex-shrink:0" title="Ports bloques"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="#ff6b35" stroke="none"/></svg>';
+    }
     li.innerHTML =
-      '<span class="device-icon">' + dt.icon + '</span>' +
+      '<div class="device-icon-wrap">' +
+        buildDeviceSVG(dev.type, dt.color, 28) +
+        '<div class="status-led ' + (isOff ? 'offline' : 'online') + '"></div>' +
+      '</div>' +
       '<div class="device-info">' +
         '<div class="device-name">' + escapeHtml(label) + '</div>' +
         '<div class="device-ip">' + dev.ip + '</div>' +
+        networkTag +
       '</div>' +
-      '<div class="device-dot" style="background:' + dt.color + '"></div>';
+      fwTag;
     list.appendChild(li);
   });
 }
@@ -404,95 +564,167 @@ function renderDeviceList() {
 // ═══════════════════════════════════════════════════════════
 // DETAIL PANEL
 // ═══════════════════════════════════════════════════════════
-
 function selectDevice(id) {
   selectedDeviceId = id;
   var dev = devices.find(function(d) { return d.id === id; });
   if (!dev) return;
 
-  // Update list highlight
   document.querySelectorAll('.device-item').forEach(function(el) {
     el.classList.toggle('selected', el.getAttribute('data-id') === id);
   });
-
-  // Update map highlight
   document.querySelectorAll('.node-group').forEach(function(el) {
-    var isSelected = el.getAttribute('data-id') === id;
-    el.classList.toggle('selected', isSelected);
-    el.querySelector('.node-circle').classList.toggle('selected', isSelected);
+    var isSel = el.getAttribute('data-id') === id;
+    el.classList.toggle('selected', isSel);
+    var c = el.querySelector('.node-circle');
+    if (c) c.classList.toggle('selected', isSel);
   });
 
-  // Render detail panel
   var dt = DEVICE_TYPES[dev.type] || DEVICE_TYPES.unknown;
   var detail = document.getElementById('detail-content');
-  var portsHtml = '';
+  var isOff = dev.status === 'offline' || dev.status === 'cached';
+  var devLabel = dev.custom_label || dev.hostname || dev.ip;
+
+  // ── HEADER with editable name ──
+  var headerHtml =
+    '<div class="detail-header">' +
+      '<div class="detail-header-icon">' +
+        buildDeviceSVG(dev.type, dt.color, 42) +
+        '<div class="status-led ' + (isOff ? 'offline' : 'online') + '"></div>' +
+      '</div>' +
+      '<div class="detail-header-info">' +
+        '<div class="detail-dev-name" onclick="startRenameDevice(\'' + dev.id + '\')" title="Click to rename / Cliquer pour renommer">' +
+          escapeHtml(devLabel) +
+          '<svg class="edit-icon" width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M17 3l4 4L7 21H3v-4L17 3z" stroke="currentColor" stroke-width="2"/></svg>' +
+        '</div>' +
+        '<div class="detail-dev-type" style="color:' + dt.color + '">' + dt.label + '</div>' +
+        '<div class="detail-dev-ip">' + dev.ip + '</div>' +
+      '</div>' +
+    '</div>';
+
+  // ── INFO ROWS ──
+  var statusDot = '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' +
+    (isOff ? 'var(--red)' : 'var(--green)') + ';margin-right:6px;vertical-align:middle"></span>';
+
+  var infoHtml =
+    '<div class="detail-row"><span class="dlabel">Status</span><span class="dvalue">' + statusDot + (isOff ? 'Offline' : 'Online') + '</span></div>' +
+    '<div class="detail-row"><span class="dlabel">MAC</span><span class="dvalue">' + (dev.mac || '--') + '</span></div>' +
+    '<div class="detail-row"><span class="dlabel">Hostname</span><span class="dvalue">' + escapeHtml(dev.hostname || '--') + '</span></div>' +
+    '<div class="detail-row"><span class="dlabel">Vendor</span><span class="dvalue">' + escapeHtml(dev.vendor || '--') + '</span></div>';
+
+  if (dev.network) {
+    infoHtml += '<div class="detail-row"><span class="dlabel">Network</span><span class="dvalue">' + escapeHtml(dev.network) + '</span></div>';
+  }
+
+  // ── PORTS ──
+  var portsHtml = '<div style="margin-top:10px"><div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px">Open Ports</div>';
   if (dev.open_ports && dev.open_ports.length > 0) {
-    portsHtml = '<div class="port-tags">';
+    portsHtml += '<div class="port-tags">';
     dev.open_ports.forEach(function(p) {
-      portsHtml += '<span class="port-tag open">' + p + '</span>';
+      var svc = PORT_SERVICES[p] || p;
+      portsHtml += '<span class="port-tag open">' + svc + ' <span style="opacity:.5">' + p + '</span></span>';
     });
     portsHtml += '</div>';
   } else {
-    portsHtml = '<span style="color:var(--text2);font-size:12px">Aucun port ouvert detecte</span>';
+    portsHtml += '<span style="color:var(--text2);font-size:12px">No ports detected</span>';
+  }
+  portsHtml += '<button class="scan-port-btn" onclick="deepScanDevice(\'' + dev.ip + '\')">Deep Scan / Scan approfondi</button></div>';
+
+  // ── FIREWALL ──
+  var fwBlocked = dev.fw_blocked || false;
+  var fwAttempts = dev.fw_attempts || 0;
+  var fwPorts = dev.fw_blocked_ports || [];
+
+  var allPorts = (dev.open_ports || []).slice();
+  [22,80,443,445,3389,5900,8080].forEach(function(p) {
+    if (allPorts.indexOf(p) === -1) allPorts.push(p);
+  });
+  allPorts.sort(function(a,b){return a-b;});
+
+  var portControlsHtml = '';
+  allPorts.forEach(function(p) {
+    var isOpen = (dev.open_ports || []).indexOf(p) !== -1;
+    var isPortBlocked = fwPorts.indexOf(p) !== -1;
+    var svc = PORT_SERVICES[p] || 'Port ' + p;
+    var toggleCls = isPortBlocked ? 'blocked' : 'open';
+    portControlsHtml +=
+      '<div class="fw-port-row">' +
+        '<span class="fw-port-name">' + svc + '</span>' +
+        '<span class="fw-port-num">' + p + (isOpen ? ' &#x2714;' : '') + '</span>' +
+        '<button class="fw-port-toggle ' + toggleCls + '" onclick="togglePortBlock(\'' + dev.ip + '\',' + p + ')" title="' + (isPortBlocked ? 'Unblock/Debloquer' : 'Block/Bloquer') + '"' +
+        (!fwIsAdmin ? ' disabled' : '') + '></button>' +
+      '</div>';
+  });
+
+  var escapedLabel = escapeHtml(devLabel).replace(/'/g, "\\'");
+  var fwHtml =
+    '<div class="fw-controls">' +
+      '<h4><svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" stroke="#4d9fff" stroke-width="2" fill="rgba(77,159,255,.1)"/></svg> Firewall</h4>';
+
+  if (fwBlocked) {
+    fwHtml += '<button class="fw-toggle-btn unblock" onclick="toggleBlockDevice(\'' + dev.ip + '\',\'' + escapedLabel + '\')"' +
+      (!fwIsAdmin ? ' disabled' : '') + '>' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="#22c55e" stroke="none"/><polyline points="8,12 11,15 16,9" stroke="#fff" stroke-width="2" fill="none"/></svg>' +
+      'Unblock / Debloquer</button>';
+    fwHtml +=
+      '<div class="fw-attempt-bar">' +
+        '<div><div class="fw-attempt-num">' + fwAttempts + '</div><div class="fw-attempt-lbl">Blocked attempts / Tentatives</div></div>' +
+      '</div>';
+  } else {
+    fwHtml += '<button class="fw-toggle-btn block" onclick="toggleBlockDevice(\'' + dev.ip + '\',\'' + escapedLabel + '\')"' +
+      (!fwIsAdmin ? ' disabled' : '') + '>' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="#ef4444" stroke="none"/>' +
+      '<line x1="8" y1="9" x2="16" y2="17" stroke="#fff" stroke-width="2"/><line x1="16" y1="9" x2="8" y2="17" stroke="#fff" stroke-width="2"/></svg>' +
+      'Block / Bloquer</button>';
   }
 
-  detail.innerHTML =
-    '<div class="detail-row"><span class="dlabel">Type</span><span class="dvalue">' + dt.icon + ' ' + dt.label + '</span></div>' +
-    '<div class="detail-row"><span class="dlabel">IP</span><span class="dvalue">' + dev.ip + '</span></div>' +
-    '<div class="detail-row"><span class="dlabel">MAC</span><span class="dvalue">' + (dev.mac || '-') + '</span></div>' +
-    '<div class="detail-row"><span class="dlabel">Hostname</span><span class="dvalue">' + escapeHtml(dev.hostname || '-') + '</span></div>' +
-    '<div class="detail-row"><span class="dlabel">Fabricant</span><span class="dvalue">' + escapeHtml(dev.vendor || '-') + '</span></div>' +
-    '<div class="detail-row"><span class="dlabel">Ports</span></div>' +
-    portsHtml +
-    '<button class="scan-port-btn" onclick="deepScanDevice(\'' + dev.ip + '\')">Scan approfondi</button>';
+  fwHtml +=
+    '<div class="fw-ports-section">' +
+      '<div style="font-size:11px;color:var(--text2);text-transform:uppercase;margin-bottom:4px;margin-top:6px">Port Control / Controle des ports</div>' +
+      portControlsHtml +
+    '</div>' +
+    '</div>';
+
+  detail.innerHTML = headerHtml + infoHtml + portsHtml + fwHtml;
 }
 
 function deepScanDevice(ip) {
-  document.getElementById('status-text').textContent = 'Scan approfondi de ' + ip + '...';
+  document.getElementById('status-text').textContent = 'Deep scanning ' + ip + '...';
   callAPI('quick_port_scan', ip).then(function(r) {
     var data = JSON.parse(r);
-    // Update device with new port data
     var dev = devices.find(function(d) { return d.ip === ip; });
-    if (dev) {
-      dev.open_ports = data.open_ports || [];
-      selectDevice(dev.id);
-      renderMap();
-    }
-    // Show port services
+    if (dev) { dev.open_ports = data.open_ports || []; selectDevice(dev.id); renderMap(); }
     var services = data.port_services || {};
     var svcText = Object.keys(services).map(function(p) { return p + '/' + services[p]; }).join(', ');
-    document.getElementById('status-text').textContent = ip + ': ' + (svcText || 'Aucun port ouvert');
+    document.getElementById('status-text').textContent = ip + ': ' + (svcText || 'No open ports');
   });
 }
 
 // ═══════════════════════════════════════════════════════════
-// MAP RENDERING (SVG)
+// MAP RENDERING — SVG icons + LED indicators + styled links
 // ═══════════════════════════════════════════════════════════
-
 function renderMap() {
   var linksGroup = document.getElementById('links-group');
   var nodesGroup = document.getElementById('nodes-group');
   linksGroup.innerHTML = '';
   nodesGroup.innerHTML = '';
-
   if (devices.length === 0) return;
 
   var container = document.getElementById('map-container');
-  var width = container.clientWidth;
-  var height = container.clientHeight;
+  autoLayout(container.clientWidth, container.clientHeight);
 
-  // Auto-layout for devices without saved positions
-  autoLayout(width, height);
-
-  // Find router for drawing links
   var router = devices.find(function(d) { return d.type === 'router'; });
 
-  // Draw links (from router to each device)
+  // Draw links
   if (router) {
     devices.forEach(function(dev) {
       if (dev.id === router.id) return;
+      var isOff = dev.status === 'offline' || dev.status === 'cached';
+      var fwBlocked = dev.fw_blocked || false;
       var line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('class', 'link-line');
+      var cls = 'link-line';
+      if (fwBlocked) cls += ' blocked-link';
+      else if (isOff) cls += ' offline-link';
+      line.setAttribute('class', cls);
       line.setAttribute('x1', router.x); line.setAttribute('y1', router.y);
       line.setAttribute('x2', dev.x); line.setAttribute('y2', dev.y);
       line.setAttribute('data-from', router.id);
@@ -504,57 +736,107 @@ function renderMap() {
   // Draw nodes
   devices.forEach(function(dev, idx) {
     var dt = DEVICE_TYPES[dev.type] || DEVICE_TYPES.unknown;
+    var isOff = dev.status === 'offline' || dev.status === 'cached';
+    var isRouter = dev.type === 'router';
+    var r = isRouter ? 34 : 28;
     var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    g.setAttribute('class', 'node-group new');
+    g.setAttribute('class', 'node-group new' + (isOff ? ' offline' : ''));
     g.setAttribute('data-id', dev.id);
     g.setAttribute('transform', 'translate(' + dev.x + ',' + dev.y + ')');
-    g.style.animationDelay = (idx * 80) + 'ms';
+    g.style.animationDelay = (idx * 60) + 'ms';
 
-    // Scan ring animation
+    // Scan ring
     var ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     ring.setAttribute('class', 'scan-ring');
-    ring.setAttribute('cx', 0); ring.setAttribute('cy', 0); ring.setAttribute('r', 28);
+    ring.setAttribute('cx', 0); ring.setAttribute('cy', 0); ring.setAttribute('r', r);
     ring.style.stroke = dt.color;
     g.appendChild(ring);
 
-    // Main circle
+    // Outer circle
     var circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     circle.setAttribute('class', 'node-circle' + (dev.id === selectedDeviceId ? ' selected' : ''));
-    circle.setAttribute('cx', 0); circle.setAttribute('cy', 0);
-    circle.setAttribute('r', dev.type === 'router' ? 34 : 28);
+    circle.setAttribute('cx', 0); circle.setAttribute('cy', 0); circle.setAttribute('r', r);
     circle.style.stroke = dt.color;
-    circle.style.fill = 'var(--bg2)';
+    circle.style.fill = '#1a1a24';
     g.appendChild(circle);
 
-    // Icon
-    var icon = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    icon.setAttribute('class', 'node-icon');
-    icon.setAttribute('x', 0); icon.setAttribute('y', 2);
-    icon.textContent = dt.icon;
-    g.appendChild(icon);
+    // Device SVG icon (centered in circle)
+    var iconG = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    iconG.setAttribute('class', 'node-icon');
+    var iconScale = isRouter ? 1.3 : 1.0;
+    iconG.setAttribute('transform', 'scale(' + iconScale + ')');
+    iconG.innerHTML = buildNodeIcon(dev.type, dt.color);
+    g.appendChild(iconG);
+
+    // Status LED — small green/red dot at bottom-right of circle
+    var led = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    led.setAttribute('class', 'node-led ' + (isOff ? 'offline' : 'online'));
+    led.setAttribute('cx', r * 0.6); led.setAttribute('cy', r * 0.6);
+    led.setAttribute('r', 5);
+    g.appendChild(led);
+
+    // Firewall indicators
+    var fwBlocked = dev.fw_blocked || false;
+    var fwAttempts = dev.fw_attempts || 0;
+    if (fwBlocked) {
+      // Red dashed ring around blocked devices
+      var blockedRing = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      blockedRing.setAttribute('class', 'node-blocked-ring');
+      blockedRing.setAttribute('cx', 0); blockedRing.setAttribute('cy', 0);
+      blockedRing.setAttribute('r', r + 6);
+      blockedRing.style.stroke = '#ef4444';
+      g.appendChild(blockedRing);
+
+      // Shield icon at top-left
+      var shield = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      shield.setAttribute('class', 'node-shield');
+      shield.setAttribute('transform', 'translate(' + (-r * 0.55) + ',' + (-r * 0.75) + ') scale(0.7)');
+      shield.innerHTML = '<path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="#ef4444" stroke="#991b1b" stroke-width="1.5"/>' +
+        '<line x1="8" y1="9" x2="16" y2="17" stroke="#fff" stroke-width="2" stroke-linecap="round"/>' +
+        '<line x1="16" y1="9" x2="8" y2="17" stroke="#fff" stroke-width="2" stroke-linecap="round"/>';
+      g.appendChild(shield);
+    }
+    if (fwAttempts > 0) {
+      // Attempt count badge at top-right
+      var badge = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      badge.setAttribute('class', 'node-attempt-badge');
+      badge.setAttribute('transform', 'translate(' + (r * 0.5) + ',' + (-r * 0.7) + ')');
+      var badgeW = fwAttempts > 99 ? 28 : (fwAttempts > 9 ? 22 : 18);
+      var bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('class', 'node-attempt-bg');
+      bg.setAttribute('x', -badgeW / 2); bg.setAttribute('y', -9);
+      bg.setAttribute('width', badgeW); bg.setAttribute('height', 18);
+      bg.style.fill = '#ff6b35';
+      badge.appendChild(bg);
+      var txt = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      txt.setAttribute('class', 'node-attempt-text');
+      txt.setAttribute('x', 0); txt.setAttribute('y', 0);
+      txt.style.fill = '#fff';
+      txt.textContent = fwAttempts > 999 ? '999+' : fwAttempts;
+      badge.appendChild(txt);
+      g.appendChild(badge);
+    }
 
     // Label
     var label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     label.setAttribute('class', 'node-label');
-    label.setAttribute('x', 0); label.setAttribute('y', (dev.type === 'router' ? 34 : 28) + 16);
+    label.setAttribute('x', 0); label.setAttribute('y', r + 16);
     var displayName = dev.custom_label || dev.hostname || '';
     if (displayName.length > 18) displayName = displayName.substring(0, 16) + '..';
     label.textContent = displayName;
     g.appendChild(label);
 
-    // IP below label
+    // IP
     var ipText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
     ipText.setAttribute('class', 'node-ip');
-    ipText.setAttribute('x', 0); ipText.setAttribute('y', (dev.type === 'router' ? 34 : 28) + 28);
+    ipText.setAttribute('x', 0); ipText.setAttribute('y', r + 28);
     ipText.textContent = dev.ip;
     g.appendChild(ipText);
 
     // Events
     g.addEventListener('mousedown', function(e) { startDragNode(e, dev); });
-    g.addEventListener('click', function(e) {
-      if (!isDraggingNode) selectDevice(dev.id);
-    });
-    g.addEventListener('dblclick', function() { deepScanDevice(dev.ip); });
+    g.addEventListener('click', function(e) { if (!isDraggingNode) selectDevice(dev.id); });
+    g.addEventListener('dblclick', function() { selectDevice(dev.id); setTimeout(function() { startRenameDevice(dev.id); }, 100); });
     g.addEventListener('mouseenter', function(e) { showTooltip(e, dev); });
     g.addEventListener('mouseleave', hideTooltip);
 
@@ -566,44 +848,29 @@ function renderMap() {
 }
 
 function autoLayout(width, height) {
-  // Only layout devices without positions
   var router = devices.find(function(d) { return d.type === 'router'; });
   var needsLayout = devices.filter(function(d) { return d.x === undefined || d.y === undefined; });
-
   if (needsLayout.length === 0) return;
 
-  var cx = width / 2;
-  var cy = height / 2;
+  var cx = width / 2, cy = height / 2;
+  if (router && (router.x === undefined || router.y === undefined)) { router.x = cx; router.y = cy; }
+  if (router) { cx = router.x; cy = router.y; }
 
-  if (router && (router.x === undefined || router.y === undefined)) {
-    router.x = cx;
-    router.y = cy;
-  }
-  if (router) {
-    cx = router.x;
-    cy = router.y;
-  }
-
-  // Group by type for cleaner layout
   var groups = {};
   var others = devices.filter(function(d) { return d.type !== 'router' && (d.x === undefined || d.y === undefined); });
-
-  others.forEach(function(d) {
-    if (!groups[d.type]) groups[d.type] = [];
-    groups[d.type].push(d);
-  });
+  others.forEach(function(d) { if (!groups[d.type]) groups[d.type] = []; groups[d.type].push(d); });
 
   var totalOthers = others.length;
   if (totalOthers === 0) return;
 
   var angleStep = (2 * Math.PI) / totalOthers;
   var idx = 0;
-  var baseRadius = Math.min(width, height) * 0.3;
+  var baseRadius = Math.min(width, height) * 0.28;
 
   Object.keys(groups).forEach(function(type) {
     groups[type].forEach(function(d) {
       var angle = idx * angleStep - Math.PI / 2;
-      var radius = baseRadius + (idx % 3) * 40;
+      var radius = baseRadius + (idx % 3) * 50;
       d.x = cx + radius * Math.cos(angle);
       d.y = cy + radius * Math.sin(angle);
       idx++;
@@ -612,7 +879,6 @@ function autoLayout(width, height) {
 }
 
 function autoLayoutAll() {
-  // Reset all positions and re-layout
   devices.forEach(function(d) { d.x = undefined; d.y = undefined; });
   var container = document.getElementById('map-container');
   autoLayout(container.clientWidth, container.clientHeight);
@@ -620,9 +886,8 @@ function autoLayoutAll() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DRAG & DROP NODES
+// DRAG & DROP
 // ═══════════════════════════════════════════════════════════
-
 function startDragNode(e, dev) {
   e.stopPropagation();
   isDraggingNode = true;
@@ -643,21 +908,14 @@ document.addEventListener('mousemove', function(e) {
     pt.x = e.clientX; pt.y = e.clientY;
     var ctm = document.getElementById('map-group').getScreenCTM().inverse();
     var svgPt = pt.matrixTransform(ctm);
-
     dragTarget.x = svgPt.x - dragOffsetX;
     dragTarget.y = svgPt.y - dragOffsetY;
-
-    // Update node position
     var g = document.querySelector('.node-group[data-id="' + dragTarget.id + '"]');
     if (g) g.setAttribute('transform', 'translate(' + dragTarget.x + ',' + dragTarget.y + ')');
-
-    // Update links
     updateLinks();
   } else if (isPanning) {
-    var dx = e.clientX - panStartX;
-    var dy = e.clientY - panStartY;
-    svgTranslateX += dx;
-    svgTranslateY += dy;
+    svgTranslateX += e.clientX - panStartX;
+    svgTranslateY += e.clientY - panStartY;
     panStartX = e.clientX;
     panStartY = e.clientY;
     updateTransform();
@@ -666,7 +924,6 @@ document.addEventListener('mousemove', function(e) {
 
 document.addEventListener('mouseup', function() {
   if (isDraggingNode && dragTarget) {
-    // Save position
     callAPI('update_device_position', dragTarget.id, dragTarget.x, dragTarget.y);
     setTimeout(function() { isDraggingNode = false; dragTarget = null; }, 50);
   }
@@ -677,11 +934,13 @@ function updateLinks() {
   var router = devices.find(function(d) { return d.type === 'router'; });
   if (!router) return;
   document.querySelectorAll('.link-line').forEach(function(line) {
+    var fromId = line.getAttribute('data-from');
     var toId = line.getAttribute('data-to');
-    var dev = devices.find(function(d) { return d.id === toId; });
-    if (dev) {
-      line.setAttribute('x1', router.x); line.setAttribute('y1', router.y);
-      line.setAttribute('x2', dev.x); line.setAttribute('y2', dev.y);
+    var fromDev = fromId === router.id ? router : devices.find(function(d) { return d.id === fromId; });
+    var toDev = devices.find(function(d) { return d.id === toId; });
+    if (fromDev && toDev) {
+      line.setAttribute('x1', fromDev.x); line.setAttribute('y1', fromDev.y);
+      line.setAttribute('x2', toDev.x); line.setAttribute('y2', toDev.y);
     }
   });
 }
@@ -689,69 +948,59 @@ function updateLinks() {
 // ═══════════════════════════════════════════════════════════
 // PAN & ZOOM
 // ═══════════════════════════════════════════════════════════
-
 var mapContainer = document.getElementById('map-container');
-
 mapContainer.addEventListener('mousedown', function(e) {
   if (e.target === document.getElementById('map-svg') || e.target.tagName === 'svg') {
-    isPanning = true;
-    panStartX = e.clientX;
-    panStartY = e.clientY;
-    e.preventDefault();
+    isPanning = true; panStartX = e.clientX; panStartY = e.clientY; e.preventDefault();
   }
 });
-
 mapContainer.addEventListener('wheel', function(e) {
   e.preventDefault();
   var delta = e.deltaY > 0 ? 0.9 : 1.1;
   var newScale = Math.max(0.2, Math.min(5, svgScale * delta));
-
-  // Zoom toward cursor position
   var rect = mapContainer.getBoundingClientRect();
-  var cx = e.clientX - rect.left;
-  var cy = e.clientY - rect.top;
+  var cx = e.clientX - rect.left, cy = e.clientY - rect.top;
   svgTranslateX = cx - (cx - svgTranslateX) * (newScale / svgScale);
   svgTranslateY = cy - (cy - svgTranslateY) * (newScale / svgScale);
   svgScale = newScale;
   updateTransform();
 });
-
 function zoomIn() { svgScale = Math.min(5, svgScale * 1.25); updateTransform(); }
 function zoomOut() { svgScale = Math.max(0.2, svgScale * 0.8); updateTransform(); }
 function zoomReset() { svgScale = 1; svgTranslateX = 0; svgTranslateY = 0; updateTransform(); }
-
 function updateTransform() {
-  var g = document.getElementById('map-group');
-  g.setAttribute('transform', 'translate(' + svgTranslateX + ',' + svgTranslateY + ') scale(' + svgScale + ')');
+  document.getElementById('map-group').setAttribute('transform',
+    'translate(' + svgTranslateX + ',' + svgTranslateY + ') scale(' + svgScale + ')');
 }
 
 // ═══════════════════════════════════════════════════════════
 // TOOLTIP
 // ═══════════════════════════════════════════════════════════
-
 function showTooltip(e, dev) {
   if (isDraggingNode) return;
   var dt = DEVICE_TYPES[dev.type] || DEVICE_TYPES.unknown;
+  var isOff = dev.status === 'offline' || dev.status === 'cached';
   var tt = document.getElementById('tooltip');
   var label = dev.custom_label || dev.hostname || dev.ip;
   tt.innerHTML =
-    '<div class="tt-name">' + dt.icon + ' ' + escapeHtml(label) + '</div>' +
-    '<div class="tt-ip">' + dev.ip + (dev.mac !== '-' ? ' | ' + dev.mac : '') + '</div>' +
-    '<div class="tt-type">' + dt.label + (dev.vendor ? ' -' + dev.vendor : '') + '</div>' +
-    (dev.open_ports && dev.open_ports.length ? '<div style="margin-top:4px;color:var(--green);font-size:11px">Ports: ' + dev.open_ports.join(', ') + '</div>' : '');
+    '<div class="tt-name">' + escapeHtml(label) + '</div>' +
+    '<div class="tt-ip">' + dev.ip + (dev.mac && dev.mac !== '--' ? ' | ' + dev.mac : '') + '</div>' +
+    '<div class="tt-type">' + dt.label + (dev.vendor ? ' -- ' + dev.vendor : '') + '</div>' +
+    (dev.network ? '<div style="color:var(--text2);font-size:11px;margin-top:2px">' + escapeHtml(dev.network) + '</div>' : '') +
+    '<div class="tt-status" style="color:' + (isOff ? 'var(--red)' : 'var(--green)') + '">' +
+      (isOff ? 'Offline' : 'Online') + '</div>' +
+    (dev.open_ports && dev.open_ports.length ? '<div style="margin-top:4px;color:var(--green);font-size:11px">Ports: ' + dev.open_ports.join(', ') + '</div>' : '') +
+    (dev.fw_blocked ? '<div style="margin-top:4px;color:var(--red);font-size:11px;font-weight:600">&#x1f6e1; BLOCKED' + (dev.fw_attempts ? ' — ' + dev.fw_attempts + ' attempts' : '') + '</div>' : '') +
+    (dev.fw_blocked_ports && dev.fw_blocked_ports.length && !dev.fw_blocked ? '<div style="margin-top:4px;color:var(--orange);font-size:11px">Blocked ports: ' + dev.fw_blocked_ports.join(', ') + '</div>' : '');
   tt.style.display = 'block';
   tt.style.left = (e.clientX + 16) + 'px';
   tt.style.top = (e.clientY - 20) + 'px';
 }
-
-function hideTooltip() {
-  document.getElementById('tooltip').style.display = 'none';
-}
+function hideTooltip() { document.getElementById('tooltip').style.display = 'none'; }
 
 // ═══════════════════════════════════════════════════════════
 // LEGEND
 // ═══════════════════════════════════════════════════════════
-
 function renderLegend() {
   var legend = document.getElementById('map-legend');
   var typesUsed = {};
@@ -761,27 +1010,31 @@ function renderLegend() {
     var dt = DEVICE_TYPES[type] || DEVICE_TYPES.unknown;
     var item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = '<div class="legend-dot" style="background:' + dt.color + '"></div>' + dt.icon + ' ' + dt.label;
+    item.innerHTML = '<div class="legend-dot" style="background:' + dt.color + '"></div>' + dt.label;
     legend.appendChild(item);
   });
+  // Online/offline legend
+  var onItem = document.createElement('div');
+  onItem.className = 'legend-item';
+  onItem.innerHTML = '<div class="legend-dot" style="background:var(--green)"></div>Online';
+  legend.appendChild(onItem);
+  var offItem = document.createElement('div');
+  offItem.className = 'legend-item';
+  offItem.innerHTML = '<div class="legend-dot" style="background:var(--red)"></div>Offline';
+  legend.appendChild(offItem);
 }
 
 // ═══════════════════════════════════════════════════════════
 // SAVE / EXPORT
 // ═══════════════════════════════════════════════════════════
-
 function saveMapState() {
-  callAPI('save_map').then(function(r) {
-    var data = JSON.parse(r);
-    document.getElementById('status-text').textContent = 'Carte sauvegardee !';
-    setTimeout(function() {
-      document.getElementById('status-text').textContent = devices.length + ' appareils';
-    }, 3000);
+  callAPI('save_map').then(function() {
+    document.getElementById('status-text').textContent = 'Map saved!';
+    setTimeout(function() { document.getElementById('status-text').textContent = devices.length + ' devices'; }, 3000);
   });
 }
 
 function exportPNG() {
-  // Use SVG → Canvas → PNG approach
   var svg = document.getElementById('map-svg');
   var svgData = new XMLSerializer().serializeToString(svg);
   var canvas = document.createElement('canvas');
@@ -790,52 +1043,243 @@ function exportPNG() {
   canvas.width = container.clientWidth * 2;
   canvas.height = container.clientHeight * 2;
   ctx.scale(2, 2);
-
-  // Draw background
   ctx.fillStyle = '#0f0f13';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-
   var img = new Image();
   var blob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
   var url = URL.createObjectURL(blob);
   img.onload = function() {
     ctx.drawImage(img, 0, 0, container.clientWidth, container.clientHeight);
     URL.revokeObjectURL(url);
-
-    // Download
     var link = document.createElement('a');
     link.download = 'network_map_' + new Date().toISOString().slice(0,10) + '.png';
     link.href = canvas.toDataURL('image/png');
     link.click();
-    document.getElementById('status-text').textContent = 'Carte exportee en PNG !';
+    document.getElementById('status-text').textContent = 'Map exported as PNG!';
   };
   img.src = url;
 }
 
 // ═══════════════════════════════════════════════════════════
-// UTILS
+// RENAME DEVICE
 // ═══════════════════════════════════════════════════════════
-
-function escapeHtml(s) {
-  var div = document.createElement('div');
-  div.appendChild(document.createTextNode(s));
-  return div.innerHTML;
+function startRenameDevice(deviceId) {
+  var dev = devices.find(function(d) { return d.id === deviceId; });
+  if (!dev) return;
+  var nameEl = document.querySelector('.detail-dev-name');
+  if (!nameEl) return;
+  var currentLabel = dev.custom_label || dev.hostname || dev.ip;
+  nameEl.innerHTML = '<input class="name-edit-input" type="text" value="' + escapeHtml(currentLabel) + '" ' +
+    'placeholder="Enter name..." ' +
+    'onkeydown="handleRenameKey(event,\'' + deviceId + '\')" ' +
+    'onblur="commitRename(\'' + deviceId + '\')" autofocus />';
+  var input = nameEl.querySelector('input');
+  if (input) { input.focus(); input.select(); }
 }
 
-// Clock
+function handleRenameKey(e, deviceId) {
+  if (e.key === 'Enter') { e.preventDefault(); commitRename(deviceId); }
+  if (e.key === 'Escape') { selectDevice(deviceId); }
+}
+
+function commitRename(deviceId) {
+  var input = document.querySelector('.name-edit-input');
+  if (!input) return;
+  var newName = input.value.trim();
+  var dev = devices.find(function(d) { return d.id === deviceId; });
+  if (!dev) return;
+
+  if (newName && newName !== dev.ip) {
+    dev.custom_label = newName;
+    callAPI('update_device_label', deviceId, newName).then(function() {
+      renderDeviceList();
+      renderMap();
+      selectDevice(deviceId);
+      showFwToast('Renamed: ' + newName, 'green');
+    });
+  } else {
+    // Clear custom label if empty or same as IP
+    dev.custom_label = '';
+    callAPI('update_device_label', deviceId, '').then(function() {
+      renderDeviceList();
+      renderMap();
+      selectDevice(deviceId);
+    });
+  }
+}
+
+function startRenameFromList(e, deviceId) {
+  e.stopPropagation();
+  selectDevice(deviceId);
+  setTimeout(function() { startRenameDevice(deviceId); }, 100);
+}
+
+// ═══════════════════════════════════════════════════════════
+// FIREWALL UI
+// ═══════════════════════════════════════════════════════════
+var fwIsAdmin = false;
+
+function updateFirewallPanel() {
+  callAPI('fw_get_all_rules').then(function(r) {
+    var data = JSON.parse(r);
+    fwIsAdmin = data.is_admin;
+    document.getElementById('fw-blocked-count').textContent = data.blocked_count || 0;
+    document.getElementById('fw-attempts-count').textContent = data.total_attempts || 0;
+
+    // Admin badge
+    var adminDiv = document.getElementById('fw-admin-status');
+    if (data.is_admin) {
+      adminDiv.innerHTML = '<div class="fw-admin-badge yes">&#x1f6e1; Admin — Firewall active</div>';
+    } else {
+      adminDiv.innerHTML = '<div class="fw-admin-badge no">&#x26a0; Not admin — Run as administrator to block</div>';
+    }
+
+    // Blocked rules list
+    var rulesList = document.getElementById('fw-rules-list');
+    rulesList.innerHTML = '';
+    var devs = data.devices || {};
+    var ips = Object.keys(devs);
+    if (ips.length === 0) {
+      rulesList.innerHTML = '<div style="font-size:12px;color:var(--text2);padding:6px 0">No blocked devices</div>';
+      return;
+    }
+    ips.forEach(function(ip) {
+      var d = devs[ip];
+      var item = document.createElement('div');
+      item.className = 'fw-rule-item';
+      item.onclick = function() {
+        var dev = devices.find(function(dd) { return dd.ip === ip; });
+        if (dev) selectDevice(dev.id);
+      };
+      var badgeCls = d.block_all ? 'full' : 'partial';
+      var badgeTxt = d.block_all ? 'BLOQUE' : d.blocked_ports.length + ' ports';
+      item.innerHTML =
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v5c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z" fill="' + (d.block_all ? '#ef4444' : '#ff6b35') + '" stroke="none"/></svg>' +
+        '<span class="fw-rule-ip">' + ip + '</span>' +
+        '<span class="fw-rule-badge ' + badgeCls + '">' + badgeTxt + '</span>' +
+        '<span class="fw-rule-attempts">' + (d.attempts || 0) + ' tent.</span>';
+      rulesList.appendChild(item);
+    });
+  }).catch(function() {});
+}
+
+function toggleBlockDevice(ip, label) {
+  var dev = devices.find(function(d) { return d.ip === ip; });
+  var isBlocked = dev && dev.fw_blocked;
+
+  if (isBlocked) {
+    callAPI('fw_unblock_device', ip).then(function(r) {
+      var data = JSON.parse(r);
+      if (data.success) {
+        if (dev) { dev.fw_blocked = false; }
+        renderMap();
+        selectDevice(dev ? dev.id : null);
+        updateFirewallPanel();
+        showFwToast('Unblocked: ' + ip, 'green');
+      } else {
+        showFwToast('Error: ' + (data.error || 'Failed'), 'red');
+      }
+    });
+  } else {
+    callAPI('fw_block_device', ip, label || '').then(function(r) {
+      var data = JSON.parse(r);
+      if (data.success) {
+        if (dev) { dev.fw_blocked = true; dev.fw_attempts = 0; }
+        renderMap();
+        selectDevice(dev ? dev.id : null);
+        updateFirewallPanel();
+        showFwToast('Blocked: ' + ip, 'red');
+      } else {
+        showFwToast('Error: ' + (data.error || 'Failed'), 'red');
+      }
+    });
+  }
+}
+
+function togglePortBlock(ip, port) {
+  var dev = devices.find(function(d) { return d.ip === ip; });
+  var blocked_ports = (dev && dev.fw_blocked_ports) || [];
+  var isPortBlocked = blocked_ports.indexOf(port) !== -1;
+
+  if (isPortBlocked) {
+    callAPI('fw_unblock_port', ip, port).then(function(r) {
+      var data = JSON.parse(r);
+      if (data.success) {
+        if (dev) {
+          var idx = dev.fw_blocked_ports.indexOf(port);
+          if (idx !== -1) dev.fw_blocked_ports.splice(idx, 1);
+        }
+        selectDevice(dev ? dev.id : null);
+        updateFirewallPanel();
+        showFwToast('Port ' + port + ' unblocked for ' + ip, 'green');
+      } else {
+        showFwToast('Error: ' + (data.error || 'Failed'), 'red');
+      }
+    });
+  } else {
+    callAPI('fw_block_port', ip, port).then(function(r) {
+      var data = JSON.parse(r);
+      if (data.success) {
+        if (dev) {
+          if (!dev.fw_blocked_ports) dev.fw_blocked_ports = [];
+          dev.fw_blocked_ports.push(port);
+        }
+        selectDevice(dev ? dev.id : null);
+        updateFirewallPanel();
+        showFwToast('Port ' + port + ' blocked for ' + ip, 'red');
+      } else {
+        showFwToast('Error: ' + (data.error || 'Failed'), 'red');
+      }
+    });
+  }
+}
+
+function showFwToast(msg, color) {
+  var st = document.getElementById('status-text');
+  st.textContent = '🛡️ ' + msg;
+  st.style.color = color === 'red' ? 'var(--red)' : 'var(--green)';
+  setTimeout(function() { st.style.color = ''; }, 4000);
+}
+
+var PORT_SERVICES = {
+  22: 'SSH', 53: 'DNS', 80: 'HTTP', 443: 'HTTPS', 445: 'SMB',
+  3389: 'RDP', 5900: 'VNC', 8080: 'HTTP-Alt', 548: 'AFP',
+  9100: 'Impression', 5000: 'UPnP', 8443: 'HTTPS-Alt',
+  21: 'FTP', 23: 'Telnet', 25: 'SMTP', 135: 'RPC', 139: 'NetBIOS',
+  3306: 'MySQL', 5432: 'PostgreSQL'
+};
+
+// ═══════════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════════
+function escapeHtml(s) { var d = document.createElement('div'); d.appendChild(document.createTextNode(s)); return d.innerHTML; }
+function hasMultipleNetworks() {
+  var nets = {};
+  devices.forEach(function(d) { if (d.network) nets[d.network] = true; });
+  return Object.keys(nets).length > 1;
+}
+
 setInterval(function() {
   document.getElementById('status-time').textContent = new Date().toLocaleTimeString('fr-FR');
 }, 1000);
 
-// Initial network info on load
-window.addEventListener('pywebviewready', function() {
-  updateNetworkInfo();
-});
-// Fallback if pywebviewready already fired
-setTimeout(function() {
-  if (api()) updateNetworkInfo();
-}, 500);
+function loadSavedDevices() {
+  callAPI('get_saved_devices').then(function(r) {
+    var data = JSON.parse(r);
+    if (data.devices && data.devices.length > 0) {
+      devices = data.devices;
+      document.getElementById('device-count').textContent = devices.length;
+      renderDeviceList();
+      renderMap();
+      var lastScan = data.last_scan || '';
+      document.getElementById('status-text').textContent =
+        devices.length + ' devices (cached' + (lastScan ? ' — ' + lastScan : '') + '). Click Scan to refresh.';
+    }
+  }).catch(function() {});
+}
 
+window.addEventListener('pywebviewready', function() { updateNetworkInfo(); loadSavedDevices(); updateFirewallPanel(); });
+setTimeout(function() { if (api()) { updateNetworkInfo(); loadSavedDevices(); updateFirewallPanel(); } }, 500);
 </script>
 </body>
 </html>

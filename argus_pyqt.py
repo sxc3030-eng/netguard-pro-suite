@@ -5953,6 +5953,12 @@ class ArgusBrowser(QMainWindow):
         """Best-effort update check; updates the version badge if newer is found."""
         if not HAVE_UPDATER:
             return
+        try:  # Store build: updates come from the Store, never from GitHub (policy 10.8)
+            from netguard_paths import is_store_build as _is_store_build
+            if _is_store_build():
+                return
+        except Exception:
+            pass
 
         def _worker():
             try:

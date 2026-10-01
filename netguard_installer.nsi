@@ -3,7 +3,7 @@
 ; Compile avec: makensis netguard_installer.nsi
 
 !define APP_NAME "NetGuard AI"
-!define APP_VERSION "3.0.0"
+!define APP_VERSION "4.1.0"
 !define APP_PUBLISHER "NetGuard AI"
 !define APP_URL "https://github.com/sxc3030-eng/netguard-pro"
 !define APP_EXE "NetGuardAI.exe"
@@ -34,7 +34,7 @@ BrandingText "${APP_NAME} v${APP_VERSION}"
 
 ; Pages d'installation
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
+!insertmacro MUI_PAGE_LICENSE "LICENSE"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH

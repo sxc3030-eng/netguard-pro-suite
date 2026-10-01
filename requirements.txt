@@ -3,7 +3,7 @@
 
 # Core network engine
 scapy>=2.5.0
-websockets>=12.0
+websockets>=14.0      # <14: process_request(path, headers) signature made the Origin check a silent no-op
 
 # Crypto (vault, backups, license manager)
 cryptography>=42.0.0

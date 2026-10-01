@@ -43,7 +43,7 @@ pyinstaller ^
     --name "NetGuardAI" ^
     --icon "netguard_icon.ico" ^
     --add-data "*.html;." ^
-    --add-data "netguard_settings.json;." ^
+    --add-data "netguard_settings.json.example;." ^
     --hidden-import websockets ^
     --hidden-import websockets.legacy ^
     --hidden-import websockets.legacy.server ^

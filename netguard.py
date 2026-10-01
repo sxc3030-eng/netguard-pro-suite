@@ -13,7 +13,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 import queue
 import atexit
-from netguard_paths import DATA_DIR, RESOURCE_DIR, data_path, resource_path, ensure_data_dirs, is_frozen, self_command
+from netguard_paths import DATA_DIR, RESOURCE_DIR, data_path, resource_path, ensure_data_dirs, is_frozen, self_command, is_store_build
+import html as _html
 import argparse
 import time
 import threading
@@ -34,7 +35,24 @@ import tempfile
 import base64
 
 # License manager
+# Store build: the purchase went through the Store, so the homemade NGPRO key /
+# 30-day trial / seat count must never lock a paying customer out (policy 10.8.1).
+if is_store_build():
+    LICENSE = {"tier": "pro", "plan": "store", "features": ["*"], "trial": False,
+               "trial_days_left": 0, "expired": False, "source": "microsoft-store"}
+    LICENSE_SEAT_EXHAUSTED = False
+    LICENSE_SEAT_ERROR = ""
+    def has_feature(f): return True
+    def get_trial_banner(): return ""
+    LicenseManager = None
+    LicenseSeatExhaustedError = Exception
+    LicenseError = Exception
+    _LICENSE_SKIP = True
+else:
+    _LICENSE_SKIP = False
 try:
+    if _LICENSE_SKIP:
+        raise ImportError("store build: licence gérée par le Store")
     from license_manager import (
         init_license, has_feature, get_trial_banner,
         LicenseManager, LicenseSeatExhaustedError, LicenseError,
@@ -62,14 +80,15 @@ try:
         # No multi-PC license active (trial, free, or legacy single-PC) — fine.
         pass
 except Exception:
-    LICENSE = {"tier": "trial", "features": [], "trial": True, "trial_days_left": 30, "expired": False}
-    LICENSE_SEAT_EXHAUSTED = False
-    LICENSE_SEAT_ERROR = ""
-    def has_feature(f): return True
-    def get_trial_banner(): return ""
-    LicenseManager = None
-    LicenseSeatExhaustedError = Exception
-    LicenseError = Exception
+    if not _LICENSE_SKIP:
+        LICENSE = {"tier": "trial", "features": [], "trial": True, "trial_days_left": 30, "expired": False}
+        LICENSE_SEAT_EXHAUSTED = False
+        LICENSE_SEAT_ERROR = ""
+        def has_feature(f): return True
+        def get_trial_banner(): return ""
+        LicenseManager = None
+        LicenseSeatExhaustedError = Exception
+        LicenseError = Exception
 
 # Fix pythonw (no console) — redirect None stdout/stderr to devnull
 if sys.stdout is None:
@@ -192,9 +211,11 @@ class Config:
     auto_forensic_enabled:  bool  = True
     # Privacy: online geo providers (ip-api.com / ipapi.co) receive every public
     # IP seen on the wire. MaxMind GeoLite2 (local) is always preferred when present.
-    geo_online_enabled:     bool  = True
+    geo_online_enabled:     bool  = not is_store_build()   # Store build: local GeoLite2 only unless opted in
     # Store policy 10.2: never interfere with other software unless the user opts in.
     npcap_kill_rogue:       bool  = False
+    # Honeypot listeners bind address ("0.0.0.0" = every interface, or the LAN IP only)
+    honeypot_bind:          str   = "0.0.0.0"
     auto_forensic_severity: str   = "critical"
     # v3.0 — WireGuard VPN
     wg_enabled:         bool  = False
@@ -957,7 +978,7 @@ def _compute_risk_score(ip: str) -> int:
     elif country in MED_RISK: score += 8
 
     # Menaces détectées
-    threat_count = sum(1 for t in STATE.threats if t.get("src_ip") == ip)
+    threat_count = sum(1 for t in list(STATE.threats) if t.get("src_ip") == ip)   # snapshot: deque mutated by sniff thread
     score += min(threat_count * 5, 25)
 
     score = min(score, 100)
@@ -1414,7 +1435,7 @@ def _parse_rule_line(line: str) -> Optional[dict]:
             raw = pcre_m.group(1)
             # Retirer les flags Snort (/i, /s, etc.)
             raw = re.sub(r'[/][gimsuy]*$', '', raw).lstrip('/')
-            pattern = re.compile(raw.encode(), re.DOTALL | re.IGNORECASE)
+            pattern = _safe_compile(raw.encode())
         except Exception:
             pattern = None
     if pattern is None and cont_m:
@@ -1427,6 +1448,28 @@ def _parse_rule_line(line: str) -> Optional[dict]:
         return None
     return {"sid": sid, "msg": msg, "pattern": pattern, "proto": "TCP", "action": "alert", "severity": severity}
 
+_RULE_MAX_LEN = 512
+_RULES_MAX_DOWNLOAD = 20 * 1024 * 1024   # 20 MB per ruleset
+# Quantified group followed by another quantifier: (a+)+, (\w*)*, (x{1,}){2,} …
+_NESTED_QUANT_RE = re.compile(rb"\((?:[^()\\]|\\.)*[*+}](?:[^()\\]|\\.)*\)\s*[*+{?]")
+
+def _safe_compile(raw: bytes):
+    """Compile a payload regex with ReDoS guard rails: every rule runs against
+    every packet payload on the capture thread, so one catastrophic pattern
+    (from a downloaded ruleset or a custom rule typed in the UI) = packet loss."""
+    if not raw or len(raw) > _RULE_MAX_LEN:
+        raise ValueError("pattern trop long")
+    if _NESTED_QUANT_RE.search(raw):
+        raise ValueError("quantificateurs imbriqués refusés (ReDoS)")
+    pat = re.compile(raw, re.DOTALL | re.IGNORECASE)
+    # Smoke test on a 64 KB adversarial-ish buffer; must be fast
+    t0 = time.perf_counter()
+    pat.search(b"a" * 65536)
+    pat.search(b"\x00\xff" * 32768)
+    if time.perf_counter() - t0 > 0.25:
+        raise ValueError("pattern trop lent (ReDoS)")
+    return pat
+
 def load_et_rules_online(ruleset_key: str) -> dict:
     """Télécharge un ruleset Emerging Threats depuis internet"""
     import urllib.request
@@ -1436,7 +1479,10 @@ def load_et_rules_online(ruleset_key: str) -> dict:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.6"})
         with urllib.request.urlopen(req, timeout=15) as r:
-            content = r.read().decode("utf-8", errors="ignore")
+            content = r.read(_RULES_MAX_DOWNLOAD + 1)
+            if len(content) > _RULES_MAX_DOWNLOAD:
+                return {"ok": False, "error": "ruleset trop volumineux (> 20 Mo)"}
+            content = content.decode("utf-8", errors="ignore")
         rules = []
         for line in content.splitlines():
             parsed = _parse_rule_line(line)
@@ -1489,8 +1535,8 @@ def suricata_add_custom_rule(msg: str, pattern_str: str, proto: str = "TCP",
     msg = _safe_str(msg, 120)
     try:
         sid = 9900000 + len(SURICATA_CUSTOM_RULES) + 1
-        pattern = re.compile(pattern_str.encode() if isinstance(pattern_str, str) else pattern_str,
-                            re.DOTALL | re.IGNORECASE)
+        # ReDoS guard: the pattern is typed in the UI, persisted, and run on every packet
+        pattern = _safe_compile(pattern_str.encode() if isinstance(pattern_str, str) else pattern_str)
         rule = {
             "sid": sid, "msg": msg, "pattern": pattern,
             "proto": proto.upper(), "action": action, "severity": severity,
@@ -1547,6 +1593,21 @@ BACKUP_DIR = data_path("backups")
 BACKUP_SCHEDULE = {"enabled": False, "interval_hours": 24, "last_backup": ""}
 
 
+def _restrict_file_acl(path: str) -> None:
+    """os.chmod(0o600) only toggles the read-only bit on Windows: any local
+    account could read the WS token / backup key / settings. Replace the ACL
+    with owner-only full control (icacls), best-effort and never fatal."""
+    if not IS_WINDOWS or not os.path.exists(path):
+        return
+    user = os.environ.get("USERNAME") or ""
+    if not user:
+        return
+    try:
+        _subprocess.run(["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+                        capture_output=True, timeout=10)
+    except Exception as e:
+        log.debug(f"[ACL] icacls {path}: {e}")
+
 def _secure_json_write(path: str, data, mode: int = 0o600, indent: int = 2):
     """Atomic JSON write + chmod (default 0600). Writes to temp file in same dir then os.replace().
     Hardening: combines Phase 2.2 (perms) and Phase 5.1 (atomicity) from the security audit."""
@@ -1561,6 +1622,7 @@ def _secure_json_write(path: str, data, mode: int = 0o600, indent: int = 2):
         except OSError:
             pass
         os.replace(tmp, path)
+        _restrict_file_acl(path)
     except Exception:
         try:
             os.unlink(tmp)
@@ -1597,6 +1659,7 @@ def _get_backup_fernet():
                 os.chmod(_BACKUP_KEY_FILE, 0o600)
             except OSError:
                 pass
+            _restrict_file_acl(_BACKUP_KEY_FILE)
             log.info(f"[BACKUP] Encryption key generated -> {_BACKUP_KEY_FILE}")
         _BACKUP_FERNET = Fernet(key)
         return _BACKUP_FERNET
@@ -2930,12 +2993,13 @@ def _send_telegram_alert(threat: dict):
     try:
         sev_emoji = {"critical": "🔴", "high": "🟠", "med": "🟡", "low": "🔵"}
         emoji = sev_emoji.get(threat.get("severity", ""), "⚪")
+        _e = lambda v: _html.escape(str(v if v is not None else "?"))   # parse_mode=HTML
         text = (f"{emoji} <b>NetGuard Alert</b>\n"
-                f"<b>Type:</b> {threat.get('type', '?')}\n"
-                f"<b>IP:</b> <code>{threat.get('src_ip', '?')}</code>\n"
-                f"<b>Sévérité:</b> {threat.get('severity', '?').upper()}\n"
-                f"<b>Pays:</b> {threat.get('country', '?')}\n"
-                f"<b>Détail:</b> {threat.get('description', '')}")
+                f"<b>Type:</b> {_e(threat.get('type', '?'))}\n"
+                f"<b>IP:</b> <code>{_e(threat.get('src_ip', '?'))}</code>\n"
+                f"<b>Sévérité:</b> {_e(str(threat.get('severity', '?')).upper())}\n"
+                f"<b>Pays:</b> {_e(threat.get('country', '?'))}\n"
+                f"<b>Détail:</b> {_e(threat.get('description', ''))}")
         payload = json.dumps({
             "chat_id": CFG.telegram_chat_id,
             "text": text,
@@ -3170,8 +3234,13 @@ def analyze_packet(pkt):
     if STATE.record_active:
         try:
             record_write_packet(bytes(pkt))
-        except Exception:
-            pass
+        except Exception as e:
+            # Disk full / file vanished: stop cleanly instead of pretending to record
+            log.error(f"[RECORD] écriture impossible, arrêt de l'enregistrement: {e}")
+            try:
+                record_stop()
+            except Exception:
+                pass
 
     decision = "allow"
     reason   = ""
@@ -3536,7 +3605,8 @@ def prune_ip_tables(now: float = None) -> int:
     # Long-TTL caches: keyed by IP, keep while the IP was seen in the last 24 h.
     # Entries without a last_seen (traceroute hops, dst-only IPs) fall under the size cap.
     def _prune_cache(d: dict, cap: int = 50000):
-        stale = [ip for ip in d if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]
+        # list() snapshot: the geo/intel workers insert concurrently
+        stale = [ip for ip in list(d.keys()) if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]
         for ip in stale:
             d.pop(ip, None)
         if len(d) > cap:  # dicts are insertion-ordered: drop the oldest
@@ -3978,7 +4048,7 @@ class HoneypotServer:
 
     async def start(self):
         try:
-            self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
+            self.server = await asyncio.start_server(self.handle_client, CFG.honeypot_bind or "0.0.0.0", self.port)
             self.running = True
             log.info(f"[HONEYPOT] {self.service_name} sur port {self.port}")
             async with self.server:
@@ -4013,6 +4083,26 @@ _UPDATABLE_PARAMS = frozenset({
 })
 
 _MAIN_LOOP = None   # asyncio loop serving the WebSocket clients (set in ws_handler)
+
+# One-shot background jobs triggered from the UI (LAN sweep with 50 threads,
+# ruleset download, feed refresh): at most one instance at a time + cooldown.
+_JOBS: dict = {}          # name -> {"running": bool, "last": ts}
+_JOBS_LOCK = threading.Lock()
+
+def _job_start(name: str, cooldown: float = 0.0) -> bool:
+    now = time.time()
+    with _JOBS_LOCK:
+        j = _JOBS.setdefault(name, {"running": False, "last": 0.0})
+        if j["running"] or now - j["last"] < cooldown:
+            return False
+        j["running"] = True
+        j["last"] = now
+        return True
+
+def _job_done(name: str):
+    with _JOBS_LOCK:
+        if name in _JOBS:
+            _JOBS[name]["running"] = False
 
 def _ws_loop():
     """Loop to hand to run_coroutine_threadsafe from worker threads.
@@ -4173,8 +4263,14 @@ async def handle_ws_command(ws, msg: dict):
 
     elif cmd == "load_et_rules":
         ruleset = msg.get("ruleset", "et_scan")
+        if not _job_start("load_et_rules"):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "chargement déjà en cours"}))
+            return
         def _load():
-            result = load_et_rules_online(ruleset)
+            try:
+                result = load_et_rules_online(ruleset)
+            finally:
+                _job_done("load_et_rules")
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "et_rules_loaded", "ruleset": ruleset, **result})),
                 _ws_loop()
@@ -4207,9 +4303,15 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Scan LAN ───────────────────────────────────────────────────────────
     elif cmd == "scan_lan":
+        if not _job_start("scan_lan"):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "scan déjà en cours"}))
+            return
         await ws.send(json.dumps({"type":"lan_scan_started","subnet":_get_local_subnet()}))
         def _do_scan():
-            devices = scan_lan()
+            try:
+                devices = scan_lan()
+            finally:
+                _job_done("scan_lan")
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type":"lan_scan_result","devices":devices,"count":len(devices)})),
                 _ws_loop()
@@ -4310,6 +4412,8 @@ async def handle_ws_command(ws, msg: dict):
             else:
                 CFG.abuseipdb_api_key = val
             CFG.abuseipdb_enabled = bool(val)
+            global ABUSEIPDB_API_KEY
+            ABUSEIPDB_API_KEY = val or ""
         save_settings()
         await ws.send(json.dumps({"type": "api_keys_saved", "vt": CFG.virustotal_enabled, "otx": CFG.otx_enabled, "abuseipdb": CFG.abuseipdb_enabled, "vault_used": vault_writable}))
     elif cmd == "toggle_virustotal":
@@ -4324,7 +4428,15 @@ async def handle_ws_command(ws, msg: dict):
         CFG.threat_feeds_enabled = not CFG.threat_feeds_enabled
         await ws.send(json.dumps({"type": "feeds_toggled", "enabled": CFG.threat_feeds_enabled}))
     elif cmd == "refresh_threat_feeds":
-        threading.Thread(target=_fetch_threat_feeds, daemon=True).start()
+        if not _job_start("refresh_threat_feeds", cooldown=30):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "rafraîchissement déjà en cours ou trop fréquent"}))
+            return
+        def _refresh():
+            try:
+                _fetch_threat_feeds()
+            finally:
+                _job_done("refresh_threat_feeds")
+        threading.Thread(target=_refresh, daemon=True).start()
         await ws.send(json.dumps({"type": "feeds_refreshing"}))
     elif cmd == "get_threat_intel":
         await ws.send(json.dumps({
@@ -4663,8 +4775,8 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "backup_deleted", **result}))
 
     elif cmd == "backup_schedule":
-        BACKUP_SCHEDULE["enabled"] = msg.get("enabled", False)
-        BACKUP_SCHEDULE["interval_hours"] = msg.get("interval", 24)
+        BACKUP_SCHEDULE["enabled"] = bool(msg.get("enabled", False))
+        BACKUP_SCHEDULE["interval_hours"] = _as_int(msg.get("interval", 24), 24, 1, 24 * 30)
         save_settings()
         await ws.send(json.dumps({"type": "backup_schedule_set", **BACKUP_SCHEDULE}))
 
@@ -4818,6 +4930,22 @@ class NetGuardAPI:
                 s.close()
 
         if _is_up():
+            # Make sure it is OUR server and not a foreign process on 8770:
+            # ours answers /api/health without a token with a 401 JSON body.
+            try:
+                import urllib.request as _ur
+                import urllib.error as _ue
+                try:
+                    _ur.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1.5)
+                    foreign = True            # 200 without token → not our (hardened) server
+                except _ue.HTTPError as he:
+                    foreign = he.code != 401
+                except Exception:
+                    foreign = True
+            except Exception:
+                foreign = False
+            if foreign:
+                return {"success": False, "error": f"port_{port}_busy_foreign_process"}
             return {"success": True, "already_running": True, "port": port}
 
         flags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -4928,6 +5056,7 @@ def _load_or_create_token() -> str:
             os.chmod(_TOKEN_FILE, 0o600)
         except OSError:
             pass
+        _restrict_file_acl(_TOKEN_FILE)
         log.info(f"[AUTH] WS token generated -> {_TOKEN_FILE}")
     except OSError as e:
         log.error(f"[AUTH] Cannot write token file: {e}")
@@ -5067,7 +5196,7 @@ def auto_select_interface() -> str:
         for iface in ifaces:
             if pref.lower() in iface.lower():
                 return iface
-    return ifaces[0] if ifaces else "eth0"
+    return ifaces[0] if ifaces else None   # None → start_capture reports "no interface" (was a bogus "eth0")
 
 def _is_admin() -> bool:
     try:
@@ -5251,12 +5380,29 @@ def load_settings():
         log.info("[SETTINGS] Aucun fichier de settings trouvé — paramètres par défaut")
         return
     try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            s = json.load(f)
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f)
+            if not isinstance(s, dict):
+                raise ValueError("settings: objet JSON attendu")
+        except (ValueError, UnicodeDecodeError) as e:
+            # Corrupt file: keep a copy for the user, run on defaults, say so in the UI
+            corrupt = SETTINGS_FILE + ".corrupt"
+            try:
+                os.replace(SETTINGS_FILE, corrupt)
+            except OSError:
+                pass
+            log.error(f"[SETTINGS] fichier corrompu ({e}) — sauvegardé sous {corrupt}, paramètres par défaut")
+            STATE.timeline_events.appendleft({
+                "ts": datetime.now().strftime("%H:%M:%S"), "type": "settings_corrupt",
+                "ip": "", "country": "", "severity": "high",
+            })
+            return
 
         # Règles
-        for k, enabled in s.get("rules", {}).items():
-            if k in RULES:
+        rules_in = s.get("rules")
+        for k, enabled in (rules_in.items() if isinstance(rules_in, dict) else []):
+            if k in RULES and isinstance(enabled, bool):
                 RULES[k]["enabled"] = enabled
 
         # IPs bloquées
@@ -5327,10 +5473,17 @@ def load_settings():
         CFG.wg_interface    = s.get("wg_interface", "wg0")
 
         # v4.0 — Backup only (rest trimmed 2026-04-30)
-        global BACKUP_SCHEDULE, NPCAP_WHITELIST
-        BACKUP_SCHEDULE.update(s.get("backup_schedule", {}))
+        global BACKUP_SCHEDULE, NPCAP_WHITELIST, ABUSEIPDB_API_KEY
+        if isinstance(s.get("backup_schedule"), dict):
+            BACKUP_SCHEDULE.update(s["backup_schedule"])
         # Task B 2026-04-30: Npcap consumer whitelist
-        NPCAP_WHITELIST = set(s.get("npcap_whitelist", []))
+        NPCAP_WHITELIST = set(x for x in s.get("npcap_whitelist", []) if isinstance(x, str))
+        # Privacy / Store knobs
+        CFG.geo_online_enabled = bool(s.get("geo_online_enabled", CFG.geo_online_enabled))
+        CFG.npcap_kill_rogue   = bool(s.get("npcap_kill_rogue", False))
+        CFG.honeypot_bind      = s.get("honeypot_bind", "0.0.0.0") if _validate_ip(s.get("honeypot_bind", "0.0.0.0")) else "0.0.0.0"
+        # AbuseIPDB key was never resolved before (the lookup path was dead code)
+        ABUSEIPDB_API_KEY = (get_secret("netguard.abuseipdb.api_key", "abuseipdb_api_key") or "") if CFG.abuseipdb_enabled else ""
 
         log.info(f"[SETTINGS] Chargé — {len(BLOCKED_IPS)} IPs bloquées, {len(GEO_BLOCKED_COUNTRIES)} pays géobloqués")
     except Exception as e:
@@ -5384,8 +5537,92 @@ def _common_init():
         CFG.can_block = False
 
     atexit.register(_shutdown)
+    threading.Thread(target=_backup_scheduler_loop, name="backup-scheduler", daemon=True).start()
     return interface, args
 
+
+def _backup_scheduler_loop():
+    """BACKUP_SCHEDULE existed in settings/UI but nothing ever ran it."""
+    while True:
+        time.sleep(60)
+        try:
+            if not BACKUP_SCHEDULE.get("enabled"):
+                continue
+            hours = _as_int(BACKUP_SCHEDULE.get("interval_hours", 24), 24, 1, 24 * 30)
+            last = BACKUP_SCHEDULE.get("last_backup") or ""
+            due = True
+            if last:
+                try:
+                    due = (datetime.now() - datetime.fromisoformat(last)).total_seconds() >= hours * 3600
+                except ValueError:
+                    due = True
+            if due:
+                res = backup_create()
+                log.info(f"[BACKUP] planifié: {res}")
+                save_settings()
+        except Exception as e:
+            log.error(f"[BACKUP] planificateur: {e}")
+
+
+def _webview2_installed() -> bool:
+    """Evergreen WebView2 runtime presence (pywebview falls back to MSHTML/IE11
+    otherwise and the dashboard JS fails)."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        import winreg
+        guid = r"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+        for root, sub in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\\" + guid),
+                          (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\\" + guid),
+                          (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\\" + guid)):
+            try:
+                with winreg.OpenKey(root, sub) as k:
+                    ver, _ = winreg.QueryValueEx(k, "pv")
+                    if ver and ver != "0.0.0.0":
+                        return True
+            except OSError:
+                continue
+    except Exception:
+        return True
+    return False
+
+def _npcap_installed() -> bool:
+    if not IS_WINDOWS:
+        return True
+    try:
+        import ctypes
+        ctypes.WinDLL("wpcap.dll")
+        return True
+    except OSError:
+        return os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "Npcap", "wpcap.dll"))
+
+def _first_run_checks_gui():
+    """Windows GUI prerequisites with an explicit dialog instead of a dead app.
+    Npcap cannot be bundled (its licence + Store policy): the user installs it."""
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes, webbrowser as _wb
+        MB_YESNO, MB_ICONWARNING, IDYES = 0x4, 0x30, 6
+        if not _npcap_installed():
+            r = ctypes.windll.user32.MessageBoxW(
+                None,
+                "Npcap n'est pas installé : NetGuard AI ne pourra pas capturer le trafic.\n\n"
+                "Npcap est un pilote gratuit (npcap.com) à installer séparément.\n"
+                "Ouvrir la page de téléchargement maintenant ?",
+                "NetGuard AI — Npcap requis", MB_YESNO | MB_ICONWARNING)
+            if r == IDYES:
+                _wb.open("https://npcap.com/#download")
+        if not _webview2_installed():
+            r = ctypes.windll.user32.MessageBoxW(
+                None,
+                "Le runtime Microsoft Edge WebView2 est absent : l'interface ne s'affichera pas correctement.\n\n"
+                "Ouvrir la page de téléchargement de WebView2 ?",
+                "NetGuard AI — WebView2 requis", MB_YESNO | MB_ICONWARNING)
+            if r == IDYES:
+                _wb.open("https://developer.microsoft.com/microsoft-edge/webview2/")
+    except Exception as e:
+        log.debug(f"[FIRST-RUN] {e}")
 
 def main_webview():
     """Launch with pywebview — native window, direct API calls"""
@@ -5455,6 +5692,7 @@ def main_webview():
     api = NetGuardAPI()
     api._loop = loop
 
+    _first_run_checks_gui()
     dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(

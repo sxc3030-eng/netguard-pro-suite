@@ -68,6 +68,19 @@ def is_frozen() -> bool:
     return _FROZEN
 
 
+def is_store_build() -> bool:
+    """True when running from a Microsoft Store / MSIX package.
+
+    The Store handles purchase and updates: the homemade licence manager and the
+    GitHub self-updater must step aside there (certification policies 10.8 / 11).
+    Detection: exe under WindowsApps, or NETGUARD_STORE_BUILD=1 (CI / tests).
+    """
+    if os.environ.get("NETGUARD_STORE_BUILD", "").strip() in ("1", "true", "yes"):
+        return True
+    exe = (sys.executable or "").lower()
+    return "\\windowsapps\\" in exe or "/windowsapps/" in exe
+
+
 def self_command() -> list[str]:
     """How to relaunch THIS program (frozen exe vs. python script).
 
