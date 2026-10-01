@@ -77,10 +77,29 @@ def _read_ai_memory() -> str:
     except (FileNotFoundError, OSError):
         return ""
     if len(text.encode("utf-8")) > _AI_MEMORY_MAX_BYTES:
-        # Keep only last 800 lines so prompt stays bounded
+        # Notes are inserted newest-first under each section, so keep the HEAD
+        # of the file (the previous [-800:] slice dropped the newest notes).
         lines = text.splitlines()
-        text = "\n".join(lines[-800:])
+        text = "\n".join(lines[:800])
     return text
+
+
+_AI_MEMORY_MAX_NOTES_PER_SECTION = 150
+
+
+def _cap_ai_memory_sections(text: str) -> str:
+    """Keep at most N notes per '## Section' (newest-first, so drop the tail of each section)."""
+    out: list[str] = []
+    count = 0
+    for line in text.splitlines():
+        if line.startswith("## "):
+            count = 0
+        elif line.startswith("- ["):
+            count += 1
+            if count > _AI_MEMORY_MAX_NOTES_PER_SECTION:
+                continue
+        out.append(line)
+    return "\n".join(out) + "\n"
 
 
 def _append_ai_memory(section: str, note: str) -> bool:
@@ -118,6 +137,7 @@ def _append_ai_memory(section: str, note: str) -> bool:
             text = text[:eol] + entry + "\n" + text[eol:]
         else:
             text += f"\n{marker}\n\n{entry}\n"
+        text = _cap_ai_memory_sections(text)   # file itself stays bounded
         _AI_MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         _AI_MEMORY_FILE.write_text(text, encoding="utf-8")
         try:
@@ -588,11 +608,27 @@ def _audit_network() -> dict:
     }
 
 
-def _log_action(event: str, payload: dict) -> None:
+_LOG_MAX_BYTES = 5 * 1024 * 1024   # rotate append-only JSONL logs at 5 MB (keep one .1)
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    """Append one JSON line; rotate to <name>.1 when the file exceeds _LOG_MAX_BYTES."""
     AUDIT_DIR.mkdir(parents=True, exist_ok=True)
-    record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
-    with ACTIONS_LOG.open("a", encoding="utf-8") as f:
+    try:
+        if path.exists() and path.stat().st_size >= _LOG_MAX_BYTES:
+            backup = path.with_name(path.name + ".1")
+            if backup.exists():
+                backup.unlink()
+            path.rename(backup)
+    except OSError:
+        pass
+    with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _log_action(event: str, payload: dict) -> None:
+    record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
+    _append_jsonl(ACTIONS_LOG, record)
 
 
 # ── Settings ────────────────────────────────────────────────────────────────
@@ -843,10 +879,8 @@ def _active_provider(settings: dict | None = None) -> Provider:
 
 
 def _audit(event: str, payload: dict) -> None:
-    AUDIT_DIR.mkdir(parents=True, exist_ok=True)
     record = {"ts": _dt.datetime.utcnow().isoformat() + "Z", "event": event, **payload}
-    with AUDIT_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _append_jsonl(AUDIT_LOG, record)
 
 
 def _read_recent_captures(limit: int = 5) -> list[dict]:

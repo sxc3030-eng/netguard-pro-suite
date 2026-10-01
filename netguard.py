@@ -11,6 +11,7 @@ import importlib
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import queue
 import argparse
 import time
 import threading
@@ -745,6 +746,61 @@ def _fetch_geo_ip_api_com(ip: str):
 
 _GEO_PROVIDERS = (_fetch_geo_maxmind, _fetch_geo_ip_api_com, _fetch_geo_ipapi_co)
 
+# ── Geo lookup worker (audit mémoire 2026-09-30) ─────────────────────────
+# One worker thread + bounded queue instead of one thread per packet. The packet
+# path only writes a placeholder in _geo_city_cache and enqueues the IP; a failed
+# lookup leaves a negative entry that is retried after _GEO_RETRY_SEC.
+_GEO_RETRY_SEC     = 900          # retry a failed lookup after 15 min
+_GEO_PENDING_SEC   = 120          # re-enqueue if a pending lookup never completed
+_GEO_QUEUE: "queue.Queue[str]" = queue.Queue(maxsize=5000)
+_GEO_WORKER_STARTED = False
+_GEO_WORKER_LOCK = threading.Lock()
+
+
+def _geo_worker():
+    while True:
+        ip = _GEO_QUEUE.get()
+        try:
+            _fetch_city_async(ip)
+        except Exception as e:
+            log.debug(f"[GEO] worker error for {ip}: {e}")
+        finally:
+            _GEO_QUEUE.task_done()
+
+
+def _ensure_geo_worker():
+    global _GEO_WORKER_STARTED
+    if _GEO_WORKER_STARTED:
+        return
+    with _GEO_WORKER_LOCK:
+        if not _GEO_WORKER_STARTED:
+            threading.Thread(target=_geo_worker, name="geo-worker", daemon=True).start()
+            _GEO_WORKER_STARTED = True
+
+
+def _schedule_geo_lookup(ip: str):
+    """Non-blocking: enqueue a geo lookup for `ip` at most once per retry window."""
+    now = time.time()
+    entry = _geo_city_cache.get(ip)
+    if entry is not None:
+        retry_at = entry.get("_retry_at")
+        if retry_at is None or retry_at > now:
+            return  # resolved, pending, or negative entry still fresh
+    # Placeholder written BEFORE enqueue so concurrent packets don't re-enqueue
+    country = get_country(ip) or ""
+    _geo_city_cache[ip] = {
+        "country":      country,
+        "country_name": GEO_COUNTRY_NAMES.get(country, country),
+        "city":         "",
+        "_retry_at":    now + _GEO_PENDING_SEC,
+    }
+    _ensure_geo_worker()
+    try:
+        _GEO_QUEUE.put_nowait(ip)
+    except queue.Full:
+        # Queue saturated: leave the placeholder, it will be retried later
+        _geo_city_cache[ip]["_retry_at"] = now + _GEO_RETRY_SEC
+
 
 def _fetch_city_async(ip: str):
     """Resolve geo for `ip` via provider chain (ipapi.co → ip-api.com fallback). Caches result."""
@@ -758,7 +814,16 @@ def _fetch_city_async(ip: str):
             log.debug(f"[GEO] {provider.__name__} failed for {ip}: {e}")
             continue
     if not result:
-        return  # All providers failed; cache untouched so a future packet retries
+        # All providers failed: write a NEGATIVE entry so the packet path stops
+        # re-scheduling this IP on every packet. Retried after _GEO_RETRY_SEC.
+        country = get_country(ip) or ""
+        _geo_city_cache[ip] = {
+            "country":      country,
+            "country_name": GEO_COUNTRY_NAMES.get(country, country),
+            "city":         "",
+            "_retry_at":    time.time() + _GEO_RETRY_SEC,
+        }
+        return
     _geo_city_cache[ip] = {
         "country":      result["country_code"],
         "country_name": result["country_name"],
@@ -847,7 +912,10 @@ def _compute_risk_score(ip: str) -> int:
 
 def _fetch_abuseipdb(ip: str):
     """Vérifie l'IP sur AbuseIPDB (si clé API configurée)"""
-    if not ABUSEIPDB_API_KEY or ip in _ABUSEIPDB_CACHE:
+    if not ABUSEIPDB_API_KEY:
+        return
+    cached = _ABUSEIPDB_CACHE.get(ip)
+    if cached is not None and not cached.get("_pending"):
         return
     try:
         import urllib.request
@@ -955,12 +1023,13 @@ class NetState:
         self._syn_flood_tracker    = defaultdict(list)
         self._dns_tracker          = defaultdict(list)
         self.ip_hit_counter        = defaultdict(int)
+        self.ip_last_seen          = {}   # ip -> last packet ts (drives prune_ip_tables)
         self.dpi_alerts            = deque(maxlen=200)
         self.suricata_alerts       = deque(maxlen=200)
         self.record_active         = False
         self.record_file           = None
         self.record_file_path      = ""
-        self.record_packets        = []
+        self.record_count          = 0    # int counter (was a list of sizes: 1 entry per packet)
         self.record_start_time     = None
         self.record_lock           = threading.Lock()
         # v1.9.0
@@ -1000,6 +1069,7 @@ log = logging.getLogger("netguard")
 
 # ─── Anomaly Detection ────────────────────────────────────────────────────
 _anomaly_accum: dict = {}  # ip -> {pkts, bytes, ports: set, protos: defaultdict(int)}
+_ANOMALY_LOCK = threading.Lock()  # guards _anomaly_accum between sniff thread and anomaly_flush
 
 class BaselineProfile:
     """Profil statistique par IP pour détection d'anomalies (sans numpy)"""
@@ -1042,7 +1112,10 @@ class BehaviorProfile:
         self._recent_protos = deque(maxlen=50)
 
     def update(self, dst_port, proto, pkt_size):
-        self.port_counter[dst_port] += 1
+        # Cap distinct ports per profile: a port-scanner would otherwise create
+        # up to 65 535 keys in this dict for a single IP.
+        if dst_port in self.port_counter or len(self.port_counter) < 256:
+            self.port_counter[dst_port] += 1
         self.proto_counter[proto] += 1
         self.pkt_sizes.append(pkt_size)
         self.hour_counter[datetime.now().hour] += 1
@@ -1126,6 +1199,9 @@ _CHECKED_IPS: set = set()  # IPs already submitted to VT/OTX
 QUARANTINED_IPS:  set = set()
 ISOLATED_DEVICES: set = set()
 ALERT_COOLDOWNS:  dict = {}
+_FORENSIC_LAST:   dict = {}   # ip -> ts of last auto-forensic report
+_FORENSIC_COOLDOWN_SEC = 600
+_FORENSIC_MAX_FILES    = 200  # cap on reports/forensic_*.json
 WEBHOOK_COOLDOWN: int  = 60
 
 # ─── Forensic ─────────────────────────────────────────────────────────────
@@ -1752,6 +1828,8 @@ def detect_npcap_uac_spammers() -> list:
             if pid is not None and pid not in entry["pids"]:
                 entry["pids"].add(pid)
                 entry["last_pids"].append((pid, now))
+                if len(entry["pids"]) > 200:   # a relaunching harness must not grow this forever
+                    entry["pids"] = {p for p, _ in entry["last_pids"]}
             # Prune relaunches outside the 5-min window
             cutoff = now - _NPCAP_RELAUNCH_WINDOW_SEC
             recent = [(p, t) for (p, t) in entry["last_pids"] if t >= cutoff]
@@ -1831,17 +1909,22 @@ def _write_pcap_record(f, raw_bytes: bytes):
     f.write(struct.pack("<IIII", ts_sec, ts_usec, length, length))
     f.write(raw_bytes)
 
+def _record_open_locked() -> str:
+    """Open a fresh pcap file. Caller must hold STATE.record_lock."""
+    path = _record_filename()
+    STATE.record_file_path = path
+    STATE.record_file = open(path, "wb")
+    _write_pcap_global_header(STATE.record_file)
+    STATE.record_active = True
+    STATE.record_start_time = datetime.now()
+    STATE.record_count = 0
+    return path
+
 def record_start():
     with STATE.record_lock:
         if STATE.record_active:
             return False
-        path = _record_filename()
-        STATE.record_file_path = path
-        STATE.record_file = open(path, "wb")
-        _write_pcap_global_header(STATE.record_file)
-        STATE.record_active = True
-        STATE.record_start_time = datetime.now()
-        STATE.record_packets = []
+        path = _record_open_locked()
     log.info(f"[RECORD] Démarré → {path}")
     return True
 
@@ -1863,16 +1946,21 @@ def record_write_packet(raw_bytes: bytes):
         if not STATE.record_active or not STATE.record_file:
             return
         _write_pcap_record(STATE.record_file, raw_bytes)
-        STATE.record_packets.append(len(raw_bytes))
+        STATE.record_count += 1
         if STATE.record_start_time:
             elapsed = (datetime.now() - STATE.record_start_time).total_seconds()
             if elapsed >= CFG.record_rotate_min * 60:
                 STATE.record_file.flush()
                 STATE.record_file.close()
                 STATE.record_file = None
-                STATE.record_active = False
-                log.info("[RECORD] Rotation automatique")
                 _cleanup_old_captures()
+                # Real rotation: keep recording into a new file (before: recording stopped)
+                try:
+                    path = _record_open_locked()
+                    log.info(f"[RECORD] Rotation automatique → {path}")
+                except Exception as e:
+                    STATE.record_active = False
+                    log.error(f"[RECORD] Rotation impossible, arrêt: {e}")
 
 def _cleanup_old_captures():
     try:
@@ -2080,9 +2168,13 @@ def add_threat(src_ip: str, threat_type: str, description: str, severity: str, r
     # v3.0 — Correlation & Alerts
     correlate_attack_phase(src_ip, threat_type)
     dispatch_alert(threat)
-    # Auto-forensic on critical
+    # Auto-forensic on critical — at most one report per IP per _FORENSIC_COOLDOWN_SEC
+    # (a known-bad JA3 fires a critical threat on EVERY TLS ClientHello)
     if severity == "critical" and CFG.auto_forensic_enabled:
-        threading.Thread(target=generate_forensic_report, args=(src_ip, threat_type), daemon=True).start()
+        _now = time.time()
+        if _now - _FORENSIC_LAST.get(src_ip, 0) >= _FORENSIC_COOLDOWN_SEC:
+            _FORENSIC_LAST[src_ip] = _now
+            threading.Thread(target=generate_forensic_report, args=(src_ip, threat_type), daemon=True).start()
 
     log.warning(f"[THREAT/{severity.upper()}] {threat_type} — {src_ip} — {description}")
     return threat
@@ -2182,11 +2274,15 @@ def anomaly_check_ip(ip: str, pkt_rate: int, byte_vol: int, port_count: int):
 def anomaly_flush():
     """Appelé chaque seconde depuis snapshot_traffic pour traiter les accumulateurs"""
     global _anomaly_accum
-    for ip, acc in _anomaly_accum.items():
+    # Swap under lock, then iterate the private snapshot: the sniff thread keeps
+    # inserting into the fresh dict (fixes "dictionary changed size during iteration").
+    with _ANOMALY_LOCK:
+        accum, _anomaly_accum = _anomaly_accum, {}
+    for ip, acc in accum.items():
         anomaly_check_ip(ip, acc.get("pkts", 0), acc.get("bytes", 0), len(acc.get("ports", set())))
         # Behavioral profile
-        if CFG.profile_enabled and ip in IP_BEHAVIOR_PROFILES:
-            prof = IP_BEHAVIOR_PROFILES[ip]
+        prof = IP_BEHAVIOR_PROFILES.get(ip) if CFG.profile_enabled else None
+        if prof is not None:
             if prof.total_packets >= 100 and prof.total_packets % 50 == 0:
                 score = prof.deviation_score()
                 if score < 0.7:
@@ -2203,7 +2299,6 @@ def anomaly_flush():
                     })
                     add_threat(ip, "Changement comportemental",
                               f"Score similarité={score:.2f} (seuil=0.70)", "high")
-    _anomaly_accum = {}
 
 # ─── v3.0 — Attack Correlation ───────────────────────────────────────────
 def correlate_attack_phase(ip: str, threat_type: str):
@@ -2518,8 +2613,8 @@ def _otx_fetch_pulses():
                     new_ips.add(val)
                 elif itype in ("domain", "hostname"):
                     new_domains.add(val)
-        OTX_IOC_IPS |= new_ips
-        OTX_IOC_DOMAINS |= new_domains
+        OTX_IOC_IPS = new_ips          # replace, don't accumulate across refreshes
+        OTX_IOC_DOMAINS = new_domains
         log.info(f"[OTX] Chargé: {len(new_ips)} IPs, {len(new_domains)} domaines")
     except Exception as e:
         log.warning(f"[OTX] Erreur: {e}")
@@ -2726,6 +2821,18 @@ def unquarantine_ip(ip: str):
     except Exception as e:
         log.error(f"[QUARANTINE] Erreur libération: {e}")
 
+def _cleanup_old_forensic_reports():
+    """Keep at most _FORENSIC_MAX_FILES forensic_*.json in reports/ (oldest removed)."""
+    try:
+        files = sorted(
+            [f for f in os.listdir("reports") if f.startswith("forensic_") and f.endswith(".json")],
+            key=lambda f: os.path.getmtime(os.path.join("reports", f))
+        )
+        while len(files) > _FORENSIC_MAX_FILES:
+            os.remove(os.path.join("reports", files.pop(0)))
+    except Exception as e:
+        log.debug(f"[FORENSIC] cleanup: {e}")
+
 def generate_forensic_report(ip: str, trigger: str) -> str:
     """Génère un rapport forensique détaillé pour une IP"""
     try:
@@ -2752,6 +2859,7 @@ def generate_forensic_report(ip: str, trigger: str) -> str:
         entry = {"ts": datetime.now().strftime("%H:%M:%S"), "ip": ip, "trigger": trigger, "path": filename}
         STATE.forensic_reports.appendleft(entry)
         log.info(f"[FORENSIC] Rapport généré: {filename}")
+        _cleanup_old_forensic_reports()
         return filename
     except Exception as e:
         log.error(f"[FORENSIC] Erreur: {e}")
@@ -2805,11 +2913,13 @@ def analyze_packet(pkt):
     flags    = ""
     is_syn   = False
 
-    # v3.0 — Accumulate anomaly data
-    if src_ip not in _anomaly_accum:
-        _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
-    _anomaly_accum[src_ip]["pkts"] += 1
-    _anomaly_accum[src_ip]["bytes"] += pkt_len
+    # v3.0 — Accumulate anomaly data (under _ANOMALY_LOCK: anomaly_flush swaps the dict)
+    with _ANOMALY_LOCK:
+        acc = _anomaly_accum.get(src_ip)
+        if acc is None:
+            acc = _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
+        acc["pkts"] += 1
+        acc["bytes"] += pkt_len
 
     if pkt.haslayer(TCP):
         dst_port = pkt[TCP].dport
@@ -2822,11 +2932,16 @@ def analyze_packet(pkt):
 
     # v3.0 — Behavioral profiling
     if not is_private(src_ip):
-        if src_ip not in IP_BEHAVIOR_PROFILES:
-            IP_BEHAVIOR_PROFILES[src_ip] = BehaviorProfile()
-        IP_BEHAVIOR_PROFILES[src_ip].update(dst_port, proto, pkt_len)
-        _anomaly_accum[src_ip]["ports"].add(dst_port)
-        _anomaly_accum[src_ip]["protos"][proto] += 1
+        with _ANOMALY_LOCK:
+            prof = IP_BEHAVIOR_PROFILES.get(src_ip)
+            if prof is None:
+                prof = IP_BEHAVIOR_PROFILES[src_ip] = BehaviorProfile()
+            prof.update(dst_port, proto, pkt_len)
+            acc = _anomaly_accum.get(src_ip)
+            if acc is not None and len(acc["ports"]) < 1024:
+                acc["ports"].add(dst_port)
+            if acc is not None:
+                acc["protos"][proto] += 1
 
     if STATE.record_active:
         try:
@@ -2995,25 +3110,28 @@ def analyze_packet(pkt):
             country = get_country(src_ip)
             if country:
                 STATE.geo_hits[country] += 1
-                # Fetch city async if not cached yet
-                if src_ip not in _geo_city_cache:
-                    threading.Thread(target=_fetch_city_async, args=(src_ip,), daemon=True).start()
-                # Fetch AbuseIPDB async if key configured
+                # Fetch AbuseIPDB async if key configured (placeholder written first
+                # so a failing lookup cannot respawn a thread on every packet)
                 if ABUSEIPDB_API_KEY and src_ip not in _ABUSEIPDB_CACHE:
+                    _ABUSEIPDB_CACHE[src_ip] = {"score": 0, "reports": 0, "_pending": True}
                     threading.Thread(target=_fetch_abuseipdb, args=(src_ip,), daemon=True).start()
 
-        # Fetch geo for ANY new external IP (not just blocked)
-        if not is_private(src_ip) and src_ip not in _geo_city_cache:
-            threading.Thread(target=_fetch_city_async, args=(src_ip,), daemon=True).start()
+        # Geo lookup for ANY new external IP: single worker + bounded queue
+        if not is_private(src_ip):
+            _schedule_geo_lookup(src_ip)
 
-        # Update risk score
-        _compute_risk_score(src_ip)
+        # Update risk score (only for external IPs — private ones never score)
+        if not is_private(src_ip):
+            _compute_risk_score(src_ip)
 
         if decision == "block":
             STATE.packets_blocked += 1
         else:
             STATE.packets_allowed += 1
-            STATE.active_conns[src_ip].add(dst_port)
+            if len(STATE.active_conns[src_ip]) < 1024:   # a port-scanner cannot fill 65k ports
+                STATE.active_conns[src_ip].add(dst_port)
+        STATE.ip_last_seen[src_ip] = _now_s = time.time()
+        STATE.ip_last_seen[dst_ip] = _now_s
 
         # Get geo info for packet entry (with guaranteed coords via fallback)
         geo = _geo_city_cache.get(src_ip, {})
@@ -3096,8 +3214,90 @@ def run_report(report_type: str, fmt: str, filter_status: str = "all") -> str:
 
 _last_pkt_total = 0
 
+_IP_TABLE_TTL_SEC      = 1800    # IP idle for 30 min → dropped from live tables
+_IP_CACHE_TTL_SEC      = 86400   # geo / VT / AbuseIPDB / VT-checked caches: 24 h
+_IP_TABLE_MAX          = 20000   # hard cap on tracked IPs (oldest dropped first)
+_PRUNE_INTERVAL_SEC    = 60
+_last_prune_ts         = 0.0
+
+
+def prune_ip_tables(now: float = None) -> int:
+    """Evict idle IPs from every per-IP table (audit mémoire 2026-09-30).
+
+    Before this function existed NO per-IP structure was ever evicted, so memory
+    grew monotonically with every distinct IP seen (spoofed SYN sources included).
+    Driven by STATE.ip_last_seen (updated per packet for src and dst).
+    Returns the number of IPs dropped from the live tables.
+    """
+    now = now or time.time()
+    live_cutoff  = now - _IP_TABLE_TTL_SEC
+    cache_cutoff = now - _IP_CACHE_TTL_SEC
+    with STATE.lock:
+        idle = [ip for ip, ts in STATE.ip_last_seen.items() if ts < live_cutoff]
+        # Hard cap: drop the oldest beyond _IP_TABLE_MAX even if not idle
+        if len(STATE.ip_last_seen) - len(idle) > _IP_TABLE_MAX:
+            excess = len(STATE.ip_last_seen) - len(idle) - _IP_TABLE_MAX
+            oldest = sorted(
+                ((ts, ip) for ip, ts in STATE.ip_last_seen.items() if ts >= live_cutoff)
+            )[:excess]
+            idle.extend(ip for _, ip in oldest)
+        for ip in idle:
+            STATE.ip_last_seen.pop(ip, None)
+            STATE.bytes_per_ip.pop(ip, None)
+            STATE.bytes_per_ip_per_sec.pop(ip, None)
+            STATE.process_per_ip.pop(ip, None)
+            STATE.active_conns.pop(ip, None)
+            STATE._port_scan_tracker.pop(ip, None)
+            STATE._brute_force_tracker.pop(ip, None)
+            STATE._syn_flood_tracker.pop(ip, None)
+            STATE._dns_tracker.pop(ip, None)
+            STATE.ip_risk_scores.pop(ip, None)
+            STATE.ip_recent_packets.pop(ip, None)
+            STATE.ip_first_seen_ts.pop(ip, None)
+            ATTACK_CHAINS.pop(ip, None)
+            JA3_CACHE.pop(ip, None)
+            _FORENSIC_LAST.pop(ip, None)
+            # ip_hit_counter / ip_intel are kept while the IP is blocked (risk score inputs)
+            if ip not in BLOCKED_IPS:
+                STATE.ip_hit_counter.pop(ip, None)
+                STATE.ip_intel.pop(ip, None)
+        # Also drop empty tracker keys (window pruning empties the list but kept the key)
+        for tracker in (STATE._port_scan_tracker, STATE._brute_force_tracker,
+                        STATE._syn_flood_tracker, STATE._dns_tracker):
+            for ip in [k for k, v in tracker.items() if not v]:
+                del tracker[ip]
+        for ip in [k for k, v in ATTACK_CHAINS.items() if not v]:
+            del ATTACK_CHAINS[ip]
+    with _ANOMALY_LOCK:
+        for ip in [k for k, p in IP_BEHAVIOR_PROFILES.items() if p.last_seen < live_cutoff]:
+            del IP_BEHAVIOR_PROFILES[ip]
+        for ip in [k for k in IP_BASELINES if k not in IP_BEHAVIOR_PROFILES
+                   and STATE.ip_last_seen.get(k, 0) < live_cutoff]:
+            del IP_BASELINES[ip]
+    # Long-TTL caches: keyed by IP, keep while the IP was seen in the last 24 h.
+    # Entries without a last_seen (traceroute hops, dst-only IPs) fall under the size cap.
+    def _prune_cache(d: dict, cap: int = 50000):
+        stale = [ip for ip in d if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]
+        for ip in stale:
+            d.pop(ip, None)
+        if len(d) > cap:  # dicts are insertion-ordered: drop the oldest
+            for ip in list(d)[: len(d) - cap]:
+                d.pop(ip, None)
+    for cache in (_geo_cache, _geo_city_cache, VT_CACHE, _ABUSEIPDB_CACHE):
+        _prune_cache(cache)
+    # _CHECKED_IPS: allow a fresh VT/OTX check after 24 h
+    for ip in [ip for ip in _CHECKED_IPS if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]:
+        _CHECKED_IPS.discard(ip)
+    # Webhook cooldowns: key is "channel:ip"
+    for key in [k for k, ts in ALERT_COOLDOWNS.items() if ts < now - WEBHOOK_COOLDOWN * 2]:
+        ALERT_COOLDOWNS.pop(key, None)
+    if idle:
+        log.debug(f"[PRUNE] {len(idle)} IP inactives retirées des tables")
+    return len(idle)
+
+
 def snapshot_traffic():
-    global _last_pkt_total
+    global _last_pkt_total, _last_prune_ts
     with STATE.lock:
         pps = STATE.packets_total - _last_pkt_total
         _last_pkt_total = STATE.packets_total
@@ -3110,6 +3310,14 @@ def snapshot_traffic():
         STATE.bytes_out = 0
     # v3.0 — Anomaly detection flush
     anomaly_flush()
+    # Periodic eviction of idle IPs from every per-IP table
+    _now = time.time()
+    if _now - _last_prune_ts >= _PRUNE_INTERVAL_SEC:
+        _last_prune_ts = _now
+        try:
+            prune_ip_tables(_now)
+        except Exception as e:
+            log.error(f"[PRUNE] {e}")
 
 CLIENTS: set = set()
 
@@ -3194,7 +3402,7 @@ def build_state_message() -> dict:
             "auto_block_hits":    CFG.auto_block_hits,
             "record_active":      STATE.record_active,
             "record_file":        STATE.record_file_path,
-            "record_packets":     len(STATE.record_packets),
+            "record_packets":     STATE.record_count,
             "top_ips":            [_build_top_ip_entry(ip, h) for ip, h in top_ips],
             "dpi_alerts":         list(STATE.dpi_alerts)[:20],
             "suricata_enabled":   SURICATA_ENABLED,
@@ -3231,7 +3439,7 @@ def build_state_message() -> dict:
             )(_group_ips_by_process(STATE.process_per_ip)))(),
             # v1.9.0
             "ip_risk_scores": dict(list(sorted(STATE.ip_risk_scores.items(), key=lambda x: -x[1]))[:20]),
-            "ip_intel": {ip: STATE.ip_intel[ip] for ip in list(STATE.ip_intel.keys())[:50]},
+            "ip_intel": {ip: v for ip, v in list(STATE.ip_intel.items())[:50]},
             "attack_by_country": {
                 country: dict(types)
                 for country, types in sorted(STATE.attack_by_country.items(),
@@ -4361,13 +4569,22 @@ async def broadcast_state():
     save_counter = 0
     while True:
         await asyncio.sleep(1)
-        snapshot_traffic()
+        # Never let a snapshot error kill the broadcast loop (and with it the
+        # WebSocket server / asyncio loop / the whole process in headless mode).
+        try:
+            snapshot_traffic()
+        except Exception as e:
+            log.error(f"[STATE] snapshot_traffic: {e}")
         save_counter += 1
         if save_counter >= 30:
             save_settings()
             save_counter = 0
         if CLIENTS:
-            msg = json.dumps(build_state_message())
+            try:
+                msg = json.dumps(build_state_message())
+            except Exception as e:
+                log.error(f"[STATE] build_state_message: {e}")
+                continue
             dead = set()
             for ws in list(CLIENTS):  # Copy to avoid RuntimeError: Set changed size
                 try:
@@ -4586,7 +4803,10 @@ async def main_async(interface: str):
     else:
         while True:
             await asyncio.sleep(1)
-            snapshot_traffic()
+            try:
+                snapshot_traffic()
+            except Exception as e:
+                log.error(f"[STATE] snapshot_traffic: {e}")
 
 SETTINGS_FILE = "netguard_settings.json"
 

@@ -22,6 +22,7 @@ import time
 import socket
 import struct
 import logging
+from logging.handlers import RotatingFileHandler
 import threading
 import subprocess
 import ipaddress
@@ -53,18 +54,19 @@ IS_WINDOWS = os.name == 'nt'
 
 COMMON_PORTS = [22, 53, 80, 443, 445, 548, 3389, 5000, 5900, 8080, 8443, 9100]
 
+# Ensure logs dir BEFORE creating the file handler (fresh install crashed here)
+os.makedirs(os.path.join(SENTINEL_DIR, "logs"), exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(os.path.join(SENTINEL_DIR, "logs", "mapper.log"), encoding="utf-8"),
+        RotatingFileHandler(os.path.join(SENTINEL_DIR, "logs", "mapper.log"),
+                            maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"),
         logging.StreamHandler(sys.stdout),
     ]
 )
 logger = logging.getLogger("SentinelMapper")
-
-# Ensure logs dir
-os.makedirs(os.path.join(SENTINEL_DIR, "logs"), exist_ok=True)
 
 # ─── Device Types ─────────────────────────────────────────────────────────
 
@@ -503,6 +505,7 @@ class MapperAPI:
         self._window = None
         self._saved_positions = {}
         self._saved_labels = {}
+        self._device_last_seen = {}   # device_id -> epoch of last scan that saw it
         self._load_saved_map()
 
     def set_window(self, window):
@@ -514,13 +517,16 @@ class MapperAPI:
         """Launch a network scan. Returns JSON with all discovered devices."""
         devices = self._scanner.scan_network()
         # Apply saved positions and labels
+        now = time.time()
         for dev in devices:
             did = dev["id"]
+            self._device_last_seen[did] = now
             if did in self._saved_positions:
                 dev["x"] = self._saved_positions[did]["x"]
                 dev["y"] = self._saved_positions[did]["y"]
             if did in self._saved_labels:
                 dev["custom_label"] = self._saved_labels[did]
+        self._prune_saved_map(now)
         return json.dumps({"devices": devices, "count": len(devices)}, ensure_ascii=False)
 
     def get_devices(self) -> str:
@@ -578,12 +584,30 @@ class MapperAPI:
 
     # ─── Internal ─────────────────────────────────────────────────────
 
+    _SAVED_MAP_TTL_SEC = 30 * 86400   # forget positions/labels of devices unseen for 30 days
+
+    def _prune_saved_map(self, now: float):
+        """Drop saved positions/labels for device ids not seen by any scan for 30 days.
+        Without this, every DHCP/guest device ever dragged or labelled stays in
+        network_map.json forever (and the whole file is rewritten on each drag)."""
+        cutoff = now - self._SAVED_MAP_TTL_SEC
+        stale = [did for did in set(self._saved_positions) | set(self._saved_labels)
+                 if self._device_last_seen.get(did, now) < cutoff]
+        for did in stale:
+            self._saved_positions.pop(did, None)
+            self._saved_labels.pop(did, None)
+            self._device_last_seen.pop(did, None)
+        if stale:
+            logger.info(f"[Mapper] {len(stale)} stale device(s) pruned from saved map")
+            self._save_map()
+
     def _save_map(self):
         """Persist map positions and labels to disk."""
         try:
             data = {
                 "positions": self._saved_positions,
                 "labels": self._saved_labels,
+                "last_seen": self._device_last_seen,
                 "last_saved": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             with open(MAP_SAVE_FILE, "w", encoding="utf-8") as f:
@@ -598,6 +622,7 @@ class MapperAPI:
                 with open(MAP_SAVE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self._saved_positions = data.get("positions", {})
+                self._device_last_seen = data.get("last_seen", {})
                 self._saved_labels = data.get("labels", {})
                 logger.info(f"[Mapper] Loaded map: {len(self._saved_positions)} positions")
         except Exception as e:
