@@ -100,3 +100,21 @@ argus_data/*
 argus_data/sandbox/*
 !argus_data/sandbox/trackers_blocklist.txt
 argus_cache/
+
+# ── Superaudit 2026-09-30 : données locales / secrets jamais versionnés ──
+netguard_license.json
+netguard_settings.json
+netguard_ai_memory.md
+.netguard_token
+.netguard_backup_key
+*.bak
+netguard_v160.py
+TRIM_REPORT.md
+sentinel/network_map.json
+sentinel/threat_data/intel_cache.json
+sentinel/sentinel_settings.json
+sentinel/logs/
+fim/data/
+cleanguard/logs/
+mailshield/mailshield_settings.json
+geoip/*.mmdb

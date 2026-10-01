@@ -1,9 +1,0 @@
-{
-  "auto_start_agents": false,
-  "theme": "dark",
-  "language": "fr",
-  "cortex_port": 8900,
-  "state_poll_interval": 10,
-  "threat_history_max": 200,
-  "startup_enabled": false
-}
