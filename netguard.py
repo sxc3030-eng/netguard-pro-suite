@@ -1896,7 +1896,12 @@ def _npcap_detector_loop():
 def _record_filename() -> str:
     os.makedirs(CFG.record_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return os.path.join(CFG.record_dir, f"capture_{ts}.pcap")
+    path = os.path.join(CFG.record_dir, f"capture_{ts}.pcap")
+    n = 1
+    while os.path.exists(path):   # never truncate an existing capture (same-second rotation)
+        path = os.path.join(CFG.record_dir, f"capture_{ts}_{n}.pcap")
+        n += 1
+    return path
 
 def _write_pcap_global_header(f):
     f.write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
