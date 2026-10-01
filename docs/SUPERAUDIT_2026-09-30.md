@@ -8,7 +8,7 @@ Méthode : quatre audits parallèles (backend, serveur IA + auth, front-end, rob
 
 | | Avant | Après |
 |---|---|---|
-| Tests NetGuard | 47 | **115** (68 nouveaux : mémoire, gardes de blocage, traversée de chemins, serveur HTTP IA) |
+| Tests NetGuard | 47 | **129** (82 nouveaux : mémoire, gardes de blocage, traversée de chemins, serveur HTTP IA, ReDoS, réglages corrompus, build Store, Mapper) |
 | Erreurs de syntaxe JS (7 pages, V8) | 0 | 0 |
 | Fichiers sensibles suivis par git | 3 + 47 copies/pcap | 0 (voir « Décisions » pour l'historique) |
 
@@ -49,30 +49,48 @@ Commits sur `netguard-ai` (dans l'ordre) : mémoire → tests mémoire → sécu
 | Mapper : `makedirs(logs)` après la création du FileHandler → crash au premier lancement. | Corrigé. |
 | Aucune politique de confidentialité pour NetGuard (exigence 10.5.1) ; aucun fichier de licences tierces. | `PRIVACY_POLICY_NETGUARD_AI.md`, `THIRD_PARTY_LICENSES.md`, réglage `geo_online_enabled`. |
 
-## 3. Décisions à prendre (non corrigées : relèvent de toi)
+## 3. Deuxième passe (2026-09-30, « corrige tout ») — ce qui a été fait en plus
 
-1. **Licence GPLv3 vs scapy GPLv2-only.** Les deux ne sont pas compatibles dans un binaire combiné. Options : passer NetGuard en « GPL v2 ou ultérieure », ou isoler la capture scapy dans un processus séparé sous GPLv2. À régler avant soumission ; prévoir aussi des conditions de licence personnalisées dans Partner Center (les Standard Application License Terms du Store ne conviennent pas à la GPL).
-2. **Gestion de licence maison vs achat Store.** `license_manager` impose un essai de 30 jours puis un palier « free », avec risque de verrouillage par siège. Un client qui a payé via le Store n'a jamais de clé NGPRO. Pour la version Store : dériver le palier de `StoreContext.GetAppLicenseAsync` (ou tout débloquer) et réserver NGPRO aux ventes directes.
-3. **Packaging.** NSIS + tâche planifiée `-RunLevel Highest` + écritures HKLM + `.bat` auto-élevés ne passent pas en MSIX. Il faut un manifeste avec `runFullTrust` + `allowElevation` (justifiés : capture Npcap et règles pare-feu), `StartupTask` pour le démarrage, et une boîte de dialogue au premier lancement pour installer Npcap (non redistribuable). `docs/AUTHENTICODE.md` note un refus Store du 2026-04-03 (signature/éditeur) toujours ouvert.
-4. **Mise à jour automatique (Argus).** Téléchargement d'exécutables depuis GitHub : à désactiver dans la version Store (politique 10.8).
-5. **Honeypot sur 0.0.0.0** (21/22/23/3389/8080) avec bannières imitant OpenSSH/Apache : à déclarer (capacités réseau) et à documenter ; envisager de lier à l'IP LAN seulement.
-6. **ip-api.com en HTTP clair.** Les réponses sont maintenant assainies, mais le canal reste en clair. Options : `geo_online_enabled=false` par défaut dans la version Store (GeoLite2 local + clé MaxMind de l'utilisateur), ou le plan payant HTTPS.
-7. **Historique git.** `netguard_users.json`, `netguard_license.json`, `netguard_settings.json` (ton IP publique Vidéotron) sont retirés du suivi mais restent dans l'historique : `git filter-repo` + push forcé + rotation du mot de passe admin avant toute publication publique.
-8. **Mapper.** La version de cette branche (648 lignes) est plus ancienne que celle du dépôt Store `NetGuardPro` (1 463 lignes, avec pare-feu par appareil). À réconcilier si tu veux la version complète pour la présentation.
+| Point | Fait |
+|---|---|
+| Licence maison vs achat Store | `netguard_paths.is_store_build()` (exe sous WindowsApps ou `NETGUARD_STORE_BUILD=1`) : dans un build Store, licence « pro » gérée par le Store, aucun essai, aucun siège, `license_manager` non chargé. NGPRO reste pour les ventes directes. |
+| Packaging MSIX | `packaging/msix/AppxManifest.xml` (runFullTrust, allowElevation, StartupTask, capacités réseau) + `packaging/build_msix.ps1` (PyInstaller onedir → makeappx → signtool). Les logos sont des copies de l'icône : à remplacer par les tailles Store. L'installeur NSIS reste pour la distribution directe (v4.1.0, règles pare-feu retirées à la désinstallation). |
+| Npcap / WebView2 absents | Boîtes de dialogue au premier lancement avec lien de téléchargement (Npcap n'est pas redistribuable). |
+| Mise à jour automatique Argus | Désactivée dans un build Store. |
+| Honeypot | `honeypot_bind` configurable (par défaut `0.0.0.0`, ex. l'IP LAN). |
+| ip-api.com en HTTP clair | `geo_online_enabled` par défaut `false` dans un build Store ; les pages carte et réseau respectent le même réglage (plus de requête ipapi.co / ip-api.com / ipwho.is quand il est désactivé). |
+| Mapper | Version complète (pare-feu par appareil) portée depuis le dépôt NetGuardPro, avec les correctifs de septembre et une validation IP/port/protocole avant chaque `netsh`. |
+| CSP | Politique explicite sur les 6 pages (origines listées, `default-src 'none'`), vérifiée dans le navigateur intégré : 0 violation sur la carte et le tableau de bord. |
+| ReDoS | `_safe_compile` sur les règles ET et personnalisées ; téléchargement plafonné à 20 Mo. |
+| Travaux UI sans limite | scan LAN, chargement ET, feeds : un à la fois + cooldown. |
+| Fichiers secrets lisibles par tout compte local (chmod no-op NTFS) | ACL propriétaire seul (icacls) sur le jeton, la clé de backup et chaque écriture JSON sécurisée. |
+| Réglages corrompus | Fichier renommé `.corrupt`, défauts, événement visible ; types validés. |
+| Planificateur de sauvegardes inexistant | Implémenté. |
+| Divers | Clé AbuseIPDB enfin résolue, Telegram échappé, snapshots sur structures partagées, arrêt propre de l'enregistrement sur erreur disque, interface absente signalée, processus étranger sur 8770 détecté, port de la barre système configurable, `websockets>=14`, build sans réglages réels, JSON borné et données encadrées dans les prompts IA, erreurs de forme fournisseur propres, clé API lue d'abord dans le coffre. |
 
-## 4. Non traité (connu, hors périmètre ou à faible impact)
+## 4. Décisions qui restent à toi (non corrigeables par le code)
 
-- CSP sur les tableaux de bord pywebview (origine `file://`, risque de casser les pages sans test réel) ; polices Google chargées en ligne.
-- `pywebview.api.send_command` expose toutes les commandes au JS de la page : acceptable maintenant que les XSS sont fermées, mais une liste blanche serait plus robuste.
-- Regex ET/pcre compilées sans garde ReDoS ; pas de limite de taille sur le téléchargement des règles.
-- Pas de limitation de débit sur `scan_lan` / `refresh_threat_feeds` (commandes locales authentifiées).
-- Interfaces IPv6 : `iptables` → `ip6tables` corrigé, mais le reste de la logique de blocage est pensé IPv4.
-- Tests non couverts : lancement sans Npcap/admin sur une vraie machine, build PyInstaller, `netguard_tray`, désinstallation.
+1. **Licence GPLv3 vs scapy GPLv2-only.** Incompatibles dans un binaire combiné. Options : passer NetGuard en « GPL v2 ou ultérieure », ou isoler la capture scapy dans un processus séparé. Prévoir des conditions de licence personnalisées dans Partner Center.
+2. **Historique git.** `netguard_users.json`, `netguard_license.json`, `netguard_settings.json` (ton IP publique) restent dans l'historique. Avant publication publique : changer le mot de passe admin, puis
+   ```bash
+   pip install git-filter-repo
+   git filter-repo --invert-paths --path netguard_users.json --path netguard_license.json --path netguard_settings.json --path captures --path reports --path backups --path netguard_v160.py --path netguard_v160.py.bak
+   git push --force --all && git push --force --tags
+   ```
+   (réécriture destructive : à faire toi-même, après sauvegarde du dépôt).
+3. **Soumission Store.** Remplacer les identités du manifeste, fournir les logos aux bonnes tailles, publier la politique de confidentialité à une URL publique, remplir le questionnaire IARC (logiciel de sécurité), régler le refus de signature du 2026-04-03 (`docs/AUTHENTICODE.md`).
 
-## 5. Pour reproduire la vérification
+## 5. Non traité (faible impact ou impossible sans machine de test)
+
+- `pywebview.api.send_command` expose toutes les commandes au JS de la page : acceptable maintenant que les XSS sont fermées côté serveur et côté pages.
+- Polices Google chargées en ligne (CSP les autorise) ; à embarquer pour un mode 100 % hors ligne.
+- Blocage pensé IPv4 (ip6tables ajouté, règles netsh acceptent l'IPv6, mais pas de tests IPv6).
+- Non testé sur machine réelle : lancement sans Npcap/admin, build PyInstaller/MSIX, barre système, désinstallation.
+
+## 6. Pour reproduire la vérification
 
 ```bash
 cd D:\tmp\netguard-pro-suite
-python -m pytest tests/test_netguard_ai_server.py tests/test_netguard_blindage.py tests/test_netguard_memoire.py tests/test_netguard.py tests/test_netguard_vault.py tests/test_sentinel_vault.py -q
+python -m pytest tests/test_netguard_blindage2.py tests/test_netguard_ai_server.py tests/test_netguard_blindage.py tests/test_netguard_memoire.py tests/test_netguard.py tests/test_netguard_vault.py tests/test_sentinel_vault.py -q
 python netguard.py --help
 ```

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 **Dépôt** : fichiers sensibles (`netguard_users.json`, `netguard_license.json`, `netguard_settings.json`) et copies obsolètes (`captures/`, `reports/`, `backups/`, `netguard_v160.py`) retirés du suivi ; `netguard_settings.json.example` fourni.
 
+**Deuxième passe** : build Store détecté (licence gérée par le Store, pas d'essai ni de sièges, géolocalisation en ligne désactivée par défaut, pas de mise à jour GitHub), manifeste et script MSIX (`packaging/`), dialogues Npcap/WebView2 au premier lancement, Mapper complet avec pare-feu par appareil et validation des entrées, CSP sur toutes les pages, garde ReDoS sur les règles IDS, ACL propriétaire sur les fichiers secrets, planificateur de sauvegardes, travaux UI un à la fois, réglages corrompus mis en quarantaine.
+
 ## [3.0.0] — 2026-04-29
 
 The first release where the Argus modes (`Normal` / `Privé` / `Coffre`) are

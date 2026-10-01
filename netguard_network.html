@@ -121,7 +121,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <div class="win-btn close"></div><div class="win-btn min"></div><div class="win-btn max"></div>
     </div>
     <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG7" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG7)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG7)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-    <span style="font-size:13px;font-weight:500"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard Pro — Vitrine Réseau</span>
+    <span style="font-size:13px;font-weight:500"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard AI — Vitrine Réseau</span>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <button class="refresh-btn" onclick="scanAll()">
@@ -336,6 +336,10 @@ function esc(v) {
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   }[c]));
 }
+// Privacy: online geo lookups (ipapi.co / ip-api.com / ipwho.is) follow the backend's
+// geo_online_enabled setting; the last known value is remembered for page load time.
+function ngGeoOnline(){ try { return localStorage.getItem('ng_geo_online') !== '0'; } catch(_) { return true; } }
+function ngRememberGeoOnline(msg){ if (msg && typeof msg.geo_online_enabled === 'boolean') { try { localStorage.setItem('ng_geo_online', msg.geo_online_enabled ? '1' : '0'); } catch(_) {} } }
 function getNgToken() {
   // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
   try {
@@ -371,7 +375,7 @@ function connectWS() {
         if (msg && msg.type === 'auth_ok') { ngAuthed = true; return; }
         if (msg && msg.type === 'auth_failed') { localStorage.removeItem('ng_ws_token'); alert('Auth NetGuard échouée. Token effacé.'); ws.close(); return; }
         if (!ngAuthed) return;
-        if (msg.type === 'state') handleState(msg);
+        if (msg.type === 'state') { ngRememberGeoOnline(msg); handleState(msg); }
         if (msg.type === 'network_info') handleNetworkInfo(msg);
       } catch(_) {}
     };
@@ -389,6 +393,7 @@ function sendCmd(obj) {
 
 // ── IP & Géolocalisation ───────────────────────────────────────────────────
 async function loadPublicIP() {
+  if (!ngGeoOnline()) { const el = document.getElementById('h-public-ip'); if (el) el.textContent = '— (géo en ligne désactivée)'; return; }
   try {
     const r = await fetch('https://ipapi.co/json/');
     const d = await r.json();

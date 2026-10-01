@@ -3735,6 +3735,7 @@ def build_state_message() -> dict:
             # Health (superaudit): the UI must say when nothing is captured/blocked
             "capture_error":      STATE.capture_error,
             "is_admin":           STATE.is_admin,
+            "geo_online_enabled": CFG.geo_online_enabled,   # pages must honour the same privacy knob
             "block_failures":     STATE.block_failures,
             "data_dir":           DATA_DIR,
             "top_ips":            [_build_top_ip_entry(ip, h) for ip, h in top_ips],
