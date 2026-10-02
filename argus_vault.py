@@ -263,6 +263,10 @@ def _load_masterkey(data: Dict[str, Any],
             raise VaultCorruptedError("DPAPI unwrap failed") from exc
     if method == WRAP_PBKDF2:
         if passphrase is None:
+            # Headless / CI / service use: an explicit opt-in environment passphrase
+            # (never set it on a shared machine; DPAPI is the default on Windows).
+            passphrase = os.environ.get("ARGUS_VAULT_PASSPHRASE") or None
+        if passphrase is None:
             raise VaultPassphraseRequiredError(
                 "passphrase required to unlock this vault"
             )

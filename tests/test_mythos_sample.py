@@ -73,6 +73,9 @@ def bus_and_gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("ARGUS_VAULT_ROOT", str(tmp_path))
     # Pass a test passphrase so vault_init works on non-Windows (DPAPI
     # is Windows-only; PBKDF2 fallback needs an explicit passphrase).
+    # The bus and the gateway read the vault WITHOUT a passphrase, so the
+    # same passphrase is exported for them (headless opt-in, see argus_vault).
+    monkeypatch.setenv("ARGUS_VAULT_PASSPHRASE", "test_passphrase_xyz")
     argus_vault.vault_init(passphrase="test_passphrase_xyz")
     import secrets
     shared = secrets.token_hex(32)

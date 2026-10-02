@@ -638,6 +638,15 @@ class _Handler(BaseHTTPRequestHandler):
         self._write_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        # Drain the request body BEFORE any early error reply: answering 401/404
+        # with unread bytes still in the socket makes Windows reset the connection
+        # (WinError 10053 on the client, flaky tests).
+        try:
+            _pending = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            _pending = 0
+        _prefetched = self.rfile.read(min(_pending, 1 << 20)) if _pending > 0 else b""
+
         if not self._check_token():
             self._write_json(HTTPStatus.UNAUTHORIZED, {"error": "unauthorized"})
             return
@@ -657,12 +666,8 @@ class _Handler(BaseHTTPRequestHandler):
                                                     "tool": tool_name})
             return
 
-        # Read and parse body
-        try:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-        except ValueError:
-            length = 0
-        raw = self.rfile.read(length) if length > 0 else b""
+        # Body was read up front (see top of do_POST)
+        raw = _prefetched
         try:
             body = json.loads(raw.decode("utf-8")) if raw else {}
         except Exception:

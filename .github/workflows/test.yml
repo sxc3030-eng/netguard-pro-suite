@@ -36,7 +36,7 @@ jobs:
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           else
-            pip install pytest pytest-mock
+            pip install pytest pytest-mock pytest-timeout
           fi
 
       - name: Run tests
@@ -46,7 +46,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a pytest tests/ -v --tb=short
+            xvfb-run -a pytest tests/ -v --tb=short --timeout=600 -p no:cacheprovider
           else
-            pytest tests/ -v --tb=short
+            pytest tests/ -v --tb=short --timeout=600 -p no:cacheprovider
           fi

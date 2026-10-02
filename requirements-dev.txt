@@ -9,6 +9,7 @@
 # Test framework + helpers
 pytest>=7.4
 pytest-mock>=3.12
+pytest-timeout>=2.3  # a hung Qt modal must fail the job, not run 6 h
 pytest-qt>=4.2  # only needed when running the PyQt6 GUI tests
 
 # Security scanners

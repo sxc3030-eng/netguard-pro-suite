@@ -601,10 +601,16 @@ class _GatewayHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def _read_body(self) -> Dict[str, Any]:
-        n = int(self.headers.get("Content-Length", "0"))
+        cached = getattr(self, "_body_cache", None)
+        if cached is not None:
+            return cached
+        try:
+            n = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            n = 0
         if n <= 0:
             return {}
-        raw = self.rfile.read(n)
+        raw = self.rfile.read(min(n, 1 << 20))
         try:
             return json.loads(raw.decode("utf-8"))
         except Exception:
@@ -661,6 +667,9 @@ class _GatewayHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         t0 = time.monotonic()
+        # Drain the body first: a 401/404 sent with unread bytes in the socket
+        # makes Windows reset the connection (WinError 10053, flaky clients).
+        self._body_cache = self._read_body()
         path = self.path.split("?")[0]
         if path == "/vault/handshake":
             self._handle_handshake(t0)

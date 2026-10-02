@@ -44,6 +44,14 @@ for _mod in _SCAPY_MODULES:
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock(name=_mod)
 
+# QtWebEngine (argus_pyqt) requires AA_ShareOpenGLContexts BEFORE any QApplication is
+# created; pytest-qt / earlier test modules may create one first. Set it once here.
+try:
+    from PyQt6.QtCore import QCoreApplication as _QCA, Qt as _Qt
+    _QCA.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+except Exception:
+    pass
+
 import pytest
 
 # Make sibling netguard.py importable for every test in this directory.

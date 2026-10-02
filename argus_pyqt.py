@@ -61,6 +61,15 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QHeaderView, QTableWidget, QTableWidgetItem, QMenuBar,
     QInputDialog,
 )
+# QtWebEngine must see AA_ShareOpenGLContexts before a QCoreApplication exists.
+# When a test session (pytest-qt, another test module) already created the
+# QApplication, importing this module raised ImportError; set the attribute
+# explicitly so the import works in both orders.
+try:
+    from PyQt6.QtCore import QCoreApplication as _QCA, Qt as _Qt
+    _QCA.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+except Exception:
+    pass
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import (
     QWebEnginePage, QWebEngineProfile, QWebEngineUrlRequestInterceptor,
@@ -3363,8 +3372,13 @@ class AISettingsDialog(QDialog):
         # Suppress modal prompts during automated tests (set via
         # ``AISettingsDialog._suppress_vault_prompts = True``). Tests still
         # exercise the underlying gate logic via direct method calls.
+        # Never pop a modal (QInputDialog / QMessageBox.exec) without a human:
+        # under pytest or an offscreen/headless Qt platform the dialog would
+        # block forever (CI jobs hung for 6 h on exactly this).
+        _headless = bool(os.environ.get("PYTEST_CURRENT_TEST")) or \
+            os.environ.get("QT_QPA_PLATFORM", "").lower() in ("offscreen", "minimal")
         self._suppress_prompts = bool(
-            getattr(type(self), "_suppress_vault_prompts", False)
+            getattr(type(self), "_suppress_vault_prompts", False) or _headless
         )
 
         v = QVBoxLayout(self)
