@@ -3811,7 +3811,10 @@ def build_state_message() -> dict:
                 ]
             )(_group_ips_by_process(STATE.process_per_ip)))(),
             # v1.9.0
-            "ip_risk_scores": dict(list(sorted(STATE.ip_risk_scores.items(), key=lambda x: -x[1]))[:20]),
+            # "Suspect" needs more than one weak signal: a hosting/VPN-range address alone
+            # scores 20 and every CDN or cloud server would be listed (ETW sees them all).
+            "ip_risk_scores": dict(list(sorted(((ip, sc) for ip, sc in STATE.ip_risk_scores.items() if sc >= 30),
+                                               key=lambda x: -x[1]))[:20]),
             "ip_intel": {ip: v for ip, v in list(STATE.ip_intel.items())[:50]},
             "attack_by_country": {
                 country: dict(types)
