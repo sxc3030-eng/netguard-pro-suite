@@ -1,4 +1,4 @@
-# Guide GitHub — Publier NetGuard Pro
+# Guide GitHub — Publier NetGuard AI
 
 ## Étape 1 — Créer le dépôt sur GitHub
 
@@ -48,7 +48,7 @@ git init
 git add .
 
 # Premier commit
-git commit -m "Initial release - NetGuard Pro v1.0"
+git commit -m "Initial release - NetGuard AI v1.0"
 
 # Connecter au dépôt GitHub (remplace avec ton URL)
 git remote add origin https://github.com/sxc3030-eng/netguard-pro.git

@@ -66,7 +66,7 @@ def create_mockup(filename, title, subtitle, color, panels):
     print(f'  [OK] screenshots/{filename}')
 
 mockups = [
-    ('netguard_dashboard.png', 'NetGuard Pro', 'Dashboard temps reel', (77,159,255),
+    ('netguard_dashboard.png', 'NetGuard AI', 'Dashboard temps reel', (77,159,255),
      [('12,847','Packets/s',(77,159,255)),('342','Blocked',(255,77,106)),('18','Threats',(255,179,71)),('847','Connections',(61,255,180))]),
     ('netguard_analyze.png', 'NetGuard Analyze', 'Analyse approfondie des paquets', (180,125,255),
      [('DPI','Deep Inspect',(180,125,255)),('TLS 1.3','Protocol',(77,159,255)),('SHA256','Hash',(61,255,180)),('JA3','Fingerprint',(255,179,71))]),

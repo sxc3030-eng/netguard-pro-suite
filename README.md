@@ -1,4 +1,4 @@
-# 🛡️ NetGuard Pro
+# 🛡️ NetGuard AI
 
 > Tableau de bord de surveillance réseau en temps réel avec détection et blocage automatique des menaces — conçu pour les réseaux domestiques et la cybersécurité.
 
@@ -11,7 +11,7 @@
 
 ## 📸 Aperçu
 
-NetGuard Pro combine la puissance de **tcpdump/Wireshark** avec un système de blocage automatique, le tout dans un tableau de bord moderne inspiré de Windows 11.
+NetGuard AI combine la puissance de **tcpdump/Wireshark** avec un système de blocage automatique, le tout dans un tableau de bord moderne inspiré de Windows 11.
 
 **Ce qu'il fait :**
 - 📡 Capture tous les paquets réseau en temps réel (via Scapy)
@@ -122,7 +122,7 @@ dns_tunnel_threshold:   int = 50    # requêtes DNS/sec (alerte)
 
 ## ⚠️ Avertissement légal
 
-NetGuard Pro est conçu pour surveiller **uniquement les réseaux dont vous êtes propriétaire ou pour lesquels vous avez une autorisation explicite**. L'utilisation de cet outil sur des réseaux tiers sans autorisation est illégale. L'auteur décline toute responsabilité pour un usage abusif.
+NetGuard AI est conçu pour surveiller **uniquement les réseaux dont vous êtes propriétaire ou pour lesquels vous avez une autorisation explicite**. L'utilisation de cet outil sur des réseaux tiers sans autorisation est illégale. L'auteur décline toute responsabilité pour un usage abusif.
 
 ---
 
@@ -153,6 +153,84 @@ Les contributions sont les bienvenues !
 ## 📄 Licence
 
 Ce projet est sous licence **GNU General Public License v3.0** — voir [LICENSE](LICENSE) pour les détails.
+
+---
+
+## 🦉 Argus Browser
+
+<!-- TODO: insert branding/argus/argus_wordmark.png once logo agent finishes -->
+
+**Argus** is the cybersecurity-focused browser bundled with the suite — a real Chromium engine (PyQt6 + QtWebEngine) wrapped with a top live-network feed, multi-tab dock, mode badges (Normal / Privé / Coffre), persistent sessions, and a one-click NetGuard launcher. Ship together with NetGuard for a self-contained workbench.
+
+```bash
+python argus_pyqt.py
+# or on Windows:
+LANCER_ARGUS_2.bat
+```
+
+> ⚠️ The Mode Privé / Coffre badges are **cosmetic in V1** — they change the window border colour but do not yet enforce stricter isolation. Real per-mode hardening lands in V3. See [SECURITY.md](SECURITY.md) for the honest breakdown.
+
+---
+
+## 🔑 Setup — providing secrets
+
+The suite reads secrets (Anthropic / OpenAI / Gemini API keys, threat-intel tokens, etc.) from three sources, in priority order:
+
+1. **Secret Vault** — triple-encryption at rest (Layer 1: DPAPI · Layer 2: Windows Credential Manager blind key · Layer 3: Argon2id master password). Per-secret AES-GCM with AAD anti-swap, append-only audit log, auto-lock on idle. Open Argus → AI panel → ⚙ → Settings, or NetGuard dashboard → Settings → Secret Vault. See [docs/secret_vault_spec.md](docs/secret_vault_spec.md) for the full threat model + architecture.
+2. **`.env` file** at repo root — see `.env.example` for the variable names. Never commit `.env`; it is in `.gitignore`.
+3. **Operating system environment variables** — set `ANTHROPIC_API_KEY=...` etc. in your shell profile.
+
+A missing secret degrades the dependent feature gracefully (e.g. AI side panel disabled) rather than crashing the suite. If the vault dependencies (`pywin32`, `keyring`, `argon2-cffi`) are not installed, the suite falls back to reading plaintext from `.env` or env vars and warns in the UI.
+
+---
+
+## 🛡️ Trust model
+
+We are explicit about which features are real security boundaries and which are still work-in-progress. Read [SECURITY.md](SECURITY.md) for the full threat model, including:
+
+- What we **do** protect against (triple-encryption Secret Vault DPAPI+Keychain+Argon2id, WebSocket auth + Origin check, scrypt password hashing, Ed25519 license signature, rate limiting, FIM HMAC chain, OS-level auto-block, rogue Npcap consumer detector).
+- What we **do not** protect against yet (cosmetic browsing modes, no download sandbox, no certificate pinning).
+- Cryptography choices and their parameters.
+- How to report vulnerabilities (private GitHub Security Advisory).
+
+---
+
+## 📚 Documentation
+
+End-user guides live in `docs/`. Newcomers should read in this order:
+
+| Étape | Guide | À lire si... |
+|-------|-------|--------------|
+| 1 | [docs/getting_started.md](docs/getting_started.md) | Tu installes pour la première fois |
+| 2 | [docs/secret_vault_user_guide.md](docs/secret_vault_user_guide.md) | Tu vas utiliser des clés API (Claude, GPT, Gemini, threat-intel) |
+| 3 | [docs/ai_assistant_user_guide.md](docs/ai_assistant_user_guide.md) | Tu veux activer le panneau IA dans Argus |
+| 4 | [docs/license_activation_guide.md](docs/license_activation_guide.md) | Tu as acheté Pro et tu veux activer ta licence |
+| 5 | [docs/troubleshooting.md](docs/troubleshooting.md) | Quelque chose ne marche pas |
+
+Specs techniques :
+- [docs/secret_vault_spec.md](docs/secret_vault_spec.md) — threat model + architecture du Vault (pour devs / auditeurs)
+- [docs/SECURITY_AUDIT_2026-04-29.md](docs/SECURITY_AUDIT_2026-04-29.md) — dernier audit interne
+- [docs/PERFORMANCE_2026-04-29.md](docs/PERFORMANCE_2026-04-29.md) — profil performance
+- [docs/MYTHOS_PROTOCOL.md](docs/MYTHOS_PROTOCOL.md) — protocole Mythos (sandbox AI agent)
+
+---
+
+## 🤝 Contributing — full guide
+
+Beyond the quick fork-and-PR loop above, see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+- Development environment setup.
+- Branch naming conventions (`feature/`, `fix/`, `docs/`, `security/`).
+- The pre-PR checklist (tests, no secrets, GPL v3 headers, type hints).
+- The DCO sign-off requirement (`git commit -s`).
+
+---
+
+## 📊 Build status
+
+![Tests](https://img.shields.io/github/actions/workflow/status/sxc3030-eng/netguard-pro-suite/tests.yml?label=Tests&style=flat-square)
+![Security](https://img.shields.io/github/actions/workflow/status/sxc3030-eng/netguard-pro-suite/security.yml?label=Security&style=flat-square)
+![License](https://img.shields.io/badge/License-GPL%20v3-green?style=flat-square)
 
 ---
 

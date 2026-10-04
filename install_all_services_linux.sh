@@ -3,7 +3,7 @@ set -e
 
 echo ""
 echo " +===================================================+"
-echo " |  NetGuard Pro Suite - Installation Linux Complete  |"
+echo " |  NetGuard AI Suite - Installation Linux Complete  |"
 echo " |  Tous les services via systemd                     |"
 echo " +===================================================+"
 echo ""
@@ -45,10 +45,10 @@ pip3 install scapy websockets cryptography Pillow --break-system-packages 2>/dev
     || pip3 install scapy websockets cryptography Pillow
 echo " [OK] Dependances installees"
 
-# --- Service 1: NetGuard Pro (main) ---
+# --- Service 1: NetGuard AI (main) ---
 cat > /etc/systemd/system/netguard-pro.service << EOF
 [Unit]
-Description=NetGuard Pro - Surveillance reseau temps reel
+Description=NetGuard AI - Surveillance reseau temps reel
 After=network.target
 Wants=network.target
 

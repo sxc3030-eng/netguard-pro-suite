@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Analyse de données</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' ; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob: file: ; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'">
+<title>NetGuard AI — Analyse de données</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -92,7 +93,7 @@ tr:hover td{background:var(--bg4)44}
   <div style="display:flex;align-items:center;gap:12px">
     <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG4" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG4)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG4)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     <span style="font-size:13px;font-weight:600">
-      <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard Pro
+      <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard AI
     </span>
     <span style="font-size:11px;color:var(--text3)">— Analyse de données</span>
   </div>
@@ -153,7 +154,7 @@ tr:hover td{background:var(--bg4)44}
       <div style="font-size:18px;font-weight:600;color:var(--text)">Mode Analyse</div>
       <div style="font-size:13px;color:var(--text3);text-align:center;max-width:400px">
         Charge un fichier <code style="color:var(--blue)">.pcap</code>, <code style="color:var(--green)">.json</code> ou <code style="color:var(--amber)">.csv</code> pour commencer l'analyse.
-        Les captures NetGuard Pro se trouvent dans le dossier <code style="color:var(--purple)">captures/</code>.
+        Les captures NetGuard AI se trouvent dans le dossier <code style="color:var(--purple)">captures/</code>.
       </div>
       <div style="display:flex;gap:10px">
         <button class="btn btn-blue" onclick="loadFromCaptures()">📁 Charger depuis captures/</button>
@@ -302,6 +303,11 @@ const FLAGS = {RU:'🇷🇺',CN:'🇨🇳',KP:'🇰🇵',IR:'🇮🇷',KR:'🇰�
 const COUNTRY_NAMES = {RU:'Russie',CN:'Chine',KP:'Corée du Nord',IR:'Iran',KR:'Corée du Sud',BR:'Brésil',NG:'Nigeria',IN:'Inde',US:'États-Unis',DE:'Allemagne',FR:'France',NL:'Pays-Bas',GB:'Royaume-Uni',JP:'Japon'};
 
 // ── File loading ──────────────────────────────────────────────────────────
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
 function loadFiles(files) {
   Array.from(files).forEach(file => {
     const ext = file.name.split('.').pop().toLowerCase();
@@ -663,7 +669,7 @@ function renderThreats() {
       <span style="width:6px;height:6px;border-radius:50%;background:${sevColors[e.status]||'var(--blue)'};flex-shrink:0"></span>
       <span style="font-family:'Geist Mono',monospace;color:${sevColors[e.status]||'var(--blue)'};min-width:115px">${e.src||''}</span>
       <span style="font-size:12px">${FLAGS[e.country]||''}</span>
-      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.reason||e.status}</span>
+      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.reason||e.status)}</span>
     </div>`).join('') || '<div style="padding:14px;font-size:12px;color:var(--text3)">Aucune menace détectée</div>';
 }
 
@@ -682,13 +688,13 @@ function renderTable() {
   tbody.innerHTML = sorted.slice(0,200).map(e => `<tr>
     <td style="color:var(--text3)">${e.t||''}</td>
     <td style="color:${sc[e.status]||'var(--text2)'}">${e.src||''}</td>
-    <td style="color:var(--text3);font-size:10px">${e.location||e.country?`${FLAGS[e.country]||''} ${e.location||COUNTRY_NAMES[e.country]||e.country}`:''}</td>
+    <td style="color:var(--text3);font-size:10px">${e.location||e.country?`${FLAGS[e.country]||''} ${esc(e.location||COUNTRY_NAMES[e.country]||e.country)}`:''}</td>
     <td style="color:var(--text3)">${e.dst||''}</td>
     <td>${e.dport||''}</td>
     <td style="color:var(--blue)">${e.proto||''}</td>
     <td style="color:var(--text3)">${e.size||''}</td>
     <td><span class="badge badge-${e.status||'allow'}">${e.status||'allow'}</span></td>
-    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.reason||''}</td>
+    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.reason||'')}</td>
   </tr>`).join('');
 }
 
@@ -790,7 +796,7 @@ function renderFileList() {
   el.innerHTML = loadedFiles.map((f, i) => `
     <div class="file-item active">
       <span class="file-ext ext-${f.ext}">.${f.ext}</span>
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)">${f.name}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text2)">${esc(f.name)}</span>
       <span style="font-size:10px;color:var(--text3)">${f.count}</span>
       <button onclick="removeFile(${i})" style="background:none;border:none;color:var(--text3);cursor:pointer;padding:0 2px" title="Supprimer">✕</button>
     </div>`).join('');

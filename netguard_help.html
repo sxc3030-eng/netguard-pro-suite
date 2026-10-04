@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Aide & Support</title>
+<title>NetGuard AI — Aide & Support</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -99,7 +99,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <div class="win-btn max"></div>
     </div>
     <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG9" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG9)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG9)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-    <span style="font-size:13px;font-weight:500"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard Pro — <span data-t="help_title">Aide & Support</span></span>
+    <span style="font-size:13px;font-weight:500"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard AI — <span data-t="help_title">Aide & Support</span></span>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <div class="lang-selector">
@@ -132,14 +132,14 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
       <div class="section-icon" style="background:var(--bluedim)">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 1L14 4v5c0 3-3 5-6 6C5 14 2 12 2 9V4l6-3z" stroke="#4d9fff" stroke-width="1.5"/></svg>
       </div>
-      <span data-t="how_title">Comment fonctionne NetGuard Pro</span>
+      <span data-t="how_title">Comment fonctionne NetGuard AI</span>
     </div>
 
     <div class="tip-card" style="border-color:var(--blue)22">
       <div class="tip-icon">🔄</div>
       <div>
         <div class="tip-title" data-t="how_arch_title">Architecture en 3 couches</div>
-        <div class="tip-desc" data-t="how_arch_desc">NetGuard Pro fonctionne avec un backend Python qui capture les paquets réseau, un moteur de détection qui analyse chaque paquet en temps réel, et un tableau de bord web connecté via WebSocket pour tout visualiser.</div>
+        <div class="tip-desc" data-t="how_arch_desc">NetGuard AI fonctionne avec un backend Python qui capture les paquets réseau, un moteur de détection qui analyse chaque paquet en temps réel, et un tableau de bord web connecté via WebSocket pour tout visualiser.</div>
       </div>
     </div>
 
@@ -240,9 +240,9 @@ const T = {
     tab_how:"Comment ça marche", tab_attacks:"Types d'attaques",
     tab_tips:"Conseils sécurité", tab_share:"Partager", tab_faq:"FAQ",
     copied:"✓ Copié dans le presse-papier",
-    how_title:"Comment fonctionne NetGuard Pro",
+    how_title:"Comment fonctionne NetGuard AI",
     how_arch_title:"Architecture en 3 couches",
-    how_arch_desc:"NetGuard Pro fonctionne avec un backend Python qui capture les paquets réseau, un moteur de détection qui analyse chaque paquet en temps réel, et un tableau de bord web connecté via WebSocket.",
+    how_arch_desc:"NetGuard AI fonctionne avec un backend Python qui capture les paquets réseau, un moteur de détection qui analyse chaque paquet en temps réel, et un tableau de bord web connecté via WebSocket.",
     step1_title:"Capture", step1_desc:"Scapy intercepte tous les paquets réseau via le driver Npcap sur Windows.",
     step2_title:"Analyse", step2_desc:"Chaque paquet est analysé en profondeur : IP, port, protocole, flags TCP, DPI (injection SQL, XSS), IDS Suricata (27+ règles), fingerprint JA3, analyse d'entropie, corrélation d'attaques multi-étapes et vérification contre les threat feeds.",
     step3_title:"Décision", step3_desc:"Le paquet reçoit un statut PERMIS, ALERTE ou BLOQUÉ. Si bloqué, une règle est ajoutée au pare-feu Windows.",
@@ -263,9 +263,9 @@ const T = {
     tab_how:"How it works", tab_attacks:"Attack types",
     tab_tips:"Security tips", tab_share:"Share", tab_faq:"FAQ",
     copied:"✓ Copied to clipboard",
-    how_title:"How NetGuard Pro works",
+    how_title:"How NetGuard AI works",
     how_arch_title:"3-layer architecture",
-    how_arch_desc:"NetGuard Pro runs a Python backend that captures network packets, a detection engine that analyzes each packet in real time, and a web dashboard connected via WebSocket.",
+    how_arch_desc:"NetGuard AI runs a Python backend that captures network packets, a detection engine that analyzes each packet in real time, and a web dashboard connected via WebSocket.",
     step1_title:"Capture", step1_desc:"Scapy intercepts all network packets via the Npcap driver on Windows.",
     step2_title:"Analysis", step2_desc:"Each packet is deeply analyzed: IP, port, protocol, TCP flags, DPI (SQL injection, XSS), Suricata IDS (27+ rules), JA3 fingerprinting, entropy analysis, multi-step attack correlation and threat feed verification.",
     step3_title:"Decision", step3_desc:"The packet gets a status: ALLOWED, ALERT or BLOCKED. If blocked, a rule is added to the Windows firewall.",
@@ -286,9 +286,9 @@ const T = {
     tab_how:"Cómo funciona", tab_attacks:"Tipos de ataques",
     tab_tips:"Consejos de seguridad", tab_share:"Compartir", tab_faq:"Preguntas",
     copied:"✓ Copiado al portapapeles",
-    how_title:"Cómo funciona NetGuard Pro",
+    how_title:"Cómo funciona NetGuard AI",
     how_arch_title:"Arquitectura de 3 capas",
-    how_arch_desc:"NetGuard Pro ejecuta un backend Python que captura paquetes de red, un motor de detección que analiza cada paquete en tiempo real y un panel web conectado vía WebSocket.",
+    how_arch_desc:"NetGuard AI ejecuta un backend Python que captura paquetes de red, un motor de detección que analiza cada paquete en tiempo real y un panel web conectado vía WebSocket.",
     step1_title:"Captura", step1_desc:"Scapy intercepta todos los paquetes de red mediante el controlador Npcap en Windows.",
     step2_title:"Análisis", step2_desc:"Cada paquete se analiza en profundidad: IP, puerto, protocolo, flags TCP, DPI (inyección SQL, XSS), IDS Suricata (27+ reglas), huella JA3, análisis de entropía, correlación de ataques y verificación contra feeds de amenazas.",
     step3_title:"Decisión", step3_desc:"El paquete recibe un estado: PERMITIDO, ALERTA o BLOQUEADO. Si se bloquea, se añade una regla al firewall de Windows.",
@@ -309,9 +309,9 @@ const T = {
     tab_how:"Wie es funktioniert", tab_attacks:"Angriffstypen",
     tab_tips:"Sicherheitstipps", tab_share:"Teilen", tab_faq:"FAQ",
     copied:"✓ In die Zwischenablage kopiert",
-    how_title:"Wie NetGuard Pro funktioniert",
+    how_title:"Wie NetGuard AI funktioniert",
     how_arch_title:"3-Schichten-Architektur",
-    how_arch_desc:"NetGuard Pro betreibt ein Python-Backend zur Netzwerkpaketerfassung, eine Erkennungs-Engine und ein WebSocket-Dashboard.",
+    how_arch_desc:"NetGuard AI betreibt ein Python-Backend zur Netzwerkpaketerfassung, eine Erkennungs-Engine und ein WebSocket-Dashboard.",
     step1_title:"Erfassung", step1_desc:"Scapy fängt alle Netzwerkpakete über den Npcap-Treiber unter Windows ab.",
     step2_title:"Analyse", step2_desc:"Jedes Paket wird tiefgehend analysiert: IP, Port, Protokoll, TCP-Flags, DPI (SQL-Injection, XSS), Suricata IDS (27+ Regeln), JA3-Fingerprinting, Entropie-Analyse, Angriffskorrelation und Bedrohungs-Feed-Prüfung.",
     step3_title:"Entscheidung", step3_desc:"Das Paket erhält einen Status: ERLAUBT, WARNUNG oder BLOCKIERT. Bei Blockierung wird eine Windows-Firewall-Regel hinzugefügt.",
@@ -651,10 +651,10 @@ function renderFaq() {
 function genShare(type) {
   const now = new Date().toLocaleString(lang === 'fr' ? 'fr-CA' : lang === 'de' ? 'de-DE' : lang === 'es' ? 'es-ES' : 'en-CA');
   const labels = {
-    fr:{title:'Rapport NetGuard Pro', gen:'Généré le', active:'Protection active', github:'Projet open source'},
-    en:{title:'NetGuard Pro Report', gen:'Generated on', active:'Active protection', github:'Open source project'},
-    es:{title:'Informe NetGuard Pro', gen:'Generado el', active:'Protección activa', github:'Proyecto open source'},
-    de:{title:'NetGuard Pro Bericht', gen:'Erstellt am', active:'Aktiver Schutz', github:'Open-Source-Projekt'},
+    fr:{title:'Rapport NetGuard AI', gen:'Généré le', active:'Protection active', github:'Projet open source'},
+    en:{title:'NetGuard AI Report', gen:'Generated on', active:'Active protection', github:'Open source project'},
+    es:{title:'Informe NetGuard AI', gen:'Generado el', active:'Protección activa', github:'Proyecto open source'},
+    de:{title:'NetGuard AI Bericht', gen:'Erstellt am', active:'Aktiver Schutz', github:'Open-Source-Projekt'},
   }[lang];
 
   let text = '';

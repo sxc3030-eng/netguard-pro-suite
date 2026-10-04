@@ -1,6 +1,8 @@
 # Logs NetGuard
 netguard.log
 *.log
+*.log.[0-9]
+*.log.[0-9][0-9]
 
 # Python
 __pycache__/
@@ -13,7 +15,13 @@ venv/
 .env
 *.egg-info/
 dist/
-build/
+build/*
+# but track the Argus PyInstaller spec (negation only works if parent dir
+# is not fully excluded — that's why build/* + !build/Argus.spec, not build/)
+!build/Argus.spec
+
+# Profiler artifacts (regenerable cProfile output)
+tools/_profile_out/
 
 # OS
 .DS_Store
@@ -31,6 +39,7 @@ blocked_ips.txt
 whitelist_custom.txt
 netguard_users.json
 netguard_service.vbs
+netguard_ai_settings.json
 
 # Fichiers générés
 *.exe
@@ -55,7 +64,57 @@ mailshield/dist/
 mailshield/build/
 mailshield/*.spec
 
+# CleanGuard - runtime data
+cleanguard/quarantine/
+
 # WireGuard - Données sensibles
 wireguard/peers.json
 wireguard/server_keys.json
 wireguard/*.conf
+vpnguard/configs/server_keys.json
+vpnguard/configs/peers.json
+vpnguard/configs/*.conf
+vpnguard/configs/*.key
+
+# NetGuard runtime secrets (generated at startup)
+.netguard_token
+.netguard_backup_key
+fim/data/.fim_hmac_key
+
+# AI persistent memory (per-installation; user-specific findings)
+netguard_ai_memory.md
+
+# MaxMind GeoLite2 — license key + downloaded DBs (per-installation)
+geoip/.maxmind_license
+geoip/GeoLite2-*.mmdb
+
+# License signing keys (NEVER commit the private key)
+tools/keys/
+*.priv
+# Argus runtime data — ignore everything under argus_data/ EXCEPT the
+# sandbox/ seed dir (default-shipped tracker blocklist). The negation
+# below only works because we ignore CONTENTS via /* (not the dir
+# itself). Re-include the sandbox seed file explicitly.
+argus_data/*
+!argus_data/sandbox/
+argus_data/sandbox/*
+!argus_data/sandbox/trackers_blocklist.txt
+argus_cache/
+
+# ── Superaudit 2026-09-30 : données locales / secrets jamais versionnés ──
+netguard_license.json
+netguard_settings.json
+netguard_ai_memory.md
+.netguard_token
+.netguard_backup_key
+*.bak
+netguard_v160.py
+TRIM_REPORT.md
+sentinel/network_map.json
+sentinel/threat_data/intel_cache.json
+sentinel/sentinel_settings.json
+sentinel/logs/
+fim/data/
+cleanguard/logs/
+mailshield/mailshield_settings.json
+geoip/*.mmdb

@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Bilan & Historique</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' ; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob: file: ; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'">
+<title>NetGuard AI — Bilan & Historique</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -65,7 +66,7 @@ tr:hover td{background:var(--bg4)44}
   <div style="display:flex;align-items:center;gap:12px">
     <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG5" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG5)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG5)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     <span style="font-size:13px;font-weight:600">
-      <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard Pro
+      <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard AI
     </span>
     <span style="font-size:11px;color:var(--text3)">— Bilan & Historique</span>
     <div style="display:flex;align-items:center;gap:6px">
@@ -196,13 +197,39 @@ const TYPE_COLORS = ['#ff4d6a','#ffb347','#b47dff','#4d9fff','#3dffb4','#00d4ff'
 const SEV_COLORS  = {critical:'#ff1a4d',high:'#ff4d6a',med:'#ffb347',medium:'#ffb347',low:'#4d9fff'};
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function getNgToken() {
+  // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
+  try {
+    const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
+    if (_argusTok && _argusTok.length >= 32) {
+      try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      return _argusTok;
+    }
+  } catch(_) {}
+  let t = '';
+  try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
+  if (!t || t.length < 32) {
+    t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
+  }
+  return t;
+}
+let ngAuthed = false;
+
 function connect() {
   ws = new WebSocket(WS_URL);
+  ngAuthed = false;
   ws.onopen = () => {
     document.getElementById('dot').style.background = 'var(--green)';
     document.getElementById('conn-status').textContent = 'Connecté';
-    loadSummary();
-    loadHistory();
+    const tok = getNgToken(); if (!tok) { ws.close(); return; }
+    ws.send(JSON.stringify({cmd:'auth', token: tok}));
   };
   ws.onclose = () => {
     document.getElementById('dot').style.background = 'var(--red)';
@@ -211,7 +238,13 @@ function connect() {
     setTimeout(connect, 3000);
   };
   ws.onmessage = e => {
-    try { handleMsg(JSON.parse(e.data)); } catch(_) {}
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'auth_ok') { ngAuthed = true; loadSummary(); loadHistory(); return; }
+      if (msg && msg.type === 'auth_failed') { localStorage.removeItem('ng_ws_token'); alert('Auth NetGuard échouée. Token effacé.'); ws.close(); return; }
+      if (!ngAuthed) return;
+      handleMsg(msg);
+    } catch(_) {}
   };
 }
 
@@ -380,10 +413,10 @@ function renderHistoryTable() {
   tbody.innerHTML = filteredHistory.slice(0,500).map(h => `<tr>
     <td style="color:var(--text3);font-family:'Geist Mono',monospace;white-space:nowrap">${(h.ts||'').replace('T',' ').slice(0,19)}</td>
     <td><span class="sev-badge sev-${h.severity||'low'}">${h.severity||'?'}</span></td>
-    <td style="color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h.type||''}</td>
-    <td style="font-family:'Geist Mono',monospace;color:var(--blue)">${h.ip||''}</td>
+    <td style="color:var(--text);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.type||'')}</td>
+    <td style="font-family:'Geist Mono',monospace;color:var(--blue)">${esc(h.ip||'')}</td>
     <td><span style="font-size:13px">${FLAGS[h.country]||''}</span> <span style="color:var(--text3);font-size:11px">${CNAMES[h.country]||h.country||'?'}</span></td>
-    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${h.desc||''}</td>
+    <td style="color:var(--text3);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${esc(h.desc||'')}</td>
     <td><span style="font-size:10px;padding:2px 6px;border-radius:3px;font-weight:700;${h.blocked?'background:var(--reddim);color:var(--red)':'background:var(--bg4);color:var(--text3)'}">${h.blocked?'🚫 BLOQUÉ':'✓ Détecté'}</span></td>
   </tr>`).join('') || '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text3);font-size:12px">Aucune donnée pour cette période</td></tr>';
 }
@@ -425,7 +458,7 @@ function exportPDF() {
   const high     = document.getElementById('s-high').textContent;
   const countries= document.getElementById('s-countries').textContent;
 
-  w.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Rapport ${period}</title>
+  w.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Rapport ${period}</title>
   <style>
     body{font-family:Arial,sans-serif;color:#1a1a2e;padding:30px;max-width:900px;margin:0 auto}
     h1{color:#1a1a2e;border-bottom:3px solid #4d9fff;padding-bottom:10px;margin-bottom:20px}
@@ -440,7 +473,7 @@ function exportPDF() {
     tr:nth-child(even) td{background:#f8f9ff}
     .footer{margin-top:30px;font-size:11px;color:#aaa;border-top:1px solid #eee;padding-top:10px;text-align:center}
   </style></head><body>
-  <h1>🛡️ NetGuard Pro — Rapport de sécurité</h1>
+  <h1>🛡️ NetGuard AI — Rapport de sécurité</h1>
   <p style="color:#888;margin-bottom:20px">Période : <strong>${period}</strong> — Généré le ${new Date().toLocaleString('fr')}</p>
   <div class="stat-row">
     <div class="stat"><div class="stat-val">${total}</div><div class="stat-lbl">Menaces totales</div></div>
@@ -454,12 +487,12 @@ function exportPDF() {
   <tbody>${filteredHistory.slice(0,200).map(h=>`<tr>
     <td>${(h.ts||'').replace('T',' ').slice(0,19)}</td>
     <td>${h.severity||''}</td>
-    <td>${h.type||''}</td>
-    <td><strong>${h.ip||''}</strong></td>
+    <td>${esc(h.type||'')}</td>
+    <td><strong>${esc(h.ip||'')}</strong></td>
     <td>${CNAMES[h.country]||h.country||'?'}</td>
     <td>${h.blocked?'BLOQUÉ':'Détecté'}</td>
   </tr>`).join('')}</tbody></table>
-  <div class="footer">NetGuard Pro v2.1.0 — Rapport généré automatiquement</div>
+  <div class="footer">NetGuard AI v2.1.0 — Rapport généré automatiquement</div>
   <script>window.onload=()=>{window.print()}<\/script>
   </body></html>`);
   w.document.close();

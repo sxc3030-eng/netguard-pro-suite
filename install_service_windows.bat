@@ -1,8 +1,8 @@
 @echo off
-title NetGuard Pro — Installation Service Windows
+title NetGuard AI — Installation Service Windows
 echo.
 echo  ╔══════════════════════════════════════════════╗
-echo  ║   NetGuard Pro — Installation Service       ║
+echo  ║   NetGuard AI — Installation Service       ║
 echo  ║   Demarrage automatique au boot Windows     ║
 echo  ╚══════════════════════════════════════════════╝
 echo.
@@ -42,7 +42,7 @@ type "%LAUNCHER%"
 echo.
 
 :: Creer la tache planifiee
-set TASK_NAME=NetGuardPro
+set TASK_NAME=NetGuardAI
 
 :: Supprimer si existe deja
 schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
@@ -67,14 +67,14 @@ if %errorLevel% equ 0 (
 
 :: Demarrer maintenant
 echo.
-echo  Demarrage de NetGuard Pro en arriere-plan...
+echo  Demarrage de NetGuard AI en arriere-plan...
 schtasks /run /tn "%TASK_NAME%"
 timeout /t 4 /nobreak >nul
 
 :: Verification du demarrage
 tasklist /fi "imagename eq python.exe" 2>nul | find /i "python" >nul
 if %errorLevel% equ 0 (
-    echo  [OK] NetGuard Pro est en cours d'execution
+    echo  [OK] NetGuard AI est en cours d'execution
 ) else (
     echo  [ATTENTION] Python ne semble pas actif. Verifiez le chemin Python.
 )
@@ -83,7 +83,7 @@ echo.
 echo  ╔══════════════════════════════════════════════╗
 echo  ║  Installation reussie !                     ║
 echo  ║                                             ║
-echo  ║  NetGuard Pro demarre automatiquement       ║
+echo  ║  NetGuard AI demarre automatiquement       ║
 echo  ║  a chaque demarrage de Windows.             ║
 echo  ║                                             ║
 echo  ║  Dashboard : netguard_dashboard.html        ║

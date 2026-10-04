@@ -1,0 +1,52 @@
+name: Tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # PyQt6 + QtWebEngine on Linux need a virtual display + GL libs.
+      # Tests use offscreen platform but a few system libs must still resolve.
+      - name: Install Qt system libs (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libxkbcommon0 libnss3 libxcomposite1 libxrandr2 \
+            libxdamage1 libxshmfence1 libgbm1 libasound2t64 \
+            libxkbfile1 libxcb-cursor0 xvfb
+
+      - name: Install Python deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # Runtime deps (pinned in requirements.txt)
+          pip install -r requirements.txt
+          # Dev deps (pytest, pytest-mock, pytest-qt, bandit, pip-audit)
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install pytest pytest-mock pytest-timeout
+          fi
+
+      - name: Run tests
+        shell: bash
+        env:
+          # Headless Qt — never tries to create a GL context
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a pytest tests/ -v --tb=short --timeout=600 -p no:cacheprovider
+          else
+            pytest tests/ -v --tb=short --timeout=600 -p no:cacheprovider
+          fi

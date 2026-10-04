@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>NetGuard AI — AI Assistant</title>
+<link rel="icon" type="image/png" href="netguard_ai_icon.png">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f13;--bg2:#16161d;--bg3:#1c1c26;--bg4:#22222f;
+  --border:#ffffff0f;--border2:#ffffff1a;
+  --text:#e8e8f0;--text2:#9090a8;--text3:#5a5a72;
+  --blue:#4d9fff;--red:#ff4d6a;--green:#3dffb4;--amber:#ffb347;--purple:#b47dff;
+}
+body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;height:100vh;display:flex;flex-direction:column}
+.titlebar{background:var(--bg2);border-bottom:1px solid var(--border);padding:10px 18px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:12px;flex-wrap:wrap}
+.titlebar-left{display:flex;align-items:center;gap:10px}
+.brand{font-size:14px;font-weight:600}
+.brand span{background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.brand-sub{font-size:12px;color:var(--text3);margin-left:4px}
+.titlebar-right{display:flex;align-items:center;gap:12px}
+.lang-switch{display:flex;gap:4px}
+.lang-btn{padding:3px 8px;border:1px solid var(--border2);background:transparent;color:var(--text3);font-size:11px;border-radius:4px;cursor:pointer;transition:.15s;font-family:inherit}
+.lang-btn:hover{border-color:var(--blue);color:var(--text2)}
+.lang-btn.active{background:#4d9fff22;border-color:var(--blue);color:var(--blue)}
+.status{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)}
+.status-dot{width:7px;height:7px;border-radius:50%;background:var(--text3);animation:pulse 2s infinite}
+.status-dot.ok{background:var(--green)}
+.status-dot.warn{background:var(--amber)}
+.status-dot.err{background:var(--red);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+.banner{background:#3d2800;color:#ffb347;padding:8px 18px;font-size:12px;border-bottom:1px solid var(--border);display:none}
+.banner.show{display:block}
+.banner code{font-family:'Geist Mono',monospace;background:#0008;padding:1px 6px;border-radius:3px}
+
+.capabilities{padding:14px 18px;display:flex;gap:8px;flex-wrap:wrap;background:var(--bg2);border-bottom:1px solid var(--border)}
+.cap-btn{background:var(--bg4);border:1px solid var(--border2);color:var(--text);padding:8px 14px;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;transition:.15s;font-family:inherit}
+.cap-btn:hover{border-color:var(--blue);color:var(--blue)}
+.cap-btn:disabled{opacity:.5;cursor:wait}
+
+.chat{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:14px;min-height:0}
+.msg{max-width:85%;padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-wrap:break-word;user-select:text;-webkit-user-select:text;cursor:text;position:relative}
+.msg.user{align-self:flex-end;background:linear-gradient(135deg,var(--blue),#7b5fff);color:#fff;border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);border-bottom-left-radius:4px}
+.msg.sys{align-self:center;background:transparent;color:var(--text3);font-size:11px;font-style:italic;border:1px dashed var(--border2);padding:6px 12px;cursor:default;user-select:none}
+.msg.err{align-self:flex-start;background:#3d1220;color:#ff4d6a;border:1px solid #ff4d6a40}
+.msg-meta{font-size:10px;color:var(--text3);margin-top:6px;font-family:'Geist Mono',monospace;user-select:none}
+.msg ::selection{background:rgba(180,125,255,.45);color:#fff}
+.msg .copy-btn{position:absolute;top:6px;right:6px;background:rgba(0,0,0,.45);border:1px solid var(--border2);color:var(--text2);width:26px;height:24px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:.15s;padding:0;font-family:inherit}
+.msg:hover .copy-btn{opacity:1}
+.msg .copy-btn:hover{color:var(--blue);border-color:var(--blue)}
+.msg .copy-btn.copied{color:var(--green);border-color:var(--green);opacity:1}
+
+.thinking{display:flex;gap:4px;align-self:flex-start;background:var(--bg3);border:1px solid var(--border);padding:14px 18px;border-radius:12px;border-bottom-left-radius:4px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--text2);animation:bounce 1.4s infinite}
+.dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+@keyframes bounce{0%,80%,100%{transform:scale(.6);opacity:.5}40%{transform:scale(1);opacity:1}}
+
+.composer{background:var(--bg2);border-top:1px solid var(--border);padding:12px 18px;display:flex;gap:10px;align-items:flex-end;flex-shrink:0}
+.composer textarea{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:inherit;font-size:13px;padding:10px 12px;border-radius:8px;resize:none;min-height:40px;max-height:140px;line-height:1.5;outline:none;transition:.15s}
+.composer textarea:focus{border-color:var(--blue)}
+.send-btn{background:linear-gradient(135deg,var(--blue),#7b5fff);color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;transition:.15s;font-family:inherit;height:40px}
+.send-btn:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(77,159,255,.3)}
+.send-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+
+.hint{padding:10px 18px;font-size:11px;color:var(--text3);text-align:center;border-top:1px solid var(--border)}
+.hint kbd{background:var(--bg4);border:1px solid var(--border2);padding:1px 5px;border-radius:3px;font-family:'Geist Mono',monospace;font-size:10px}
+
+.icon-btn{background:transparent;border:1px solid var(--border2);color:var(--text2);width:28px;height:26px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s}
+.icon-btn:hover{border-color:var(--blue);color:var(--blue)}
+.modal-overlay{position:fixed;inset:0;background:#000a;backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:100}
+.modal-overlay.show{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:12px;width:min(440px,92vw);padding:22px;box-shadow:0 20px 60px #000a}
+.modal-title{font-size:15px;font-weight:600;margin-bottom:6px}
+.modal-sub{font-size:12px;color:var(--text3);margin-bottom:18px;line-height:1.5}
+.field{margin-bottom:14px}
+.field-label{font-size:11px;color:var(--text2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;font-weight:500}
+.field input,.field select{width:100%;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:inherit;font-size:13px;padding:9px 12px;border-radius:8px;outline:none;transition:.15s}
+.field input:focus,.field select:focus{border-color:var(--blue)}
+.field-hint{font-size:11px;color:var(--text3);margin-top:6px}
+.field-hint a{color:var(--blue);text-decoration:none}
+.field-hint a:hover{text-decoration:underline}
+.modal-row{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
+.btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text2);padding:8px 16px;border-radius:8px;font-size:13px;cursor:pointer;font-family:inherit;transition:.15s}
+.btn-ghost:hover{border-color:var(--text3);color:var(--text)}
+.btn-primary{background:linear-gradient(135deg,var(--blue),#7b5fff);color:#fff;border:none;padding:8px 18px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;transition:.15s}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(77,159,255,.3)}
+.btn-primary:disabled{opacity:.5;cursor:wait;transform:none;box-shadow:none}
+.modal-status{font-size:11px;margin-top:10px;min-height:14px}
+.modal-status.ok{color:var(--green)}
+.modal-status.err{color:var(--red)}
+</style>
+</head>
+<body>
+<div class="titlebar">
+  <div class="titlebar-left">
+    <svg viewBox="0 0 200 200" width="26" height="26"><defs><linearGradient id="aiG" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#aiG)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#aiG)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+    <span class="brand"><span>Net</span>Guard AI</span>
+    <span class="brand-sub" id="brand-sub">— AI Assistant</span>
+  </div>
+  <div class="titlebar-right">
+    <div class="lang-switch">
+      <button class="lang-btn" data-lang="fr">FR</button>
+      <button class="lang-btn" data-lang="en">EN</button>
+      <button class="lang-btn" data-lang="es">ES</button>
+    </div>
+    <div class="status">
+      <div class="status-dot" id="dot"></div>
+      <span id="status-text">…</span>
+      <span id="model-tag" style="margin-left:6px;font-family:'Geist Mono',monospace;font-size:10px;color:var(--text3)"></span>
+    </div>
+    <button class="icon-btn" id="export-btn" title="Export" onclick="exportConversation()">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5v9M5 7.5L8 10.5L11 7.5M2.5 12v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="icon-btn" id="settings-btn" title="Settings">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><circle cx="8" cy="8" r="2.4" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-title" id="settings-title"></div>
+    <div class="modal-sub" id="settings-sub"></div>
+    <div class="field">
+      <div class="field-label" id="lbl-provider"></div>
+      <select id="inp-provider"></select>
+      <div class="field-hint" id="hint-provider"></div>
+    </div>
+    <div class="field">
+      <div class="field-label" id="lbl-key"></div>
+      <input type="password" id="inp-key" placeholder="">
+      <div class="field-hint" id="hint-key"></div>
+    </div>
+    <div class="field">
+      <div class="field-label" id="lbl-model"></div>
+      <select id="inp-model"></select>
+    </div>
+    <div class="modal-status" id="modal-status"></div>
+    <div class="modal-row">
+      <button class="btn-ghost" id="btn-cancel"></button>
+      <button class="btn-primary" id="btn-save"></button>
+    </div>
+  </div>
+</div>
+
+<div class="banner" id="banner"></div>
+
+<div class="capabilities" id="capabilities"></div>
+
+<div class="chat" id="chat">
+  <div class="msg sys" id="welcome"></div>
+</div>
+
+<div class="composer">
+  <textarea id="input" rows="1"></textarea>
+  <button class="send-btn" id="send"></button>
+</div>
+<div class="hint" id="hint"></div>
+
+<script>
+const I18N = {
+  fr: {
+    sub: '— AI Assistant',
+    welcome: 'Conversation initialisée. Pose une question, ou utilise une capability ci-dessus.',
+    placeholder: 'Demande à l\'IA — par exemple : « analyse mon network »…',
+    send: 'Envoyer',
+    hint_html: '<kbd>Enter</kbd> pour envoyer · <kbd>Shift+Enter</kbd> pour nouvelle ligne',
+    status_ready: 'Prêt',
+    status_no_key: 'Sans clé API',
+    status_offline: 'Serveur hors-ligne',
+    banner: 'Aucune clé API détectée. Définis <code>ANTHROPIC_API_KEY</code> dans tes variables d\'environnement, ou copie <code>netguard_ai_settings.json.example</code> vers <code>netguard_ai_settings.json</code> et ajoute ta clé.',
+    err_missing_key: 'Clé API manquante — voir bandeau en haut.',
+    err_unknown: 'Erreur inconnue',
+    err_network: 'Erreur réseau : ',
+    empty_reply: '(réponse vide)',
+    cap_analyze: 'Analyser mon réseau',
+    cap_explain: 'Expliquer les menaces',
+    cap_recommend: 'Recommander des actions',
+    settings_title: 'Paramètres IA',
+    settings_sub: 'Tes clés API sont stockées localement dans `netguard_ai_settings.json`. Les variables d\'environnement (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>) ont la priorité si définies.',
+    lbl_provider: 'Fournisseur IA',
+    lbl_key: 'Clé API',
+    lbl_model: 'Modèle',
+    hint_provider: 'Tu peux configurer plusieurs fournisseurs et basculer entre eux.',
+    hint_key_set: 'Clé déjà enregistrée pour ce fournisseur — laisse vide pour conserver.',
+    hint_key_empty_anthropic: 'Obtiens ta clé sur <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a>.',
+    hint_key_empty_openai: 'Obtiens ta clé sur <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>.',
+    hint_key_empty_google: 'Obtiens ta clé sur <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com</a>.',
+    btn_cancel: 'Annuler',
+    btn_save: 'Enregistrer',
+    saving: 'Enregistrement…',
+    saved: 'Enregistré.',
+    save_failed: 'Échec : ',
+    invalid_key: 'Clé invalide (doit commencer par sk-ant-).',
+    copy: 'Copier', export: 'Exporter la conversation',
+  },
+  en: {
+    sub: '— AI Assistant',
+    welcome: 'Conversation ready. Ask a question, or use a capability above.',
+    placeholder: 'Ask the AI — for example: "analyze my network"…',
+    send: 'Send',
+    hint_html: '<kbd>Enter</kbd> to send · <kbd>Shift+Enter</kbd> for newline',
+    status_ready: 'Ready',
+    status_no_key: 'No API key',
+    status_offline: 'Server offline',
+    banner: 'No API key detected. Set <code>ANTHROPIC_API_KEY</code> in your environment, or copy <code>netguard_ai_settings.json.example</code> to <code>netguard_ai_settings.json</code> and add your key.',
+    err_missing_key: 'API key missing — see banner above.',
+    err_unknown: 'Unknown error',
+    err_network: 'Network error: ',
+    empty_reply: '(empty reply)',
+    cap_analyze: 'Analyze my network',
+    cap_explain: 'Explain the threats',
+    cap_recommend: 'Recommend actions',
+    settings_title: 'AI Settings',
+    settings_sub: 'Your API keys are stored locally in `netguard_ai_settings.json`. Environment variables (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>) take priority if set.',
+    lbl_provider: 'AI Provider',
+    lbl_key: 'API key',
+    lbl_model: 'Model',
+    hint_provider: 'Configure several providers and switch between them.',
+    hint_key_set: 'Key already saved for this provider — leave empty to keep it.',
+    hint_key_empty_anthropic: 'Get your key at <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a>.',
+    hint_key_empty_openai: 'Get your key at <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>.',
+    hint_key_empty_google: 'Get your key at <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com</a>.',
+    btn_cancel: 'Cancel',
+    btn_save: 'Save',
+    saving: 'Saving…',
+    saved: 'Saved.',
+    save_failed: 'Failed: ',
+    invalid_key: 'Invalid key (must start with sk-ant-).',
+    copy: 'Copy', export: 'Export conversation',
+  },
+  es: {
+    sub: '— Asistente IA',
+    welcome: 'Conversación iniciada. Haz una pregunta o usa una capacidad arriba.',
+    placeholder: 'Pregunta a la IA — por ejemplo: «analiza mi red»…',
+    send: 'Enviar',
+    hint_html: '<kbd>Enter</kbd> para enviar · <kbd>Shift+Enter</kbd> para nueva línea',
+    status_ready: 'Listo',
+    status_no_key: 'Sin clave API',
+    status_offline: 'Servidor sin conexión',
+    banner: 'No se detectó clave API. Define <code>ANTHROPIC_API_KEY</code> en tu entorno, o copia <code>netguard_ai_settings.json.example</code> a <code>netguard_ai_settings.json</code> y añade tu clave.',
+    err_missing_key: 'Clave API faltante — ver aviso arriba.',
+    err_unknown: 'Error desconocido',
+    err_network: 'Error de red: ',
+    empty_reply: '(respuesta vacía)',
+    cap_analyze: 'Analizar mi red',
+    cap_explain: 'Explicar las amenazas',
+    cap_recommend: 'Recomendar acciones',
+    settings_title: 'Configuración IA',
+    settings_sub: 'Tus claves API se guardan localmente en `netguard_ai_settings.json`. Las variables de entorno (<code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GOOGLE_API_KEY</code>) tienen prioridad si están definidas.',
+    lbl_provider: 'Proveedor IA',
+    lbl_key: 'Clave API',
+    lbl_model: 'Modelo',
+    hint_provider: 'Configura varios proveedores y cambia entre ellos.',
+    hint_key_set: 'Clave ya guardada para este proveedor — deja vacío para conservarla.',
+    hint_key_empty_anthropic: 'Obtén tu clave en <a href="https://console.anthropic.com/" target="_blank">console.anthropic.com</a>.',
+    hint_key_empty_openai: 'Obtén tu clave en <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>.',
+    hint_key_empty_google: 'Obtén tu clave en <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com</a>.',
+    btn_cancel: 'Cancelar',
+    btn_save: 'Guardar',
+    saving: 'Guardando…',
+    saved: 'Guardado.',
+    save_failed: 'Error: ',
+    invalid_key: 'Clave inválida (debe empezar con sk-ant-).',
+    copy: 'Copiar', export: 'Exportar conversación',
+  },
+};
+
+const CAP_KEYS = {
+  analyze_network: 'cap_analyze',
+  explain_threats: 'cap_explain',
+  recommend_actions: 'cap_recommend',
+};
+
+const API = location.origin;
+// Token injected server-side (<meta name="ng-token">); every /api call must carry it.
+const NG_TOKEN = (document.querySelector('meta[name="ng-token"]') || {}).content || '';
+function ngHeaders(extra){ return Object.assign({'X-NetGuard-Token': NG_TOKEN}, extra || {}); }
+const chat = document.getElementById('chat');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('send');
+const dot = document.getElementById('dot');
+const statusText = document.getElementById('status-text');
+const modelTag = document.getElementById('model-tag');
+const banner = document.getElementById('banner');
+const capsEl = document.getElementById('capabilities');
+const welcomeEl = document.getElementById('welcome');
+const brandSub = document.getElementById('brand-sub');
+const hintEl = document.getElementById('hint');
+
+const params = new URLSearchParams(location.search);
+let lang = (params.get('lang') || localStorage.getItem('ng_ai_lang') || 'fr').toLowerCase();
+if (!I18N[lang]) lang = 'fr';
+
+let serverHasKey = false;
+let cachedCaps = [];
+const history = [];
+
+function t(key){ return (I18N[lang] && I18N[lang][key]) || I18N.fr[key] || key; }
+
+function applyLang(){
+  document.documentElement.lang = lang;
+  brandSub.textContent = t('sub');
+  welcomeEl.textContent = t('welcome');
+  input.placeholder = t('placeholder');
+  sendBtn.textContent = t('send');
+  hintEl.innerHTML = t('hint_html');
+  banner.innerHTML = t('banner');
+  for (const b of document.querySelectorAll('.lang-btn')){
+    b.classList.toggle('active', b.dataset.lang === lang);
+  }
+  if (statusText.dataset.state === 'ok') statusText.textContent = t('status_ready');
+  else if (statusText.dataset.state === 'no_key') statusText.textContent = t('status_no_key');
+  else if (statusText.dataset.state === 'offline') statusText.textContent = t('status_offline');
+  for (const btn of capsEl.querySelectorAll('.cap-btn')){
+    const key = btn.dataset.capKey;
+    if (key) btn.textContent = t(key);
+  }
+  document.getElementById('settings-title').textContent = t('settings_title');
+  document.getElementById('settings-sub').innerHTML = t('settings_sub');
+  document.getElementById('lbl-provider').textContent = t('lbl_provider');
+  document.getElementById('lbl-key').textContent = t('lbl_key');
+  document.getElementById('lbl-model').textContent = t('lbl_model');
+  document.getElementById('hint-provider').textContent = t('hint_provider');
+  document.getElementById('btn-cancel').textContent = t('btn_cancel');
+  document.getElementById('btn-save').textContent = t('btn_save');
+  const exp = document.getElementById('export-btn'); if (exp) exp.title = t('export');
+  for (const b of document.querySelectorAll('.msg .copy-btn')) b.title = t('copy');
+  refreshKeyHint();
+}
+
+let providersCache = null;
+
+async function loadProviders(){
+  try {
+    const r = await fetch(API + '/api/providers', {headers: ngHeaders()});
+    providersCache = await r.json();
+  } catch {
+    providersCache = {active: 'anthropic', providers: []};
+  }
+  return providersCache;
+}
+
+function selectedProviderInfo(){
+  if (!providersCache) return null;
+  const sel = document.getElementById('inp-provider').value;
+  return providersCache.providers.find(p => p.name === sel) || null;
+}
+
+function refreshKeyHint(){
+  const hint = document.getElementById('hint-key');
+  const info = selectedProviderInfo();
+  if (info && info.has_key) {
+    hint.innerHTML = t('hint_key_set');
+  } else if (info) {
+    const k = 'hint_key_empty_' + info.name;
+    hint.innerHTML = t(k) || t('hint_key_empty_anthropic');
+  } else {
+    hint.innerHTML = '';
+  }
+}
+
+function refreshModelOptions(){
+  const info = selectedProviderInfo();
+  const sel = document.getElementById('inp-model');
+  sel.innerHTML = '';
+  if (!info) return;
+  for (const m of info.models) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    sel.appendChild(opt);
+  }
+  sel.value = info.current_model || info.default_model;
+}
+
+function refreshKeyPlaceholder(){
+  const info = selectedProviderInfo();
+  const inp = document.getElementById('inp-key');
+  if (!info) { inp.placeholder = ''; return; }
+  inp.placeholder = info.name === 'anthropic' ? 'sk-ant-...' : info.name === 'openai' ? 'sk-...' : 'AIza...';
+}
+
+const settingsModal = document.getElementById('settings-modal');
+const settingsBtn = document.getElementById('settings-btn');
+const inpKey = document.getElementById('inp-key');
+const inpModel = document.getElementById('inp-model');
+const btnSave = document.getElementById('btn-save');
+const btnCancel = document.getElementById('btn-cancel');
+const modalStatus = document.getElementById('modal-status');
+
+const inpProvider = document.getElementById('inp-provider');
+
+settingsBtn.addEventListener('click', async () => {
+  modalStatus.textContent = '';
+  modalStatus.className = 'modal-status';
+  inpKey.value = '';
+  await loadProviders();
+  inpProvider.innerHTML = '';
+  for (const p of providersCache.providers) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.label + (p.has_key ? ' ✓' : '');
+    inpProvider.appendChild(opt);
+  }
+  inpProvider.value = providersCache.active;
+  refreshModelOptions();
+  refreshKeyPlaceholder();
+  refreshKeyHint();
+  settingsModal.classList.add('show');
+  inpKey.focus();
+});
+
+inpProvider.addEventListener('change', () => {
+  inpKey.value = '';
+  refreshModelOptions();
+  refreshKeyPlaceholder();
+  refreshKeyHint();
+});
+
+btnCancel.addEventListener('click', () => settingsModal.classList.remove('show'));
+settingsModal.addEventListener('click', (e) => { if (e.target === settingsModal) settingsModal.classList.remove('show'); });
+
+btnSave.addEventListener('click', async () => {
+  const target = inpProvider.value;
+  const key = inpKey.value.trim();
+  const model = inpModel.value;
+
+  if (key) {
+    const okFmt = (target === 'anthropic' && key.startsWith('sk-ant-'))
+                || (target === 'openai' && key.startsWith('sk-'))
+                || (target === 'google' && key.length > 10);
+    if (!okFmt) {
+      modalStatus.textContent = t('invalid_key');
+      modalStatus.className = 'modal-status err';
+      return;
+    }
+  }
+
+  btnSave.disabled = true;
+  modalStatus.textContent = t('saving');
+  modalStatus.className = 'modal-status';
+  try {
+    const body = {provider: target, target, model};
+    if (key) body.api_key = key;
+    const r = await fetch(API + '/api/settings', {
+      method: 'POST',
+      headers: ngHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify(body),
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      modalStatus.textContent = t('save_failed') + (j.error || 'unknown');
+      modalStatus.className = 'modal-status err';
+    } else {
+      modalStatus.textContent = t('saved');
+      modalStatus.className = 'modal-status ok';
+      await checkHealth();
+      await loadProviders();
+      setTimeout(() => settingsModal.classList.remove('show'), 700);
+    }
+  } catch (e) {
+    modalStatus.textContent = t('save_failed') + e;
+    modalStatus.className = 'modal-status err';
+  } finally {
+    btnSave.disabled = false;
+  }
+});
+
+for (const b of document.querySelectorAll('.lang-btn')){
+  b.addEventListener('click', () => {
+    lang = b.dataset.lang;
+    localStorage.setItem('ng_ai_lang', lang);
+    applyLang();
+  });
+}
+
+function addMsg(role, text, meta){
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  const span = document.createElement('span');
+  span.textContent = text;
+  span.dataset.raw = text;
+  div.appendChild(span);
+  if(meta){
+    const m = document.createElement('div');
+    m.className = 'msg-meta';
+    m.textContent = meta;
+    div.appendChild(m);
+  }
+  if (role === 'ai' || role === 'user' || role === 'err') {
+    const btn = document.createElement('button');
+    btn.className = 'copy-btn';
+    btn.title = t('copy') || 'Copy';
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    btn.onclick = (e) => { e.stopPropagation(); copyMsgText(btn, span.dataset.raw); };
+    div.appendChild(btn);
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+async function copyMsgText(btn, text){
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    }, 1500);
+  } catch (e) {
+    console.warn('clipboard write failed', e);
+  }
+}
+
+function exportConversation(){
+  const lines = [];
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  lines.push('# NetGuard AI — Conversation');
+  lines.push('');
+  lines.push('Exported: ' + new Date().toLocaleString());
+  lines.push('Lang: ' + lang);
+  lines.push('');
+  for (const m of chat.children) {
+    if (m.classList.contains('thinking')) continue;
+    const span = m.querySelector('span');
+    const txt = span ? (span.dataset.raw || span.textContent) : m.textContent;
+    if (m.classList.contains('user')) {
+      lines.push('## You'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('ai')) {
+      lines.push('## AI'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('err')) {
+      lines.push('### Error'); lines.push(''); lines.push(txt); lines.push('');
+    }
+  }
+  const blob = new Blob([lines.join('\n')], {type: 'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'netguard-ai-conversation_' + stamp + '.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+function addThinking(){
+  const div = document.createElement('div');
+  div.className = 'thinking';
+  div.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+function autoResize(){
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+}
+input.addEventListener('input', autoResize);
+input.addEventListener('keydown', (e) => {
+  if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); send(); }
+});
+sendBtn.addEventListener('click', send);
+
+async function checkHealth(){
+  try{
+    const r = await fetch(API + '/api/health', {headers: ngHeaders()});
+    const j = await r.json();
+    serverHasKey = !!j.has_key;
+    dot.className = 'status-dot ' + (j.has_key ? 'ok' : 'warn');
+    statusText.dataset.state = j.has_key ? 'ok' : 'no_key';
+    statusText.textContent = j.has_key ? t('status_ready') : t('status_no_key');
+    modelTag.textContent = j.model || '';
+    banner.classList.toggle('show', !j.has_key);
+  }catch{
+    dot.className = 'status-dot err';
+    statusText.dataset.state = 'offline';
+    statusText.textContent = t('status_offline');
+  }
+}
+
+async function loadCapabilities(){
+  try{
+    const r = await fetch(API + '/api/capabilities', {headers: ngHeaders()});
+    const j = await r.json();
+    cachedCaps = j.capabilities || [];
+    capsEl.innerHTML = '';
+    for(const c of cachedCaps){
+      const b = document.createElement('button');
+      b.className = 'cap-btn';
+      b.dataset.capKey = CAP_KEYS[c.name] || '';
+      b.textContent = CAP_KEYS[c.name] ? t(CAP_KEYS[c.name]) : c.label;
+      b.title = c.description;
+      b.addEventListener('click', () => runCapability(c.name, b.textContent));
+      capsEl.appendChild(b);
+    }
+  }catch{}
+}
+
+async function runCapability(name, label){
+  addMsg('user', '▶ ' + label);
+  const t1 = addThinking();
+  setBusy(true);
+  try{
+    const r = await fetch(API + '/api/capability/' + name, {
+      method: 'POST',
+      headers: ngHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({lang}),
+    });
+    const j = await r.json();
+    t1.remove();
+    renderResult(j);
+  }catch(e){
+    t1.remove();
+    addMsg('err', t('err_network') + e);
+  }finally{
+    setBusy(false);
+  }
+}
+
+async function send(){
+  const text = input.value.trim();
+  if(!text) return;
+  input.value = '';
+  autoResize();
+  addMsg('user', text);
+  history.push({role: 'user', content: text});
+  const t1 = addThinking();
+  setBusy(true);
+  try{
+    const r = await fetch(API + '/api/chat', {
+      method: 'POST',
+      headers: ngHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({messages: history.slice(0, -1), message: text, lang}),
+    });
+    const j = await r.json();
+    t1.remove();
+    renderResult(j);
+  }catch(e){
+    t1.remove();
+    addMsg('err', t('err_network') + e);
+  }finally{
+    setBusy(false);
+  }
+}
+
+function renderResult(j){
+  if(!j.ok){
+    const why = j.error === 'missing_api_key'
+      ? t('err_missing_key')
+      : (j.error || t('err_unknown')) + (j.reply ? '\n' + j.reply : '');
+    addMsg('err', why);
+    return;
+  }
+  const meta = (j.tokens_in || j.tokens_out)
+    ? `${j.tokens_in || 0} → ${j.tokens_out || 0} tokens · ${j.model || ''}`
+    : null;
+  history.push({role: 'assistant', content: j.reply || ''});
+  addMsg('ai', j.reply || t('empty_reply'), meta);
+}
+
+function setBusy(b){
+  sendBtn.disabled = b;
+  for(const btn of capsEl.querySelectorAll('.cap-btn')) btn.disabled = b;
+}
+
+applyLang();
+checkHealth();
+loadCapabilities();
+setInterval(checkHealth, 15000);
+input.focus();
+</script>
+</body>
+</html>

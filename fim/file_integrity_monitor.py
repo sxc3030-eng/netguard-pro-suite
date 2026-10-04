@@ -122,8 +122,44 @@ WHITELIST_PATTERNS = [
 # BASELINE MANAGER
 # ===========================================================================
 
+_HMAC_KEY_FILE = os.path.join(DATA_DIR, ".fim_hmac_key")
+
+
+def _get_hmac_key() -> bytes:
+    """Load or generate the FIM baseline HMAC key. File chmod 0600."""
+    try:
+        if os.path.exists(_HMAC_KEY_FILE):
+            with open(_HMAC_KEY_FILE, "rb") as f:
+                key = f.read().strip()
+            if len(key) >= 32:
+                return key
+    except OSError:
+        pass
+    import secrets as _s
+    key = _s.token_bytes(32)
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(_HMAC_KEY_FILE, "wb") as f:
+            f.write(key)
+        try:
+            os.chmod(_HMAC_KEY_FILE, 0o600)
+        except OSError:
+            pass
+        logger.info(f"[Baseline] HMAC key generated -> {_HMAC_KEY_FILE}")
+    except OSError as e:
+        logger.error(f"[Baseline] Cannot persist HMAC key: {e}")
+    return key
+
+
+def _compute_baseline_hmac(data: dict, key: bytes) -> str:
+    """HMAC-SHA256 over a canonical JSON dump of the baseline dict."""
+    import hmac
+    payload = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
 class BaselineManager:
-    """Creates and manages file hash baselines."""
+    """Creates and manages file hash baselines (HMAC-signed against tampering)."""
 
     def __init__(self):
         self.baseline: dict[str, dict] = {}  # path -> {hash, size, mtime}
@@ -131,21 +167,50 @@ class BaselineManager:
         self._load_baseline()
 
     def _load_baseline(self):
-        """Load baseline from disk."""
+        """Load baseline from disk and verify its HMAC."""
         try:
-            if os.path.exists(self.baseline_file):
-                with open(self.baseline_file, "r", encoding="utf-8") as f:
-                    self.baseline = json.load(f)
-                logger.info(f"[Baseline] Loaded {len(self.baseline)} file hashes")
+            if not os.path.exists(self.baseline_file):
+                return
+            with open(self.baseline_file, "r", encoding="utf-8") as f:
+                envelope = json.load(f)
+            # New signed format: {"_hmac": "...", "data": {...}}
+            if isinstance(envelope, dict) and "_hmac" in envelope and "data" in envelope:
+                key = _get_hmac_key()
+                expected = _compute_baseline_hmac(envelope["data"], key)
+                import hmac as _hmac
+                if not _hmac.compare_digest(envelope["_hmac"], expected):
+                    logger.error("[Baseline] HMAC INVALID — possible tampering. Discarding baseline; rerun create_baseline.")
+                    self.baseline = {}
+                    return
+                self.baseline = envelope["data"]
+                logger.info(f"[Baseline] Loaded {len(self.baseline)} file hashes (HMAC OK)")
+                return
+            # Legacy plaintext format (no signature) — accept once, warn user to rebuild
+            if isinstance(envelope, dict):
+                logger.warning("[Baseline] Legacy unsigned format detected. Rebuild baseline to enable HMAC protection.")
+                self.baseline = envelope
+                logger.info(f"[Baseline] Loaded {len(self.baseline)} file hashes (UNSIGNED — rebuild recommended)")
         except Exception as e:
             logger.warning(f"[Baseline] Load error: {e}")
 
     def save_baseline(self):
-        """Save baseline to disk."""
+        """Save baseline to disk with HMAC-SHA256 envelope (0600)."""
         try:
-            with open(self.baseline_file, "w", encoding="utf-8") as f:
-                json.dump(self.baseline, f, indent=1)
-            logger.info(f"[Baseline] Saved {len(self.baseline)} file hashes")
+            key = _get_hmac_key()
+            envelope = {
+                "_hmac": _compute_baseline_hmac(self.baseline, key),
+                "_format": "hmac-sha256-v1",
+                "data": self.baseline,
+            }
+            tmp = self.baseline_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(envelope, f, indent=1)
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            os.replace(tmp, self.baseline_file)
+            logger.info(f"[Baseline] Saved {len(self.baseline)} file hashes (HMAC signed)")
         except Exception as e:
             logger.error(f"[Baseline] Save error: {e}")
 

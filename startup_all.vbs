@@ -1,4 +1,4 @@
-' NetGuard Pro Suite - Silent Startup (for Windows boot / Task Scheduler)
+' NetGuard AI Suite - Silent Startup (for Windows boot / Task Scheduler)
 ' Launches startup_all.bat without visible console window
 
 Set WshShell = CreateObject("WScript.Shell")

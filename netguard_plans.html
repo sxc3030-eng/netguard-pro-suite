@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Comparatif des forfaits</title>
+<title>NetGuard AI — Comparatif des forfaits</title>
 <style>
 @media print {
   body { background: #fff !important; color: #000 !important; }
@@ -18,11 +18,10 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #fff; color: #1a1
 .header .logo { font-size: 32px; font-weight: 800; margin-bottom: 10px; }
 .header .logo span { color: #4d9fff; }
 
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table { width: 100%; max-width: 900px; margin: 0 auto; border-collapse: collapse; font-size: 13px; }
 thead th { background: #f8f9fb; padding: 14px 12px; text-align: center; border-bottom: 2px solid #e0e0e0; font-size: 14px; }
-thead th:first-child { text-align: left; width: 40%; }
+thead th:first-child { text-align: left; width: 50%; }
 thead th.pro { background: #eaf2ff; color: #2563eb; }
-thead th.ent { background: #f0e6ff; color: #7c3aed; }
 
 .plan-price { font-size: 22px; font-weight: 800; display: block; margin-top: 4px; }
 .plan-price span { font-size: 12px; font-weight: 400; color: #888; }
@@ -32,6 +31,7 @@ tbody td:first-child { text-align: left; font-weight: 500; }
 tbody tr:hover { background: #fafbfd; }
 
 .section-row td { background: #f4f6fa; font-weight: 700; font-size: 13px; color: #333; padding: 10px 12px; text-transform: uppercase; letter-spacing: .05em; border-bottom: 2px solid #e0e0e0; }
+.note-row td { background: #fef3c7; font-size: 12px; color: #92400e; padding: 10px 14px; font-weight: 500; border-bottom: 1px solid #fde68a; text-align: left; }
 
 .yes { color: #16a34a; font-weight: 700; font-size: 16px; }
 .no { color: #ccc; font-size: 14px; }
@@ -46,9 +46,9 @@ tbody tr:hover { background: #fafbfd; }
 <body>
 
 <div class="header">
-  <div class="logo"><span>Net</span>Guard Pro</div>
+  <div class="logo"><span>Net</span>Guard AI</div>
   <h1>Comparatif des forfaits</h1>
-  <p>Version 3.0.0 — Suite de cybersecurite complete</p>
+  <p>Suite cybersecurite complete &mdash; Sniffer, IDS, AI Assistant, Mode Fantome, Carte mondiale</p>
 </div>
 
 <table>
@@ -56,108 +56,103 @@ tbody tr:hover { background: #fafbfd; }
   <tr>
     <th>Fonctionnalite</th>
     <th>Gratuit<br><span class="plan-price">0$ <span>/ mois</span></span></th>
-    <th class="pro">Pro<br><span class="plan-price">29$ <span>/ mois</span></span></th>
-    <th class="ent">Enterprise<br><span class="plan-price">99$ <span>/ mois</span></span></th>
+    <th class="pro">Pro<br><span class="plan-price">29$ <span>/ mois</span></span><br><span style="font-size:10px;font-weight:400;color:#888">ou 290$/an &mdash; -17%</span></th>
   </tr>
 </thead>
 <tbody>
 
+  <!-- LICENSING NOTE -->
+  <tr class="note-row"><td colspan="3"><strong>Licence par poste</strong> &mdash; 1 license = 1 PC. Multi-PC : +15$/mois par poste additionnel jusqu'a 5 PCs. Au-dela : <a href="mailto:contact@netguardpro.com" style="color:#92400e">contact@netguardpro.com</a> pour tarif sur mesure.</td></tr>
+
   <!-- CORE -->
-  <tr class="section-row"><td colspan="4">NetGuard Pro — Moteur principal</td></tr>
-  <tr><td>Dashboard temps reel (WebSocket)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Capture de paquets (Scapy)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Detection d'intrusions IDS (27 regles Suricata)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Geoblocage par pays + carte mondiale</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Blacklist communautaire (Spamhaus, Blocklist.de)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Deep Packet Inspection (DPI)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Detection d'anomalies comportementales</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Correlation d'attaques (Attack Chains)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Fingerprinting JA3/TLS</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Analyse entropie (detection exfiltration)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>API REST (/api/state, /api/threats...)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Multi-utilisateurs + roles (Admin/Op/Lecteur)</td><td class="limit">1 admin</td><td class="yes">&#10003; 10 users</td><td class="yes">&#10003; Illimite</td></tr>
-  <tr><td>Historique des menaces</td><td class="limit">7 jours</td><td class="yes">&#10003; 30 jours</td><td class="yes">&#10003; 1 an</td></tr>
-  <tr><td>Export PDF des rapports</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">NetGuard AI &mdash; Moteur principal</td></tr>
+  <tr><td>Dashboard temps reel (WebSocket)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Capture de paquets (Scapy + Npcap)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Detection d'intrusions IDS (27 regles Suricata)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Carte mondiale + traceroute multi-hop</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Geoblocage par pays</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>GeoIP local (MaxMind GeoLite2 + ip-api fallback)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Mode Fantome (tray + notifications + auto-boot)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Detecteurs port scan / brute force / SYN flood</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Deep Packet Inspection (DPI) avec masking sensible</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Detection d'anomalies comportementales (Z-score)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Correlation d'attaques (Attack Chains)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Fingerprinting JA3/TLS</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Analyse entropie (detection exfiltration)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>App identification per packet (psutil)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Bandwidth tracking par IP</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Threat feeds (VirusTotal + AbuseIPDB)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>API REST (/api/state, /api/threats...)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Historique des menaces</td><td class="limit">7 jours</td><td class="yes">&#10003; 90 jours</td></tr>
+  <tr><td>Export PDF des rapports</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+
+  <!-- AI ASSISTANT -->
+  <tr class="section-row"><td colspan="3">AI Assistant &mdash; Claude / GPT / Gemini integres</td></tr>
+  <tr><td>Chat IA contextuel sur l'etat reseau</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Memoire persistante cross-session</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Mode agent (block_ip, audit, etc. avec approbation)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>BYOK &mdash; Bring Your Own Key (Claude / GPT / Gemini)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- MAILSHIELD -->
-  <tr class="section-row"><td colspan="4">MailShield Pro — Client email securise</td></tr>
-  <tr><td>Client IMAP/SMTP securise</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Anti-phishing + anti-spam intelligent</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Quarantaine des emails suspects</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Analyse des pieces jointes</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Dashboard MailShield (port 8800)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">MailShield &mdash; Client email securise</td></tr>
+  <tr><td>Client IMAP/SMTP securise</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Anti-phishing + anti-spam intelligent</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Quarantaine + analyse pieces jointes</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- CLEANGUARD -->
-  <tr class="section-row"><td colspan="4">CleanGuard — Scanner antimalware</td></tr>
-  <tr><td>Scan de malware (signatures + heuristique)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Nettoyage systeme (temp, cache, artefacts)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Quarantaine automatique</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Surveillance fichiers en temps reel (Watchdog)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Nettoyage registre Windows</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">CleanGuard &mdash; Scanner antimalware</td></tr>
+  <tr><td>Scan de malware (signatures + heuristique)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Nettoyage systeme + surveillance fichiers temps reel</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- SENTINEL -->
-  <tr class="section-row"><td colspan="4">Sentinel OS — SOAR & Threat Intelligence</td></tr>
-  <tr><td>Cortex (moteur de correlation central)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Playbooks automatises (reponse aux incidents)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Threat Intelligence feeds (OTX, AbuseIPDB)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Alertes Telegram / Discord</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Carte mondiale des menaces</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">Sentinel &mdash; SOAR & Threat Intelligence</td></tr>
+  <tr><td>Cortex (moteur de correlation central)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Playbooks automatises (reponse aux incidents)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Alertes Telegram / Discord</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- VPNGUARD -->
-  <tr class="section-row"><td colspan="4">VPNGuard + WireGuard — VPN integre</td></tr>
-  <tr><td>Tunnel WireGuard integre</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Gestionnaire multi-profils VPN</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Generation de cles + config peers</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Monitoring du tunnel en temps reel</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">VPNGuard + WireGuard &mdash; VPN integre</td></tr>
+  <tr><td>Tunnel WireGuard integre</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Multi-profils + monitoring temps reel</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- HONEYPOT -->
-  <tr class="section-row"><td colspan="4">Honeypot — Pieges a attaquants</td></tr>
-  <tr><td>Faux services (SSH, FTP, RDP, HTTP, Telnet)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Fichiers pieges (trap files)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Auto-block des IPs attaquantes</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">Honeypot &mdash; Pieges a attaquants</td></tr>
+  <tr><td>Faux services (SSH, FTP, RDP, HTTP, Telnet)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Auto-block des IPs attaquantes</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- FIM -->
-  <tr class="section-row"><td colspan="4">FIM — File Integrity Monitor</td></tr>
-  <tr><td>Surveillance de fichiers critiques (SHA-256)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Alertes sur modifications non autorisees</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Baseline automatique</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">FIM &mdash; File Integrity Monitor</td></tr>
+  <tr><td>Surveillance fichiers critiques (SHA-256, HMAC signe)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
   <!-- RECORDER -->
-  <tr class="section-row"><td colspan="4">Recorder — Forensique</td></tr>
-  <tr><td>Capture PCAP des sessions</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Rejeu et analyse post-incident</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Stockage forensique (limite configurable)</td><td class="no">&#10007;</td><td class="yes">&#10003; 10 GB</td><td class="yes">&#10003; Illimite</td></tr>
+  <tr class="section-row"><td colspan="3">Recorder &mdash; Forensique</td></tr>
+  <tr><td>Capture PCAP des sessions + rejeu post-incident</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Stockage forensique chiffre</td><td class="no">&#10007;</td><td class="yes">&#10003; 50 GB</td></tr>
 
   <!-- STRIKEBACK -->
-  <tr class="section-row"><td colspan="4">StrikeBack — Reponse active</td></tr>
-  <tr><td>Blocage automatique d'IP</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Tarpit (ralentissement des attaquants)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Decoys (leurres dynamiques)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Contre-mesures automatisees</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">StrikeBack &mdash; Reponse active</td></tr>
+  <tr><td>Blocage automatique d'IP + tarpit</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Decoys (leurres dynamiques)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
 
-  <!-- ENTERPRISE ONLY -->
-  <tr class="section-row"><td colspan="4">Enterprise exclusif</td></tr>
-  <tr><td>Integration SIEM (Splunk, Elastic, QRadar)</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Regles IDS personnalisees illimitees</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Sites / reseaux surveilles</td><td class="limit">1 site</td><td class="limit">5 sites</td><td class="yes">&#10003; Illimite</td></tr>
-  <tr><td>Backup automatique chiffre</td><td class="no">&#10007;</td><td class="yes">&#10003; 7 jours</td><td class="yes">&#10003; 90 jours</td></tr>
-  <tr><td>Support prioritaire 24/7</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Formation incluse</td><td class="no">&#10007;</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <!-- BACKUP / SUPPORT -->
+  <tr class="section-row"><td colspan="3">Backup &amp; Support</td></tr>
+  <tr><td>Backup chiffre (Fernet) automatique</td><td class="no">&#10007;</td><td class="yes">&#10003; 90 jours</td></tr>
+  <tr><td>Mises a jour</td><td class="yes">&#10003;</td><td class="yes">&#10003; prioritaires</td></tr>
+  <tr><td>Support</td><td class="limit">Discord communaute</td><td class="yes">&#10003; Email + Discord prive</td></tr>
 
   <!-- PLATFORM -->
-  <tr class="section-row"><td colspan="4">Plateformes</td></tr>
-  <tr><td>Windows 10/11</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Linux (Ubuntu, Debian, CentOS)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Android (monitoring)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Demarrage automatique au boot</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
-  <tr><td>Icones bureau Windows</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr class="section-row"><td colspan="3">Plateformes</td></tr>
+  <tr><td>Windows 10/11</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Linux (Ubuntu, Debian, CentOS)</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>macOS (beta)</td><td class="no">&#10007;</td><td class="yes">&#10003;</td></tr>
+  <tr><td>Demarrage automatique au boot</td><td class="yes">&#10003;</td><td class="yes">&#10003;</td></tr>
 
 </tbody>
 </table>
 
 <div class="footer">
-  NetGuard Pro v3.0.0 &mdash; &copy; 2026 NetGuard Pro. Tous droits reserves.<br>
-  Contact : contact@netguardpro.com &mdash; https://sxc3030-eng.github.io/netguard-pro/
+  NetGuard AI &mdash; &copy; 2026 Simon Cantin. Tous droits reserves.<br>
+  Contact : contact@netguardpro.com &mdash; <a href="https://github.com/sxc3030-eng/netguard-pro-suite">github.com/sxc3030-eng/netguard-pro-suite</a>
 </div>
 
 <div class="no-print">

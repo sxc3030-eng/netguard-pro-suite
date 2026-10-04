@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CleanGuard Pro v1.0.0 — Nettoyeur Système + Antivirus/Antimalware
-Partie du pack NetGuard Pro
+Partie du pack NetGuard AI
 """
 
 import asyncio
@@ -1089,7 +1089,10 @@ def find_duplicates(path: str = None, min_size_kb: int = 100) -> list:
         hash_groups = defaultdict(list)
         for f in files:
             try:
-                h = hashlib.md5()
+                # nosec B324 - MD5 is used as a non-cryptographic content fingerprint
+                # for duplicate-file detection. Collision resistance is not required;
+                # we already pre-bucket by file size to bound the search space.
+                h = hashlib.md5(usedforsecurity=False)
                 with open(f, "rb") as fh:
                     for chunk in iter(lambda: fh.read(8192), b""):
                         h.update(chunk)

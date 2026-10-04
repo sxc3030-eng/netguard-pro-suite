@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 MailShield Pro - Client Email Securise avec Filtrage Intelligent
-Partie de l'ecosysteme NetGuard Pro
+Partie de l'ecosysteme NetGuard AI
 """
 
 import imaplib
@@ -60,6 +60,31 @@ try:
     HAS_STARTUP_UTILS = True
 except ImportError:
     HAS_STARTUP_UTILS = False
+
+# Vault helpers — vault-aware secret reads for account passwords + API keys.
+# Defined as module imports so all of mailshield can call them. Falls back
+# silently to the legacy XOR PasswordVault when SecretVault is unavailable.
+try:
+    from vault_helpers import (
+        get_secret as _vault_get_secret,
+        set_secret as _vault_set_secret,
+        account_password_key,
+        account_refresh_token_key,
+        migrate_to_vault as _vault_migrate_settings,
+    )
+    HAS_VAULT_HELPERS = True
+except Exception:  # pragma: no cover - vault_helpers always ships with the suite
+    HAS_VAULT_HELPERS = False
+    def _vault_get_secret(name, fallback=None):  # type: ignore
+        return fallback
+    def _vault_set_secret(name, value):  # type: ignore
+        return False
+    def account_password_key(email):  # type: ignore
+        return ""
+    def account_refresh_token_key(email):  # type: ignore
+        return ""
+    def _vault_migrate_settings(*a, **kw):  # type: ignore
+        return [], 0
 
 VERSION = "2.0.0"
 SCRIPT_DIR = Path(__file__).parent
@@ -167,8 +192,89 @@ def save_settings(settings):
         json.dump(save_copy, f, indent=4, ensure_ascii=False)
 
 def get_decrypted_password(account):
-    """Get the decrypted password for an account."""
+    """Get the decrypted password for an account.
+
+    Lookup order:
+      1. SecretVault under ``mailshield.account.<email>.password`` —
+         only consulted when the vault is unlocked. This is the source
+         of truth once the user has migrated.
+      2. Legacy XOR-encrypted ``password`` field (``ENC:`` prefix) on
+         the account dict — kept for back-compat with pre-vault installs.
+      3. Plain ``password`` field — kept for the very-first-run case
+         before the auto-encrypt-on-load loop runs.
+    """
+    if not isinstance(account, dict):
+        return ""
+    email = (account.get("email") or "").strip()
+    # 1. Vault.
+    if email:
+        vault_key = account_password_key(email)
+        if vault_key:
+            v = _vault_get_secret(vault_key, None)
+            if v:
+                return v
+    # 2 + 3. Legacy XOR / plaintext fallback.
     return password_vault.decrypt(account.get("password", ""))
+
+
+def get_account_refresh_token(account):
+    """Get an OAuth2 refresh token for the account, vault-first."""
+    if not isinstance(account, dict):
+        return ""
+    email = (account.get("email") or "").strip()
+    if email:
+        vault_key = account_refresh_token_key(email)
+        if vault_key:
+            v = _vault_get_secret(vault_key, None)
+            if v:
+                return v
+    return account.get("refresh_token", "") or ""
+
+
+def store_account_password_in_vault(account, plaintext: str) -> bool:
+    """Persist ``plaintext`` to the SecretVault under the account's
+    namespaced key. Returns True on success. The legacy XOR field
+    on the account dict is also cleared so save_settings() does not
+    re-encrypt and re-store the plaintext."""
+    if not plaintext or not isinstance(account, dict):
+        return False
+    email = (account.get("email") or "").strip()
+    if not email:
+        return False
+    key = account_password_key(email)
+    if not key:
+        return False
+    if _vault_set_secret(key, plaintext):
+        account["password"] = ""
+        account["password_in_vault"] = True
+        return True
+    return False
+
+
+def migrate_to_vault():
+    """Module-level entry point invoked by the suite-wide
+    ``vault_migrate`` WS command on netguard.py. Moves every plaintext
+    or XOR-wrapped secret in ``mailshield_settings.json`` into the
+    SecretVault, leaving a ``.pre-vault.bak`` backup behind.
+
+    Returns ``(migrated_keys, count)``. Empty result means everything
+    was already in the vault — that is the normal idempotent path.
+    """
+    settings = load_settings()
+    return _vault_migrate_settings(
+        settings,
+        decrypt_password=lambda x: password_vault.decrypt(x),
+        settings_path=Path(SETTINGS_PATH),
+        save_callback=lambda s: _save_settings_raw(s),
+    )
+
+
+def _save_settings_raw(settings):
+    """Save ``settings`` without re-encrypting passwords (the migrate
+    path has already cleared them). Avoids ``save_settings`` which
+    auto-encrypts plaintext fields."""
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(settings, f, indent=4, ensure_ascii=False)
 
 # --- Database ------------------------------------------------------------------
 
@@ -455,7 +561,9 @@ class ContactBook:
 
     def add_contact(self, name, addr, phone="", company="", group="General", notes="", trusted=False):
         conn = self._conn()
-        color = f"#{hashlib.md5(addr.encode()).hexdigest()[:6]}"
+        # nosec B324 - MD5 used purely to derive a deterministic 6-char avatar tint
+        # from the email address. Not used for authentication or integrity.
+        color = f"#{hashlib.md5(addr.encode(), usedforsecurity=False).hexdigest()[:6]}"
         try:
             conn.execute(
                 """INSERT OR REPLACE INTO contacts
@@ -1081,8 +1189,9 @@ class MailShieldEngine:
         server = acc.get("imap_server", "")
         port = acc.get("imap_port", 993)
         user = acc.get("username", "") or acc.get("email", "")
-        pwd_raw = acc.get("password", "")
-        pwd = password_vault.decrypt(pwd_raw)  # Decrypt password
+        # Vault-aware password: vault wins over the legacy XOR-encrypted
+        # ``password`` field on the account dict.
+        pwd = get_decrypted_password(acc)
         use_ssl = acc.get("use_ssl", True)
         use_oauth2 = acc.get("use_oauth2", False)
 
@@ -1174,7 +1283,9 @@ class MailShieldEngine:
                 raw = msg_data[0][1]
                 msg = email.message_from_bytes(raw)
 
-                message_id = msg.get("Message-ID", f"<{hashlib.md5(raw[:500]).hexdigest()}>")
+                # nosec B324 - synthetic Message-ID fallback; MD5 used as
+                # non-cryptographic dedup key when the mail server omits the header.
+                message_id = msg.get("Message-ID", f"<{hashlib.md5(raw[:500], usedforsecurity=False).hexdigest()}>")
 
                 # Check if already in DB
                 existing = conn.execute("SELECT id FROM emails WHERE message_id = ?", (message_id,)).fetchone()
@@ -1357,7 +1468,8 @@ class MailShieldEngine:
         server = acc.get("smtp_server", "")
         port = acc.get("smtp_port", 587)
         user = acc.get("username", "")
-        pwd = password_vault.decrypt(acc.get("password", ""))
+        # Vault-aware password lookup; falls back to legacy XOR field.
+        pwd = get_decrypted_password(acc)
         from_email = acc.get("email", user)
 
         if not server or not user:

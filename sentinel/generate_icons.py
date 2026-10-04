@@ -16,7 +16,7 @@ DARK_STEEL = (20, 25, 40)
 BORDER_BLUE = (40, 80, 200)
 
 AGENTS = [
-    {"key": "netguard",   "symbol": "shield", "color": (77, 159, 255),  "name": "NetGuard Pro"},
+    {"key": "netguard",   "symbol": "shield", "color": (77, 159, 255),  "name": "NetGuard AI"},
     {"key": "cleanguard", "symbol": "sweep",  "color": (255, 179, 71),  "name": "CleanGuard Pro"},
     {"key": "mailshield", "symbol": "mail",   "color": (61, 255, 180),  "name": "MailShield Pro"},
     {"key": "vpnguard",   "symbol": "lock",   "color": (0, 212, 255),   "name": "VPN Guard Pro"},

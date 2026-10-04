@@ -2,7 +2,8 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Panel</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' ; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob: file: ; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'">
+<title>NetGuard AI — Panel</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -34,7 +35,7 @@ td{padding:7px 12px;border-bottom:1px solid #ffffff05}
 <body>
 <div class="titlebar">
   <div style="display:flex;align-items:center;gap:8px">
-    <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG3" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG3)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG3)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span style="font-size:13px;font-weight:600"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard Pro</span>
+    <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG3" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG3)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG3)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span style="font-size:13px;font-weight:600"><span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span>Guard AI</span>
     <span style="font-size:12px;color:var(--text3)" id="panel-name">Panel</span>
   </div>
   <div style="display:flex;align-items:center;gap:8px">
@@ -132,14 +133,14 @@ function renderPackets(pkts) {
   const sc = {allow:'#3dffb4',block:'#ff4d6a',warn:'#ffb347'};
   tbody.innerHTML = pkts.slice(0,100).map(p => `<tr>
     <td style="color:var(--text3)">${p.t||''}</td>
-    <td style="color:${sc[p.status]||'var(--text2)'}">${p.src||''}</td>
-    <td style="color:var(--text3);font-size:10px">${p.location||p.country||''}</td>
-    <td style="color:var(--text3)">${p.dst||''}</td>
+    <td style="color:${sc[p.status]||'var(--text2)'}">${esc(p.src||'')}</td>
+    <td style="color:var(--text3);font-size:10px">${esc(p.location||p.country||'')}</td>
+    <td style="color:var(--text3)">${esc(p.dst||'')}</td>
     <td>${p.dport||''}</td>
-    <td style="color:var(--blue)">${p.proto||''}</td>
+    <td style="color:var(--blue)">${esc(p.proto||'')}</td>
     <td style="color:var(--text3)">${p.size||''}</td>
     <td style="color:${sc[p.status]||'var(--text2)'}">${p.status||''}</td>
-    <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis">${p.reason||''}</td>
+    <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis">${esc(p.reason||'')}</td>
   </tr>`).join('');
 }
 
@@ -150,10 +151,10 @@ function renderThreats(threats) {
   const sc = {high:'sev-high',med:'sev-med',low:'sev-low',critical:'sev-critical'};
   el.innerHTML = threats.map(t => `
     <div class="threat-item">
-      <span class="sev ${sc[t.severity]||'sev-low'}">${t.severity||'?'}</span>
-      <span style="font-size:13px;font-weight:500;color:var(--text);min-width:160px">${t.type||''}</span>
-      <span style="font-family:'Geist Mono',monospace;font-size:12px;color:var(--text3);min-width:120px">${t.src_ip||''}</span>
-      <span style="font-size:12px;color:var(--text3);flex:1">${t.description||''}</span>
+      <span class="sev ${sc[t.severity]||'sev-low'}">${esc(t.severity||'?')}</span>
+      <span style="font-size:13px;font-weight:500;color:var(--text);min-width:160px">${esc(t.type||'')}</span>
+      <span style="font-family:'Geist Mono',monospace;font-size:12px;color:var(--text3);min-width:120px">${esc(t.src_ip||'')}</span>
+      <span style="font-size:12px;color:var(--text3);flex:1">${esc(t.description||'')}</span>
       <span style="font-size:10px;color:var(--text3)">${(t.timestamp||'').replace('T',' ').slice(0,19)}</span>
     </div>`).join('') || '<div style="padding:20px;text-align:center;color:var(--text3)">Aucune menace détectée</div>';
 }
@@ -313,12 +314,39 @@ function renderTopIps(ips, blocked) {
 }
 
 // WebSocket
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+function getNgToken() {
+  // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
+  try {
+    const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
+    if (_argusTok && _argusTok.length >= 32) {
+      try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      return _argusTok;
+    }
+  } catch(_) {}
+  let t = '';
+  try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
+  if (!t || t.length < 32) {
+    t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
+  }
+  return t;
+}
+let ngAuthed = false;
+
 function connect() {
   ws = new WebSocket(WS_URL);
+  ngAuthed = false;
   ws.onopen = () => {
     document.getElementById('dot').classList.remove('off');
     document.getElementById('conn-status').textContent = 'Connecté';
-    ws.send(JSON.stringify({cmd:'get_state'}));
+    const tok = getNgToken(); if (!tok) { ws.close(); return; }
+    ws.send(JSON.stringify({cmd:'auth', token: tok}));
   };
   ws.onclose = () => {
     document.getElementById('dot').classList.add('off');
@@ -328,6 +356,9 @@ function connect() {
   ws.onmessage = e => {
     try {
       const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'auth_ok') { ngAuthed = true; ws.send(JSON.stringify({cmd:'get_state'})); return; }
+      if (msg && msg.type === 'auth_failed') { localStorage.removeItem('ng_ws_token'); alert('Auth NetGuard échouée. Token effacé.'); ws.close(); return; }
+      if (!ngAuthed) return;
       if (msg.type !== 'state') return;
       if (panel === 'packets') renderPackets(msg.recent_packets);
       else if (panel === 'threats') renderThreats(msg.threats);

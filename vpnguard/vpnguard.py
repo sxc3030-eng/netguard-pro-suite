@@ -2,7 +2,7 @@
 """
 VPN Guard Pro v1.0.0 — VPN WireGuard autonome avec Kill Switch, DNS Protection,
 Split Tunneling, Wi-Fi auto-connect, Profils, et Stats temps reel.
-Partie de l'ecosysteme NetGuard Pro.
+Partie de l'ecosysteme NetGuard AI.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import base64
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,42 @@ except ImportError:
     HAS_PSUTIL = False
 
 IS_WINDOWS = platform.system() == "Windows"
+
+# ── Security validators (Phase 3 hardening) ─────────────────────────────────
+_WG_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_WG_DANGEROUS_KEYS = {"postup", "postdown", "preup", "predown"}
+
+
+def _validate_wg_name(name: str) -> bool:
+    """Reject path-traversal and shell-special characters in profile/peer names."""
+    return isinstance(name, str) and bool(_WG_NAME_RE.match(name))
+
+
+def _validate_wg_config(content: str) -> tuple:
+    """Reject WireGuard configs containing PostUp/PostDown/PreUp/PreDown (shell-exec)."""
+    if not isinstance(content, str):
+        return False, "Contenu manquant"
+    if len(content) > 64 * 1024:
+        return False, "Config trop longue (>64KB)"
+    for line_no, line in enumerate(content.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("#") or (s.startswith("[") and s.endswith("]")):
+            continue
+        if "=" not in s:
+            continue
+        key = s.split("=", 1)[0].strip().lower()
+        if key in _WG_DANGEROUS_KEYS:
+            return False, f"Cle dangereuse '{key}' interdite (ligne {line_no}) — peut executer du shell au tunnel up/down"
+    return True, ""
+
+
+def _safe_path_join(base_dir: str, filename: str) -> str:
+    """Return base_dir/filename only if the resolved path stays under base_dir. Else raise ValueError."""
+    base_real = os.path.realpath(base_dir)
+    candidate = os.path.realpath(os.path.join(base_dir, filename))
+    if not (candidate == base_real or candidate.startswith(base_real + os.sep)):
+        raise ValueError(f"Chemin hors du dossier autorise: {filename!r}")
+    return candidate
 IS_LINUX = platform.system() == "Linux"
 
 VERSION = "1.0.0"
@@ -254,6 +291,10 @@ class WireGuardCore:
             try:
                 with open(keyfile, "w") as f:
                     json.dump({"privkey": self.server_privkey, "pubkey": self.server_pubkey}, f)
+                try:
+                    os.chmod(keyfile, 0o600)
+                except OSError:
+                    pass
                 log.info(f"[WG] Nouvelles cles serveur generees")
             except Exception as e:
                 log.error(f"[WG] Erreur sauvegarde cles: {e}")
@@ -297,6 +338,8 @@ PersistentKeepalive = 25
 """
 
     def add_peer(self, name: str) -> dict:
+        if not _validate_wg_name(name):
+            return {"error": f"Nom de peer invalide: {name!r} (lettres/chiffres/_/- seulement, max 40)"}
         if not self.server_privkey:
             self.init_server()
         privkey, pubkey = self.genkey()
@@ -539,11 +582,23 @@ PersistentKeepalive = 25
                 log.error(f"[WG] Erreur chargement peers: {e}")
 
     def import_config(self, conf_content: str, name: str) -> dict:
-        """Import a .conf file as a client profile"""
-        conf_path = os.path.join(self.config_dir, f"client_{name}.conf")
+        """Import a .conf file as a client profile (validated)"""
+        if not _validate_wg_name(name):
+            return {"error": f"Nom invalide: {name!r} (lettres/chiffres/_/- seulement, max 40)"}
+        ok, err = _validate_wg_config(conf_content)
+        if not ok:
+            return {"error": err}
         try:
-            with open(conf_path, "w") as f:
+            conf_path = _safe_path_join(self.config_dir, f"client_{name}.conf")
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
+            with open(conf_path, "w", encoding="utf-8") as f:
                 f.write(conf_content)
+            try:
+                os.chmod(conf_path, 0o600)
+            except OSError:
+                pass
             timeline_add("📥", f"Config importee: {name}", "vpn")
             return {"ok": True, "path": conf_path, "name": name}
         except Exception as e:
@@ -554,6 +609,11 @@ PersistentKeepalive = 25
 # KILL SWITCH — Windows Firewall rules
 # =============================================================================
 
+_KILLSWITCH_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+_KILLSWITCH_IFACE_RE = re.compile(r"^[A-Za-z0-9 _.\-]{1,64}$")
+_KILLSWITCH_UNSAFE_CHARS = set('"\';\n\r&|`<>$')
+
+
 class KillSwitch:
     RULE_PREFIX = "VPNGuard_KillSwitch"
 
@@ -563,23 +623,27 @@ class KillSwitch:
     def enable(self, tunnel_interface: str = "") -> dict:
         if not IS_WINDOWS:
             return {"error": "Kill Switch supporte uniquement sur Windows"}
+        # Validate tunnel_interface (CRITICAL: was shell-injection sink before)
+        if tunnel_interface and not _KILLSWITCH_IFACE_RE.match(tunnel_interface):
+            return {"error": f"Nom d'interface invalide: {tunnel_interface!r}"}
         try:
             # Block all outbound
             self._add_rule(f"{self.RULE_PREFIX}_BlockAll", "out", "block")
             # Allow VPN tunnel traffic
             if tunnel_interface:
                 self._add_rule(f"{self.RULE_PREFIX}_AllowVPN", "out", "allow",
-                              extra=f'localip=any remoteip=any interface="{tunnel_interface}"')
+                              extra_args=["localip=any", "remoteip=any",
+                                          f"interface={tunnel_interface}"])
             # Allow local network
             for net in ["192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"]:
                 self._add_rule(f"{self.RULE_PREFIX}_AllowLAN_{net.replace('/', '_').replace('.', '_')}", "out", "allow",
-                              extra=f"remoteip={net}")
+                              extra_args=[f"remoteip={net}"])
             # Allow DHCP
             self._add_rule(f"{self.RULE_PREFIX}_AllowDHCP", "out", "allow",
-                          extra="protocol=udp remoteport=67-68")
+                          extra_args=["protocol=udp", "remoteport=67-68"])
             # Allow loopback
             self._add_rule(f"{self.RULE_PREFIX}_AllowLoopback", "out", "allow",
-                          extra="remoteip=127.0.0.0/8")
+                          extra_args=["remoteip=127.0.0.0/8"])
             self.active = True
             timeline_add("🛡", "Kill Switch active", "security")
             return {"enabled": True}
@@ -623,9 +687,26 @@ class KillSwitch:
         except Exception:
             return {"active": False, "rules": []}
 
-    def _add_rule(self, name: str, direction: str, action: str, extra: str = ""):
-        cmd = f'netsh advfirewall firewall add rule name="{name}" dir={direction} action={action} {extra}'.strip()
-        subprocess.run(cmd, shell=True, capture_output=True, timeout=10)
+    def _add_rule(self, name: str, direction: str, action: str, extra_args=None):
+        # Strict validation — defends against shell injection / arg smuggling
+        if not _KILLSWITCH_NAME_RE.match(name):
+            log.error(f"[KILLSWITCH] Invalid rule name: {name!r}")
+            return
+        if direction not in ("in", "out"):
+            log.error(f"[KILLSWITCH] Invalid direction: {direction!r}")
+            return
+        if action not in ("allow", "block"):
+            log.error(f"[KILLSWITCH] Invalid action: {action!r}")
+            return
+        args = ["netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={name}", f"dir={direction}", f"action={action}"]
+        if extra_args:
+            for a in extra_args:
+                if not isinstance(a, str) or any(c in a for c in _KILLSWITCH_UNSAFE_CHARS):
+                    log.error(f"[KILLSWITCH] Rejected unsafe rule arg: {a!r}")
+                    return
+                args.append(a)
+        subprocess.run(args, capture_output=True, timeout=10)
 
     def cleanup_orphaned(self):
         """Remove orphaned Kill Switch rules on startup"""
@@ -932,7 +1013,14 @@ class ProfileManager:
         return [{"key": k, **v} for k, v in self.profiles.items()]
 
     def import_conf(self, content: str, name: str) -> dict:
-        key = name.lower().replace(" ", "_")
+        # Validate name (anti path traversal / weird chars in stored key)
+        key = (name or "").lower().replace(" ", "_")
+        if not _validate_wg_name(key):
+            return {"error": f"Nom de profil invalide: {name!r} (lettres/chiffres/_/- seulement, max 40)"}
+        # Validate content (reject PostUp/PostDown shell injection)
+        ok, err = _validate_wg_config(content)
+        if not ok:
+            return {"error": err}
         config = {"name": name, "type": "client", "conf_content": content}
         # Parse .conf for details
         for line in content.splitlines():

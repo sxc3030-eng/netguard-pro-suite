@@ -2,8 +2,9 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; form-action 'none'; script-src 'unsafe-inline' ; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src data: blob: file: ; connect-src http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; frame-src 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NetGuard Pro</title>
+<title>NetGuard AI</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -248,6 +249,85 @@ tr:hover td{background:var(--bg4)22}
 .recording-stats .rs{text-align:center}
 .recording-stats .rs-val{font-size:14px;font-weight:600;font-family:'Geist Mono',monospace}
 .recording-stats .rs-lbl{font-size:9px;color:var(--text3);text-transform:uppercase}
+
+/* ── AI Chat Drawer (inline) ─────────────────────────────────────────── */
+.ai-fab{position:fixed;bottom:20px;right:20px;z-index:90;background:linear-gradient(135deg,#4d9fff,#b47dff);color:#fff;border:none;border-radius:30px;padding:12px 20px;cursor:pointer;display:flex;align-items:center;gap:10px;font-family:'Outfit',sans-serif;font-size:14px;font-weight:500;box-shadow:0 6px 22px rgba(77,159,255,.45);transition:.2s}
+.ai-fab:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(180,125,255,.55)}
+.ai-fab svg{flex-shrink:0}
+.ai-fab .ai-fab-dot{width:7px;height:7px;border-radius:50%;background:#3dffb4;box-shadow:0 0 8px #3dffb4}
+
+.ai-drawer{position:fixed;top:0;right:0;height:100vh;width:420px;max-width:96vw;background:var(--bg2);border-left:1px solid var(--border2);z-index:95;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column;box-shadow:-12px 0 40px #0008}
+.ai-drawer.open{transform:translateX(0)}
+.ai-d-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-shrink:0;background:linear-gradient(180deg,#1c1c26,#16161d)}
+.ai-d-head .ai-d-title{font-size:14px;font-weight:600;flex:1;display:flex;align-items:center;gap:8px}
+.ai-d-head .ai-d-title .grad{background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.ai-d-head .ai-d-status{font-size:10px;color:var(--text3);font-family:'Geist Mono',monospace}
+.ai-d-head button{background:transparent;border:none;color:var(--text2);cursor:pointer;width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;transition:.15s}
+.ai-d-head button:hover{background:var(--bg4);color:var(--blue)}
+
+.ai-d-quick{padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2)}
+.ai-d-quick button{background:var(--bg4);border:1px solid var(--border2);color:var(--text2);font-family:inherit;font-size:11px;padding:5px 10px;border-radius:14px;cursor:pointer;transition:.15s}
+.ai-d-quick button:hover{border-color:var(--blue);color:var(--blue)}
+
+.ai-d-chat{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.ai-d-chat::-webkit-scrollbar{width:6px}
+.ai-d-chat::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}
+.ai-msg{max-width:90%;padding:9px 13px;border-radius:10px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-wrap:break-word;user-select:text;-webkit-user-select:text;cursor:text;position:relative}
+.ai-msg.user{align-self:flex-end;background:linear-gradient(135deg,#4d9fff,#7b5fff);color:#fff;border-bottom-right-radius:3px}
+.ai-msg.ai{align-self:flex-start;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-bottom-left-radius:3px}
+.ai-msg.sys{align-self:center;font-size:10px;color:var(--text3);font-style:italic;padding:4px 10px;cursor:default;user-select:none}
+.ai-msg.err{align-self:flex-start;background:#3d1220;color:#ff4d6a;border:1px solid #ff4d6a40;font-size:11px}
+.ai-msg ::selection{background:rgba(180,125,255,.45);color:#fff}
+.ai-msg .ai-copy{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.45);border:1px solid var(--border2);color:var(--text2);width:24px;height:22px;border-radius:5px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:.15s;padding:0;font-family:inherit}
+.ai-msg:hover .ai-copy{opacity:1}
+.ai-msg .ai-copy:hover{color:var(--blue);border-color:var(--blue)}
+.ai-msg .ai-copy.copied{color:var(--green);border-color:var(--green);opacity:1}
+.ai-thinking{align-self:flex-start;display:flex;gap:3px;background:var(--bg3);border:1px solid var(--border);padding:9px 13px;border-radius:10px;border-bottom-left-radius:3px}
+.ai-thinking span{width:5px;height:5px;border-radius:50%;background:var(--text2);animation:aiBounce 1.4s infinite}
+.ai-thinking span:nth-child(2){animation-delay:.2s}.ai-thinking span:nth-child(3){animation-delay:.4s}
+@keyframes aiBounce{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1);opacity:1}}
+
+.ai-d-comp{padding:10px 14px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;background:var(--bg2)}
+.ai-d-comp textarea{flex:1;background:var(--bg3);border:1px solid var(--border2);color:var(--text);font-family:inherit;font-size:12px;padding:8px 10px;border-radius:8px;resize:none;min-height:36px;max-height:120px;line-height:1.4;outline:none;transition:.15s}
+.ai-d-comp textarea:focus{border-color:var(--blue)}
+.ai-d-comp .ai-send{background:linear-gradient(135deg,#4d9fff,#b47dff);color:#fff;border:none;padding:8px 12px;border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;height:36px;transition:.15s}
+.ai-d-comp .ai-send:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(77,159,255,.3)}
+.ai-d-comp .ai-send:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+
+.ai-d-keyhint{padding:8px 14px;font-size:10px;color:var(--text3);text-align:center;border-top:1px solid var(--border);background:#3d2800;color:#ffb347;display:none}
+.ai-d-keyhint.show{display:block}
+.ai-d-keyhint a{color:#ffb347;text-decoration:underline;cursor:pointer}
+
+/* Agent-mode toggle pill in header */
+.ai-d-agent{background:var(--bg4);border:1px solid var(--border2);color:var(--text3);font-family:inherit;font-size:10px;font-weight:600;padding:3px 8px 3px 6px;border-radius:10px;cursor:pointer;display:flex;align-items:center;gap:5px;letter-spacing:.04em;transition:.15s;text-transform:uppercase}
+.ai-d-agent:hover{color:var(--text2);border-color:var(--border2)}
+.ai-d-agent.on{background:linear-gradient(135deg,#4d9fff22,#b47dff22);border-color:var(--blue);color:var(--blue)}
+.ai-d-agent .agent-dot{width:6px;height:6px;border-radius:50%;background:var(--text3)}
+.ai-d-agent.on .agent-dot{background:var(--green);box-shadow:0 0 6px var(--green)}
+
+/* Tool-call approval card */
+.ai-tool-card{align-self:flex-start;max-width:92%;background:linear-gradient(180deg,#1a1f2e,#16161d);border:1px solid var(--border2);border-radius:10px;padding:10px 12px;font-size:12px;line-height:1.5;display:flex;flex-direction:column;gap:8px}
+.ai-tool-card.danger{border-color:#ff4d6a44}
+.ai-tool-card .tc-head{display:flex;align-items:center;gap:8px;font-weight:600;color:var(--text)}
+.ai-tool-card .tc-pill{font-size:9px;font-weight:700;padding:2px 7px;border-radius:3px;text-transform:uppercase;letter-spacing:.05em;background:var(--bg4);color:var(--text2)}
+.ai-tool-card .tc-pill.danger{background:#3d1220;color:#ff4d6a}
+.ai-tool-card .tc-pill.safe{background:#0e2e22;color:#3dffb4}
+.ai-tool-card .tc-name{font-family:'Geist Mono',monospace;font-size:11px;color:var(--blue)}
+.ai-tool-card .tc-input{font-family:'Geist Mono',monospace;font-size:10px;color:var(--text2);background:#0a0a10;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;word-break:break-all;user-select:text}
+.ai-tool-card .tc-buttons{display:flex;gap:6px;justify-content:flex-end}
+.ai-tool-card .tc-buttons button{font-family:inherit;font-size:11px;padding:5px 12px;border-radius:6px;cursor:pointer;border:1px solid var(--border2);background:transparent;color:var(--text2);transition:.15s}
+.ai-tool-card .tc-buttons button:hover{border-color:var(--text2);color:var(--text)}
+.ai-tool-card .tc-buttons .tc-approve{background:linear-gradient(135deg,var(--green),#2ec78f);color:#06180f;border-color:var(--green);font-weight:600}
+.ai-tool-card .tc-buttons .tc-approve:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(61,255,180,.3)}
+.ai-tool-card .tc-buttons .tc-reject{color:var(--red);border-color:#ff4d6a40}
+.ai-tool-card .tc-buttons .tc-reject:hover{background:#3d1220;border-color:var(--red)}
+.ai-tool-card.executed{opacity:.85}
+.ai-tool-card.executed .tc-buttons{display:none}
+.ai-tool-card .tc-result{font-family:'Geist Mono',monospace;font-size:10px;color:var(--text2);background:#0a0a10;border:1px solid var(--border);border-radius:6px;padding:6px 8px;white-space:pre-wrap;word-break:break-all;user-select:text;display:none;max-height:160px;overflow:auto}
+.ai-tool-card .tc-result.show{display:block}
+.ai-tool-card .tc-status{font-size:11px;color:var(--text3);font-style:italic}
+.ai-tool-card .tc-status.ok{color:var(--green);font-style:normal}
+.ai-tool-card .tc-status.err{color:var(--red);font-style:normal}
 </style>
 </head>
 <body>
@@ -259,7 +339,7 @@ tr:hover td{background:var(--bg4)22}
     <svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG1" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG1)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG1)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
     <div style="display:flex;flex-direction:column;gap:1px">
       <span style="font-size:13px;font-weight:600;letter-spacing:.02em;line-height:1.2">
-        <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span><span style="color:var(--text)">Guard</span> <span style="color:var(--text3);font-weight:400">Pro</span>
+        <span style="background:linear-gradient(90deg,#4d9fff,#b47dff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Net</span><span style="color:var(--text)">Guard</span> <span style="color:var(--text3);font-weight:400">AI</span>
       </span>
       <span style="font-size:9px;color:var(--text3);letter-spacing:.05em" data-t="tagline">Cybersécurité avancée</span>
     </div>
@@ -330,6 +410,11 @@ tr:hover td{background:var(--bg4)22}
       <span data-t="nav_service">Service Manager</span>
       <span style="margin-left:auto;font-size:10px;opacity:.5">↗</span>
     </a>
+    <div class="nav-item" onclick="openAI()" id="nav-ai" style="cursor:pointer">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none"><path d="M8 1.5L13.5 4v4.5c0 3-2 5.2-5.5 6.5C4.5 13.7 2.5 11.5 2.5 8.5V4z" stroke="currentColor" stroke-width="1.2"/><path d="M8 5v6M5 8h6M6 6l4 4M10 6l-4 4" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity=".85"/></svg>
+      <span data-t="nav_ai">AI Assistant</span>
+      <span style="margin-left:auto;font-size:9px;padding:1px 5px;background:linear-gradient(90deg,#4d9fff,#b47dff);color:#fff;border-radius:3px;font-weight:600">NEW</span>
+    </div>
     <!-- History & Analyze intégrés dans Centre de données -->
     <div class="nav-item" onclick="showTab('audit',this)">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h7M3 12h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
@@ -408,29 +493,9 @@ tr:hover td{background:var(--bg4)22}
     </div>
 
     <div style="font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;padding:14px 16px 6px;margin-top:4px;border-top:1px solid var(--border)">v4.0 Modules</div>
-    <div class="nav-item" onclick="showTab('vulnscan',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      <span>Vulnerability Scanner</span>
-    </div>
     <div class="nav-item" onclick="showTab('backup',this)">
       <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
       <span>Backup & Recovery</span>
-    </div>
-    <div class="nav-item" onclick="showTab('incidents',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-      <span>Incidents & Tickets</span>
-    </div>
-    <div class="nav-item" onclick="showTab('training',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
-      <span>Training & Awareness</span>
-    </div>
-    <div class="nav-item" onclick="showTab('nac',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-      <span>NAC</span>
-    </div>
-    <div class="nav-item" onclick="showTab('iam',this)">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-      <span>IAM & MFA</span>
     </div>
 
     <div style="padding:12px 16px;border-top:1px solid var(--border)">
@@ -615,6 +680,20 @@ tr:hover td{background:var(--bg4)22}
           <div class="panel-resize"></div>
         </div>
 
+        <!-- Top Bandwidth (audit 2026-04-28) — qui mange ma bande passante + which app -->
+        <div class="grid-panel gs-4" data-panel="bandwidth" draggable="false">
+          <div class="panel-header">
+            <span class="panel-drag-handle">⠿</span>
+            <span class="panel-title">Top Bande passante</span>
+            <span style="font-size:10px;color:var(--text3)" id="dash-bw-total">— total</span>
+            <div class="panel-actions">
+              <button class="popout-btn" onclick="panelMinimize(this)" title="Réduire">─</button>
+            </div>
+          </div>
+          <div class="panel-body" id="dash-bandwidth-list" style="max-height:220px;overflow-y:auto"></div>
+          <div class="panel-resize"></div>
+        </div>
+
         <!-- Live IPs -->
         <div class="grid-panel gs-3" data-panel="liveips" draggable="false">
           <div class="panel-header">
@@ -790,14 +869,29 @@ tr:hover td{background:var(--bg4)22}
           </div>
           <div class="panel-body compact">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
-              <button class="btn" onclick="showTab('vulnscan',null)" style="font-size:10px;padding:6px">🔍 Vuln Scan</button>
-              <button class="btn" onclick="showTab('incidents',null)" style="font-size:10px;padding:6px">🎫 Incidents</button>
-              <button class="btn" onclick="showTab('training',null)" style="font-size:10px;padding:6px">📚 Training</button>
               <button class="btn" onclick="backupCreate();showToast('Backup en cours...','var(--blue)')" style="font-size:10px;padding:6px">💾 Backup</button>
-              <button class="btn" onclick="showTab('nac',null)" style="font-size:10px;padding:6px">🔒 NAC</button>
-              <button class="btn" onclick="showTab('iam',null)" style="font-size:10px;padding:6px">👥 IAM</button>
+              <button class="btn" onclick="showTab('blocked',null)" style="font-size:10px;padding:6px">🚫 IPs bloquées</button>
+              <button class="btn" onclick="showTab('threats',null)" style="font-size:10px;padding:6px">🛡 Menaces</button>
+              <button class="btn" onclick="showTab('honeypot',null)" style="font-size:10px;padding:6px">🍯 Honeypot</button>
             </div>
           </div>
+          <div class="panel-resize"></div>
+        </div>
+
+        <!-- Activité système — Npcap consumer detector (Task B 2026-04-30) -->
+        <div class="grid-panel gs-3" data-panel="npcap" draggable="false">
+          <div class="panel-header">
+            <span class="panel-drag-handle">⠿</span>
+            <span class="panel-title" style="display:flex;align-items:center;gap:6px">
+              <span style="width:6px;height:6px;border-radius:50%;background:var(--amber)"></span>
+              Activité système
+            </span>
+            <span style="font-size:10px;color:var(--text3)" id="dash-npcap-count">0</span>
+            <div class="panel-actions">
+              <button class="popout-btn" onclick="panelMinimize(this)" title="Réduire">─</button>
+            </div>
+          </div>
+          <div class="panel-body compact" id="dash-npcap-list" style="max-height:200px;overflow-y:auto"></div>
           <div class="panel-resize"></div>
         </div>
 
@@ -849,6 +943,7 @@ tr:hover td{background:var(--bg4)22}
                 <th style="width:30px">#</th>
                 <th style="cursor:pointer" onclick="wsSortBy('t')">Time ⇅</th>
                 <th style="cursor:pointer" onclick="wsSortBy('src')">Source ⇅</th>
+                <th style="cursor:pointer" onclick="wsSortBy('process')" title="Local process owning this connection (psutil)">Process ⇅</th>
                 <th>Country</th>
                 <th style="cursor:pointer" onclick="wsSortBy('dst')">Destination ⇅</th>
                 <th>S.Port</th>
@@ -1747,6 +1842,31 @@ tr:hover td{background:var(--bg4)22}
     <button class="btn" onclick="saveApiKeys()" data-t="intel_save_keys">💾 Sauvegarder les clés</button>
   </div>
 
+  <!-- ═══ Secret Vault — encrypts the keys above + Discord/Telegram tokens ═ -->
+  <div class="card" style="margin-bottom:16px" id="vault-card">
+    <h3>🔐 Secret Vault</h3>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">
+      Triple-encrypted store (DPAPI + Keychain + Argon2id) for API keys and webhook tokens.
+      Encrypted with a master password — nothing on disk in plaintext when active.
+    </div>
+    <div id="vault-status-line" style="font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:8px">
+      <span id="vault-badge" class="badge">…</span>
+      <span id="vault-detail" style="color:var(--text2)"></span>
+    </div>
+    <div id="vault-deps-warn" style="display:none;font-size:12px;color:var(--amber);margin-bottom:10px"></div>
+    <div id="vault-secrets-list" style="display:none;font-size:12px;color:var(--text2);margin-bottom:10px"></div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-sm" id="btn-vault-init" onclick="vaultInit()" style="display:none">⊕ Initialize vault</button>
+      <button class="btn btn-sm" id="btn-vault-unlock" onclick="vaultUnlock()" style="display:none">🔓 Unlock</button>
+      <button class="btn btn-sm" id="btn-vault-lock" onclick="vaultLock()" style="display:none">🔒 Lock</button>
+      <button class="btn btn-sm" id="btn-vault-migrate" onclick="vaultMigrate()" style="display:none">⇄ Migrate plaintext keys → vault</button>
+      <button class="btn btn-sm" id="btn-vault-change-master" onclick="vaultChangeMaster()" style="display:none">🔑 Change master</button>
+      <button class="btn btn-sm" onclick="vaultRefresh()">🔄 Refresh</button>
+    </div>
+    <div id="vault-msg" style="font-size:12px;margin-top:8px;color:var(--text3)"></div>
+  </div>
+
   <div class="metrics-row" style="margin-bottom:16px">
     <div class="metric-card"><div class="metric-value" id="m-vt-cache">0</div><div class="metric-label">VT Cache</div></div>
     <div class="metric-card"><div class="metric-value" id="m-otx-ioc">0</div><div class="metric-label">OTX IOCs</div></div>
@@ -1870,7 +1990,12 @@ tr:hover td{background:var(--bg4)22}
   <h2 data-t="wg_title">🔐 WireGuard VPN Server</h2>
 
   <div class="card" style="margin-bottom:16px">
-    <h3 data-t="wg_server_config">⚙️ Server Configuration</h3>
+    <h3 data-t="wg_server_config">⚙️ Client Configuration (display-only)</h3>
+    <p style="font-size:12px;color:var(--text2);margin:8px 0 12px">
+      NetGuard no longer runs a WireGuard server itself — install
+      <a href="https://www.wireguard.com/install/" target="_blank" style="color:var(--blue)">WireGuard</a>
+      and use the fields below to display a sample client config.
+    </p>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:12px">
       <div>
         <label style="font-size:12px;color:var(--text3)" data-t="wg_endpoint_label">Endpoint (IP:Port)</label>
@@ -1891,30 +2016,13 @@ tr:hover td{background:var(--bg4)22}
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <button class="btn" onclick="saveWgConfig()" data-t="wg_save_config">💾 Save Config</button>
-      <button class="btn" id="wg-start-btn" onclick="toggleWg()" style="background:var(--green)" data-t="wg_start">▶️ Start VPN</button>
-      <span id="wg-server-status" style="font-size:13px;margin-left:8px"></span>
+      <button class="btn" onclick="sendCmd({cmd:'wg_get_config'})" data-t="wg_show_sample">📋 Show Sample Client Config</button>
     </div>
-  </div>
-
-  <div class="metrics-row" style="margin-bottom:16px">
-    <div class="metric-card"><div class="metric-value" id="m-wg-status" style="font-size:16px">⏸️ Stopped</div><div class="metric-label" data-t="wg_status_label">VPN Status</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-peers">0</div><div class="metric-label" data-t="wg_peers_count">Peers</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-connected">0</div><div class="metric-label" data-t="wg_connected">Connected</div></div>
-    <div class="metric-card"><div class="metric-value" id="m-wg-pubkey" style="font-size:10px;word-break:break-all">—</div><div class="metric-label" data-t="wg_pubkey">Server PubKey</div></div>
-  </div>
-
-  <div class="card" style="margin-bottom:16px">
-    <h3 data-t="wg_peers_title">👥 VPN Peers</h3>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="wg-peer-name" class="input" placeholder="Nom du peer (ex: phone, laptop)" style="flex:1">
-      <button class="btn" onclick="addWgPeer()" data-t="wg_add_peer">➕ Add Peer</button>
-    </div>
-    <div id="wg-peers-list"></div>
   </div>
 
   <div id="wg-peer-config-modal" style="display:none" class="card">
-    <h3>📋 Peer Configuration</h3>
-    <p style="font-size:12px;color:var(--text3)" data-t="wg_peer_config_info">Copy this config to the client device or scan the QR code:</p>
+    <h3>📋 Sample Client Configuration</h3>
+    <p style="font-size:12px;color:var(--text3)" data-t="wg_peer_config_info">Copy this config to the client device. Replace placeholders with actual keys provisioned on your WireGuard server.</p>
     <pre id="wg-peer-config-text" style="background:var(--bg2);padding:12px;border-radius:8px;font-size:12px;overflow-x:auto;white-space:pre-wrap;border:1px solid var(--bg4)"></pre>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-sm" onclick="copyWgConfig()" data-t="wg_copy_config">📋 Copy</button>
@@ -2120,10 +2228,23 @@ tr:hover td{background:var(--bg4)22}
     </div>
   </div>
 
+  <!-- ══ License & Devices (multi-PC seat manager 2026-04-30) ══ -->
+  <div class="card" id="license-card" style="padding:16px;margin-bottom:16px;border-color:#5b8cff33">
+    <h3 style="color:#5b8cff;margin:0 0 8px 0">🔑 Licence</h3>
+    <div id="license-summary" style="font-size:13px;color:var(--text2);line-height:1.7">
+      <div style="opacity:.6">Chargement de l'etat de la licence...</div>
+    </div>
+    <div id="license-devices" style="margin-top:14px"></div>
+    <div style="font-size:11px;color:var(--text3);margin-top:10px">
+      Astuce : votre licence Pro autorise jusqu'a 5 PCs. Liberez une place en
+      cliquant sur "Deactivate" pour la reutiliser sur une autre machine.
+    </div>
+  </div>
+
   <div class="card" style="padding:16px;border-color:var(--green)33">
-    <h3 style="color:var(--green)" data-t="support_about_title">ℹ️ About NetGuard Pro v4.0</h3>
+    <h3 style="color:var(--green)" data-t="support_about_title">ℹ️ About NetGuard AI v4.0</h3>
     <div style="font-size:12px;color:var(--text2);line-height:1.8;margin-top:8px" data-t="support_about_desc">
-      NetGuard Pro is an advanced network security monitoring tool featuring:<br>
+      NetGuard AI is an advanced network security monitoring tool featuring:<br>
       • Real-time packet capture & analysis (Scapy)<br>
       • 27+ IDS rules (Suricata-compatible)<br>
       • Deep Packet Inspection (SQL injection, XSS, Log4Shell)<br>
@@ -2141,56 +2262,18 @@ tr:hover td{background:var(--bg4)22}
       • DNS Blackhole<br>
       • LAN device discovery<br>
       • GeoIP blocking<br>
-      <strong>v4.0:</strong><br>
+      <strong>v4.1 (post-trim 2026-04-30):</strong><br>
       • Enhanced Suricata IDS (custom rules, per-rule control, hit counters)<br>
-      • Vulnerability Scanner (port scan, CVE lookup, system check)<br>
       • Backup &amp; Recovery (automated backups, restore wizard)<br>
-      • Incident Response &amp; Ticketing system<br>
-      • Security Training &amp; Awareness (5 modules, quizzes)<br>
-      • Network Access Control (NAC) with device approval<br>
-      • Identity &amp; Access Management (IAM) with MFA support
+      • Rogue Npcap consumer detector (UAC popup-loop guard)<br>
+      • App-id + bandwidth per-IP attribution (psutil-backed)
     </div>
   </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════════ -->
-<!-- v4.0 — NEW MODULE TABS                                           -->
+<!-- v4.0 — Backup tab (other v4.0 modules trimmed 2026-04-30)        -->
 <!-- ══════════════════════════════════════════════════════════════════ -->
-
-<!-- Vulnerability Scanner Tab -->
-<div id="tab-vulnscan" class="tab-content" style="display:none">
-  <h2>🔍 Vulnerability Scanner</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Port Scanner</h3>
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <input type="text" id="vuln-target" placeholder="Target IP (e.g. 127.0.0.1)" value="127.0.0.1" style="flex:1;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <input type="text" id="vuln-ports" placeholder="Port range (e.g. 1-1024)" value="1-1024" style="width:150px;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <button class="btn" onclick="vulnScan()" id="vuln-scan-btn" style="padding:10px 20px;font-weight:600">🔍 Scan</button>
-    </div>
-    <div id="vuln-scan-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>CVE Lookup</h3>
-    <div style="display:flex;gap:10px;margin-top:12px">
-      <input type="text" id="vuln-cve-input" placeholder="CVE ID (e.g. CVE-2021-44228)" style="flex:1;padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <button class="btn" onclick="vulnCVELookup()" style="padding:10px 20px;font-weight:600">🔎 Lookup</button>
-    </div>
-    <div id="vuln-cve-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>System Security Check</h3>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:12px">Run a quick security audit of your system configuration.</p>
-    <button class="btn" onclick="vulnSystemCheck()" id="vuln-sys-btn" style="padding:10px 20px;font-weight:600">🛡️ Run System Check</button>
-    <div id="vuln-system-result" style="margin-top:16px"></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3>Scan History</h3>
-    <div id="vuln-history" style="margin-top:12px"><div class="empty-msg">No scans yet</div></div>
-  </div>
-</div>
 
 <!-- Backup & Recovery Tab -->
 <div id="tab-backup" class="tab-content" style="display:none">
@@ -2226,160 +2309,22 @@ tr:hover td{background:var(--bg4)22}
   </div>
 </div>
 
-<!-- Incidents & Tickets Tab -->
-<div id="tab-incidents" class="tab-content" style="display:none">
-  <h2>🎫 Incidents & Tickets</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Create Incident Ticket</h3>
-    <div style="display:grid;gap:10px;margin-top:12px">
-      <input type="text" id="inc-title" placeholder="Incident title" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <textarea id="inc-desc" placeholder="Description..." rows="3" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;resize:vertical"></textarea>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <select id="inc-severity" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
-          <option value="low">Low</option>
-          <option value="medium" selected>Medium</option>
-          <option value="high">High</option>
-          <option value="critical">Critical</option>
-        </select>
-        <input type="text" id="inc-assigned" placeholder="Assigned to" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-        <input type="text" id="inc-ip" placeholder="Related IP" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px;font-family:'Geist Mono',monospace">
-      </div>
-      <button class="btn" onclick="incidentCreate()" style="padding:10px;font-weight:600;background:var(--purple);color:#fff">+ Create Ticket</button>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <h3>Incident Queue</h3>
-      <div style="display:flex;gap:8px">
-        <button class="btn" onclick="incidentList('')" style="font-size:11px;padding:5px 12px">All</button>
-        <button class="btn" onclick="incidentList('open')" style="font-size:11px;padding:5px 12px;color:var(--red)">Open</button>
-        <button class="btn" onclick="incidentList('investigating')" style="font-size:11px;padding:5px 12px;color:var(--amber)">Investigating</button>
-        <button class="btn" onclick="incidentList('resolved')" style="font-size:11px;padding:5px 12px;color:var(--green)">Resolved</button>
-      </div>
-    </div>
-    <div id="incident-list" style="max-height:500px;overflow-y:auto"><div class="empty-msg">No incidents</div></div>
-  </div>
-</div>
-
-<!-- Training & Awareness Tab -->
-<div id="tab-training" class="tab-content" style="display:none">
-  <h2>📚 Training & Awareness</h2>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px" id="training-dashboard">
-    <div class="card" style="padding:20px;text-align:center">
-      <div style="font-size:32px;font-weight:700;color:var(--green)" id="training-score-avg">—</div>
-      <div style="font-size:12px;color:var(--text3)">Average Score</div>
-    </div>
-    <div class="card" style="padding:20px;text-align:center">
-      <div style="font-size:32px;font-weight:700;color:var(--purple)" id="training-completed">0/5</div>
-      <div style="font-size:12px;color:var(--text3)">Modules Completed</div>
-    </div>
-  </div>
-
-  <div id="training-modules-list">
-    <div class="empty-msg">Loading modules...</div>
-  </div>
-
-  <div id="training-quiz-panel" style="display:none">
-    <div class="card" style="padding:20px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-        <h3 id="quiz-title"></h3>
-        <button class="btn" onclick="trainingBack()" style="font-size:12px">← Back to modules</button>
-      </div>
-      <div id="quiz-questions"></div>
-      <button class="btn" onclick="trainingSubmit()" style="padding:12px 24px;font-weight:600;background:var(--green);color:#fff;margin-top:16px;width:100%">Submit Answers</button>
-      <div id="quiz-results" style="margin-top:16px;display:none"></div>
-    </div>
-  </div>
-</div>
-
-<!-- NAC Tab -->
-<div id="tab-nac" class="tab-content" style="display:none">
-  <h2>🔒 Network Access Control (NAC)</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>NAC Policy</h3>
-    <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
-      <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:6px">
-        Default action:
-        <select id="nac-default-action" onchange="nacSetPolicy()" style="padding:6px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text)">
-          <option value="allow">Allow</option>
-          <option value="deny">Deny (require approval)</option>
-        </select>
-      </label>
-      <label style="font-size:13px;color:var(--text2);display:flex;align-items:center;gap:6px">
-        <input type="checkbox" id="nac-mac-filter" onchange="nacSetPolicy()"> MAC address filtering
-      </label>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h3>Approved Devices</h3>
-      <button class="btn" onclick="nacRefresh()" style="font-size:11px;padding:5px 12px">🔄 Refresh</button>
-    </div>
-    <div id="nac-approved-list" style="margin-top:12px"><div class="empty-msg">No approved devices</div></div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3 style="color:var(--amber)">Pending Approval</h3>
-    <div id="nac-pending-list" style="margin-top:12px"><div class="empty-msg">No pending devices</div></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3 style="color:var(--red)">Denied Devices</h3>
-    <div id="nac-denied-list" style="margin-top:12px"><div class="empty-msg">No denied devices</div></div>
-  </div>
-</div>
-
-<!-- IAM Tab -->
-<div id="tab-iam" class="tab-content" style="display:none">
-  <h2>👥 Identity & Access Management</h2>
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <h3>Create User</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-top:12px">
-      <input type="text" id="iam-username" placeholder="Username" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <input type="password" id="iam-password" placeholder="Password" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-size:13px">
-      <select id="iam-role" style="padding:10px;background:var(--bg4);border:1px solid var(--border2);border-radius:6px;color:var(--text)">
-        <option value="viewer">Viewer</option>
-        <option value="analyst">Analyst</option>
-        <option value="admin">Admin</option>
-      </select>
-      <button class="btn" onclick="iamCreateUser()" style="padding:10px;font-weight:600;background:var(--purple);color:#fff">+ Create User</button>
-    </div>
-  </div>
-
-  <div class="card" style="padding:20px;margin-bottom:16px">
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <h3>Users</h3>
-      <button class="btn" onclick="iamRefresh()" style="font-size:11px;padding:5px 12px">🔄 Refresh</button>
-    </div>
-    <div id="iam-users-list" style="margin-top:12px"><div class="empty-msg">No users</div></div>
-  </div>
-
-  <div class="card" style="padding:20px">
-    <h3>Roles & Permissions</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--red)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Admin</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Full access to all features, settings, user management, and configuration.</div>
-      </div>
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--amber)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Analyst</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Read access + alerts, reports, threat analysis. Cannot modify settings.</div>
-      </div>
-      <div style="background:var(--bg3);padding:14px;border-radius:8px;border-left:3px solid var(--blue)">
-        <div style="font-weight:600;font-size:14px;color:var(--text)">Viewer</div>
-        <div style="font-size:11px;color:var(--text2);margin-top:4px">Read-only access to dashboard and basic metrics.</div>
-      </div>
-    </div>
-  </div>
-</div>
-
   </div>
 </div>
 
 <script>
 const WS_URL = 'ws://localhost:8765';
+
+// XSS guard — always escape attacker-controllable values before innerHTML interpolation.
+// Use anywhere a packet field (IP, source, hostname, payload, MAC, etc.) is dropped into a template.
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  }[c]));
+}
+// Login/users API: no such server ships with NetGuard (port 8080 is the HTTP honeypot). Disabled unless configured.
+const AUTH_API = (() => { try { return localStorage.getItem('ng_auth_api') || ''; } catch(_) { return ''; } })();
+function authFetch(path, opts) { if (!AUTH_API) return Promise.reject(new Error('auth server not configured')); return fetch(AUTH_API + path, opts); }
 let ws, lastState = null, paused = false, currentFilter = 'all', currentLang = localStorage.getItem('ng_lang') || 'fr';
 let inHistory = [], outHistory = [], blockHistory = [], selectedGeoCountries = new Set();
 let nativeMode = false;
@@ -2399,23 +2344,67 @@ function initConnection() {
   }
 }
 
+// Privacy: online geo lookups follow the backend's geo_online_enabled setting (remembered for page load time).
+function ngGeoOnline(){ try { return localStorage.getItem('ng_geo_online') !== '0'; } catch(_) { return true; } }
+function ngRememberGeoOnline(msg){ if (msg && typeof msg.geo_online_enabled === 'boolean') { try { localStorage.setItem('ng_geo_online', msg.geo_online_enabled ? '1' : '0'); } catch(_) {} } }
+function getNgToken() {
+  // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
+  try {
+    const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
+    if (_argusTok && _argusTok.length >= 32) {
+      try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      try { const u = new URL(window.location.href); u.searchParams.delete('ng_token'); history.replaceState(null, '', u.toString()); } catch(_) {}
+      return _argusTok;
+    }
+  } catch(_) {}
+  let t = '';
+  try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
+  if (!t || t.length < 32) {
+    t = (prompt('NetGuard auth token required.\nOpen .netguard_token in the install dir and paste its content:') || '').trim();
+    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
+    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
+  }
+  return t;
+}
+let ngAuthed = false;
+
 function connectWS() {
   ws = new WebSocket(WS_URL);
+  ngAuthed = false;
   ws.onopen = () => {
     document.getElementById('dot').classList.remove('offline');
     document.getElementById('conn-status').textContent = t('status_connected');
     document.getElementById('conn-status').style.color = 'var(--green)';
-    sendCmd({cmd:'get_state'});
-    sendCmd({cmd:'get_alert_config'});
+    const tok = getNgToken();
+    if (!tok) { ws.close(); return; }
+    ws.send(JSON.stringify({cmd:'auth', token: tok}));
   };
   ws.onclose = () => {
     document.getElementById('dot').classList.add('offline');
     document.getElementById('conn-status').textContent = t('status_disconnected');
     document.getElementById('conn-status').style.color = 'var(--red)';
-    setTimeout(connectWS, 3000);
+    clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000);
   };
   ws.onerror = () => {};
-  ws.onmessage = e => { try { handleMsg(JSON.parse(e.data)); } catch(err){ console.error('[NetGuard] render error:', err); } };
+  ws.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg && msg.type === 'auth_ok') {
+        ngAuthed = true;
+        sendCmd({cmd:'get_state'});
+        sendCmd({cmd:'get_alert_config'});
+        return;
+      }
+      if (msg && msg.type === 'auth_failed') {
+        localStorage.removeItem('ng_ws_token');
+        alert('NetGuard auth failed. Token cleared — you will be prompted on next connect.');
+        ws.close();
+        return;
+      }
+      if (!ngAuthed) return;
+      handleMsg(msg);
+    } catch(err) { console.error('[NetGuard] render error:', err); }
+  };
 }
 
 function sendCmd(obj) {
@@ -2433,7 +2422,7 @@ function sendCmd(obj) {
   if (ws && ws.readyState === 1) {
     ws.send(JSON.stringify(obj));
   } else {
-    if (!ws || ws.readyState === 3) connectWS();
+    if (!ws || ws.readyState === 3) { clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, 0); }
     setTimeout(() => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }, 600);
   }
 }
@@ -2445,6 +2434,7 @@ window.addEventListener('pywebviewready', function() {
 });
 
 function handleMsg(msg) {
+  ngRememberGeoOnline(msg);
   if (msg.type === 'state' && !paused) {
     lastState = msg;
     render(msg);
@@ -2495,26 +2485,7 @@ function handleMsg(msg) {
   } else if (msg.type === 'suricata_alerts_cleared') {
     showToast('Alerts cleared', 'var(--green)');
 
-  // ── v4.0 — New Module Message Handlers ──────────────────────────────
-  } else if (msg.type === 'vuln_scan_started') {
-    showToast('Port scan started on ' + msg.target, 'var(--blue)');
-  } else if (msg.type === 'vuln_scan_result') {
-    vulnRenderScan(msg);
-    showToast((msg.open_ports?.length||0) + ' open ports found', 'var(--amber)');
-  } else if (msg.type === 'vuln_cve_result') {
-    vulnRenderCVE(msg);
-  } else if (msg.type === 'vuln_system_checking') {
-    showToast('System check in progress...', 'var(--blue)');
-  } else if (msg.type === 'vuln_system_result') {
-    vulnRenderSystemCheck(msg);
-  } else if (msg.type === 'vuln_history') {
-    const el = document.getElementById('vuln-history');
-    if (el && msg.scans?.length) {
-      el.innerHTML = msg.scans.slice(0,10).map(s => `
-        <div style="font-size:12px;padding:6px 0;border-bottom:1px solid var(--border);color:var(--text2)">
-          ${s.target} — ${s.open_ports?.length||0} open ports — ${s.timestamp?.slice(0,16)}
-        </div>`).join('');
-    }
+  // ── v4.0 — Backup module handlers (rest trimmed 2026-04-30) ────────
   } else if (msg.type === 'backup_creating') {
     showToast('Creating backup...', 'var(--blue)');
   } else if (msg.type === 'backup_created') {
@@ -2527,56 +2498,18 @@ function handleMsg(msg) {
   } else if (msg.type === 'backup_deleted') {
     showToast('Backup deleted', 'var(--green)');
     backupRefresh();
-  } else if (msg.type === 'incident_created') {
-    showToast('Incident created: ' + msg.ticket?.id, 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'incident_list') {
-    incidentRenderList(msg.tickets);
-  } else if (msg.type === 'incident_updated') {
-    showToast('Incident updated', 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'incident_deleted') {
-    showToast('Incident deleted', 'var(--green)');
-    incidentList('');
-  } else if (msg.type === 'training_modules') {
-    if (_trainingCurrentModule) trainingRenderQuiz(msg.modules);
-    else trainingRenderModules(msg.modules);
-  } else if (msg.type === 'training_scores') {
-    TRAINING_SCORES_CACHE = msg.scores || {};
-    const keys = Object.keys(TRAINING_SCORES_CACHE);
-    const avg = keys.length ? Math.round(keys.reduce((s,k) => s + (TRAINING_SCORES_CACHE[k].score||0), 0) / keys.length) : 0;
-    const passed = keys.filter(k => TRAINING_SCORES_CACHE[k].passed).length;
-    const el1 = document.getElementById('training-score-avg');
-    const el2 = document.getElementById('training-completed');
-    if (el1) el1.textContent = keys.length ? avg + '%' : '—';
-    if (el2) el2.textContent = passed + '/5';
-  } else if (msg.type === 'training_quiz_result') {
-    trainingRenderResult(msg);
-  } else if (msg.type === 'nac_devices') {
-    nacRenderDevices(msg);
-  } else if (msg.type === 'nac_device_approved') {
-    showToast('Device approved: ' + msg.ip, 'var(--green)');
-    nacRefresh();
-  } else if (msg.type === 'nac_device_denied') {
-    showToast('Device denied: ' + msg.ip, 'var(--red)');
-    nacRefresh();
-  } else if (msg.type === 'nac_policy_set') {
-    showToast('NAC policy updated', 'var(--green)');
-  } else if (msg.type === 'iam_user_created') {
-    showToast(msg.ok ? 'User created: ' + msg.username : 'Error: ' + msg.error, msg.ok ? 'var(--green)' : 'var(--red)');
-    iamRefresh();
-  } else if (msg.type === 'iam_users') {
-    iamRenderUsers(msg.users);
-  } else if (msg.type === 'iam_user_deleted') {
-    showToast('User deleted', 'var(--green)');
-    iamRefresh();
-  } else if (msg.type === 'iam_role_updated') {
-    showToast(msg.ok ? 'Role updated' : 'Error: ' + msg.error, msg.ok ? 'var(--green)' : 'var(--red)');
-    iamRefresh();
-  } else if (msg.type === 'iam_mfa_toggled') {
-    showToast('MFA ' + (msg.mfa_enabled ? 'enabled' : 'disabled'), 'var(--green)');
-    iamRefresh();
+  } else if (msg.type === 'npcap_consumers') {
+    renderNpcapConsumers(msg.consumers || []);
 
+  } else if (msg.type === 'license_status') {
+    renderLicenseStatus(msg);
+  } else if (msg.type === 'license_device_deactivated') {
+    if (msg.ok) {
+      showToast('Device deactivated. A seat is now free.', 'var(--green)');
+      sendCmd({cmd:'license_status'});
+    } else {
+      showToast('Deactivation failed: ' + (msg.error || 'unknown'), 'var(--red)');
+    }
   } else if (msg.type === 'record_started' || msg.type === 'record_stopped') {
     sendCmd({cmd:'get_state'});
   } else if (msg.type === 'record_list') {
@@ -2630,9 +2563,9 @@ function handleMsg(msg) {
     const el = document.getElementById('ioc-lookup-result');
     if (el) {
       if (msg.matches && msg.matches.length) {
-        el.innerHTML = msg.matches.map(m => `<div style="padding:4px 0"><span class="badge badge-red">${m.source}</span> ${m.detail}</div>`).join('');
+        el.innerHTML = msg.matches.map(m => `<div style="padding:4px 0"><span class="badge badge-red">${esc(m.source)}</span> ${esc(m.detail)}</div>`).join('');
       } else {
-        el.innerHTML = '<div style="color:var(--green);padding:4px">✅ No IOC matches found for ' + msg.value + '</div>';
+        el.innerHTML = '<div style="color:var(--green);padding:4px">✅ No IOC matches found for ' + esc(msg.value) + '</div>';
       }
     }
   }
@@ -2648,34 +2581,30 @@ function handleMsg(msg) {
   else if (msg.type === 'device_unisolated') { showToast('Device ' + msg.ip + ' released', '#00c853'); }
   else if (msg.type === 'ip_quarantined') { showToast('IP ' + msg.ip + ' quarantined', '#ff9800'); }
   else if (msg.type === 'ip_unquarantined') { showToast('IP ' + msg.ip + ' released', '#00c853'); }
-  else if (msg.type === 'wg_started') {
-    if (msg.ok) showToast('WireGuard VPN started!', '#00c853');
-    else showToast('WireGuard error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_stopped') {
-    if (msg.ok) showToast('WireGuard VPN stopped', '#ff9800');
-    else showToast('WireGuard error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_peer_added') {
-    if (msg.ok) {
-      showToast('Peer added: ' + (msg.peer?msg.peer.name:''), '#00c853');
-      if (msg.config) {
-        document.getElementById('wg-peer-config-text').textContent = msg.config;
-        document.getElementById('wg-peer-config-modal').style.display = 'block';
-      }
-      sendCmd({cmd:'wg_get_peers'});
-    } else showToast('Error: ' + (msg.error||''), '#ff5252');
-  }
-  else if (msg.type === 'wg_peer_removed') {
-    if (msg.ok) { showToast('Peer removed', '#ff9800'); sendCmd({cmd:'wg_get_peers'}); }
-    else showToast('Error: ' + (msg.error||''), '#ff5252');
-  }
+  // WG server lifecycle handlers removed in trim 2026-04-30 (display-only WG now)
   else if (msg.type === 'wg_peer_config') {
     document.getElementById('wg-peer-config-text').textContent = msg.config;
     document.getElementById('wg-peer-config-modal').style.display = 'block';
   }
   else if (msg.type === 'wg_config_saved') { showToast('WireGuard config saved', '#00c853'); }
-  else if (msg.type === 'wg_peers') { renderWgPeers(msg.peers); }
+  // ── Secret Vault handlers ─────────────────────────────────────────────
+  else if (msg.type === 'vault_status') { renderVaultStatus(msg); }
+  else if (msg.type === 'vault_init_result') { vaultMsg(msg, 'Vault initialized'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_unlock_result') { vaultMsg(msg, 'Vault unlocked'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_lock_result') { vaultMsg(msg, 'Vault locked'); vaultRefresh(); }
+  else if (msg.type === 'vault_set_secret_result') { vaultMsg(msg, 'Secret saved to vault'); if (msg.ok) vaultRefresh(); }
+  else if (msg.type === 'vault_change_master_result') { vaultMsg(msg, 'Master password changed'); }
+  else if (msg.type === 'vault_migrate_result') {
+    if (msg.ok) {
+      showToast(`Migrated ${msg.count} secret(s) into vault`, '#00c853');
+      const el = document.getElementById('vault-msg');
+      if (el) { el.style.color = 'var(--green)'; el.textContent = msg.count + ' secret(s) moved into vault: ' + (msg.migrated || []).join(', '); }
+      vaultRefresh();
+    } else {
+      const el = document.getElementById('vault-msg');
+      if (el) { el.style.color = 'var(--red)'; el.textContent = 'Migration failed: ' + (msg.error || 'unknown') + (msg.detail ? ' — ' + msg.detail : ''); }
+    }
+  }
 }
 
 function showToast(msg, color) {
@@ -2721,6 +2650,7 @@ function render(s) {
     renderRateLimitStats(s.rate_limit_stats || []);
   }
   renderPackets(s.recent_packets, 'pkts-full-body', 500);
+  if (s.top_bandwidth_ips) renderBandwidthPanel(s.top_bandwidth_ips);
   _accumulateThreats(s.threats);
   renderThreats(s.threats, 'dash-threats-compact', 6);
   renderThreats(s.threats, 'threats-full', 100);
@@ -2789,7 +2719,7 @@ function render(s) {
     renderLanDevices(s.lan_devices);
     const dlEl = document.getElementById('dash-lan');
     if(dlEl) dlEl.innerHTML = s.lan_devices.slice(0,6).map(d =>
-      '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span style="color:var(--text)">'+d.ip+'</span><span style="color:var(--text3);font-size:10px">'+(d.mac||'')+'</span></div>'
+      '<div style="display:flex;align-items:center;gap:6px;font-size:11px;padding:2px 0"><span style="width:6px;height:6px;border-radius:50%;background:var(--green);flex-shrink:0"></span><span style="color:var(--text)">'+esc(d.ip)+'</span><span style="color:var(--text3);font-size:10px">'+esc(d.mac||'')+'</span></div>'
     ).join('');
   }
   if (s.suricata_rules !== undefined) {
@@ -2820,13 +2750,13 @@ function render(s) {
   if(s.anomaly_alerts) {
     const el = document.getElementById('dash-anomaly-list');
     if(el) el.innerHTML = s.anomaly_alerts.slice(0,5).map(a =>
-      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--amber)">'+a.ip+'</span><span style="color:var(--text3)">'+a.metric+' z='+Number(a.zscore).toFixed(1)+'</span></div>'
+      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--amber)">'+esc(a.ip)+'</span><span style="color:var(--text3)">'+esc(a.metric)+' z='+Number(a.zscore).toFixed(1)+'</span></div>'
     ).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucune anomalie</div>';
   }
   if(s.threat_intel_hits) {
     const el = document.getElementById('dash-intel-list');
     if(el) el.innerHTML = s.threat_intel_hits.slice(0,5).map(h =>
-      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--red)">'+h.ip+'</span><span style="color:var(--text3)">'+h.source+'</span></div>'
+      '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--red)">'+esc(h.ip)+'</span><span style="color:var(--text3)">'+esc(h.source)+'</span></div>'
     ).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucun hit</div>';
   }
   if(s.attack_chains) {
@@ -2835,7 +2765,7 @@ function render(s) {
       const chains = Object.entries(s.attack_chains || {});
       el.innerHTML = chains.slice(0,5).map(([ip,steps]) => {
         const phases = Array.isArray(steps) ? steps.map(s => s.phase || s).join(' → ') : '';
-        return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;font-size:11px"><span style="color:var(--purple)">'+ip+'</span> <span style="color:var(--text3)">'+phases+'</span></div>';
+        return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;font-size:11px"><span style="color:var(--purple)">'+esc(ip)+'</span> <span style="color:var(--text3)">'+esc(phases)+'</span></div>';
       }).join('') || '<div style="font-size:11px;color:var(--text3);padding:8px">Aucune chaîne</div>';
     }
   }
@@ -2845,22 +2775,15 @@ function render(s) {
     if(el) {
       const colors = ['#4d9fff','#3dffb4','#ffb347','#b47dff','#ff4d6a','#00d4ff'];
       el.innerHTML = s.proto_stats.slice(0,6).map((p, i) =>
-        '<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px"><span style="width:45px;color:var(--text2)">'+p.name+'</span><div style="flex:1;height:14px;background:var(--bg4);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+p.pct+'%;background:'+colors[i%6]+';border-radius:3px;transition:width .5s"></div></div><span style="width:35px;text-align:right;color:var(--text3)">'+p.pct+'%</span></div>'
+        '<div style="display:flex;align-items:center;gap:8px;font-size:11px;margin-bottom:4px"><span style="width:45px;color:var(--text2)">'+esc(p.name)+'</span><div style="flex:1;height:14px;background:var(--bg4);border-radius:3px;overflow:hidden"><div style="height:100%;width:'+Number(p.pct||0)+'%;background:'+colors[i%6]+';border-radius:3px;transition:width .5s"></div></div><span style="width:35px;text-align:right;color:var(--text3)">'+Number(p.pct||0)+'%</span></div>'
       ).join('');
     }
   }
 
-  // WireGuard
-  renderWgPeers(s.wg_peers || []);
-  if (s.wg_status) {
-    const running = s.wg_status.running;
-    const statusEl = document.getElementById('m-wg-status');
-    if (statusEl) statusEl.innerHTML = running ? '<span style="color:var(--green)">🟢 Running</span>' : '⏸️ Stopped';
-    const btnEl = document.getElementById('wg-start-btn');
-    if (btnEl) { btnEl.textContent = running ? '⏹️ Stop VPN' : '▶️ Start VPN'; btnEl.style.background = running ? 'var(--red)' : 'var(--green)'; }
-    const connEl = document.getElementById('m-wg-connected');
-    if (connEl) connEl.textContent = s.wg_status.peers_connected || 0;
-  }
+  // WireGuard server lifecycle removed (display-only post-trim 2026-04-30)
+
+  // Activité système — Npcap consumer detector (Task B 2026-04-30)
+  if (s.npcap_consumers) renderNpcapConsumers(s.npcap_consumers);
 
   // Logs
   buildLogsFromState(s);
@@ -3163,18 +3086,19 @@ function renderPackets(pkts, tbodyId, limit) {
     <tr class="pkt-row" onclick="wsSelectPacket(${i}, this)" style="${bgStyle}">
       <td style="color:var(--text3);font-size:10px">${i+1}</td>
       <td style="color:var(--text3)">${p.t||''}</td>
-      <td class="${sc[p.status]||''}" style="cursor:pointer" onclick="event.stopPropagation();wsFilterIP('${p.src}')" title="Click to filter">${p.src||''}</td>
-      <td style="color:var(--text3);font-size:10px">${p.location||p.country||''}</td>
-      <td style="color:var(--text3)" onclick="event.stopPropagation();wsFilterIP('${p.dst}')" title="Click to filter">${p.dst||''}</td>
+      <td class="${sc[p.status]||''}" style="cursor:pointer" onclick="event.stopPropagation();wsFilterIP('${esc(p.src)}')" title="Click to filter">${esc(p.src||'')}</td>
+      <td style="color:${p.process?'var(--purple)':'var(--text3)'};font-size:10px;max-width:140px;overflow:hidden;text-overflow:ellipsis" title="${esc(p.process||'Unknown / external')}">${esc(p.process||'—')}</td>
+      <td style="color:var(--text3);font-size:10px">${esc(p.location||p.country||'')}</td>
+      <td style="color:var(--text3)" onclick="event.stopPropagation();wsFilterIP('${esc(p.dst)}')" title="Click to filter">${esc(p.dst||'')}</td>
       <td style="color:var(--text3);font-size:10px">${p.sport||''}</td>
       <td style="font-size:10px">${p.dport||''}</td>
-      <td class="${wsColorize?(pc[p.proto]||''):''}" style="font-weight:600">${p.proto||''}</td>
-      <td style="color:var(--text3);font-size:10px">${p.flags||''}</td>
+      <td class="${wsColorize?(pc[p.proto]||''):''}" style="font-weight:600">${esc(p.proto||'')}</td>
+      <td style="color:var(--text3);font-size:10px">${esc(p.flags||'')}</td>
       <td style="color:var(--text3)">${p.size||''}</td>
-      <td class="${sc[p.status]||''}" style="font-size:10px">${sl[p.status]||''} ${p.status||''}</td>
-      <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:10px">${p.reason||_wsInfoString(p)}</td>
+      <td class="${sc[p.status]||''}" style="font-size:10px">${sl[p.status]||''} ${esc(p.status||'')}</td>
+      <td style="color:var(--text3);max-width:250px;overflow:hidden;text-overflow:ellipsis;font-size:10px">${esc(p.reason||_wsInfoString(p))}</td>
     </tr>`;
-  }).join('') || '<tr><td colspan="12" class="empty-msg">No packets matching filter</td></tr>';
+  }).join('') || '<tr><td colspan="13" class="empty-msg">No packets matching filter</td></tr>';
 
   // Update stats bar
   const total = pkts.length;
@@ -3282,15 +3206,15 @@ function wsSelectPacket(idx, row) {
     <div class="ws-detail-row"><span class="ws-detail-key">Frame ${idx+1}</span><span class="ws-detail-val">${p.size||0} bytes on wire</span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">Arrival Time</span><span class="ws-detail-val">${p.t||''}</span></div>
     <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--green)">► Internet Protocol</span><span class="ws-detail-val"></span></div>
-    <div class="ws-detail-row"><span class="ws-detail-key">  Source</span><span class="ws-detail-val">${p.src||''} ${p.country||p.location?'('+( p.country||p.location)+')':''}</span></div>
-    <div class="ws-detail-row"><span class="ws-detail-key">  Destination</span><span class="ws-detail-val">${p.dst||''}</span></div>
-    <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--blue)">► ${p.proto||'Protocol'}</span><span class="ws-detail-val"></span></div>
+    <div class="ws-detail-row"><span class="ws-detail-key">  Source</span><span class="ws-detail-val">${esc(p.src||'')} ${p.country||p.location?'('+esc(p.country||p.location)+')':''}</span></div>
+    <div class="ws-detail-row"><span class="ws-detail-key">  Destination</span><span class="ws-detail-val">${esc(p.dst||'')}</span></div>
+    <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--blue)">► ${esc(p.proto||'Protocol')}</span><span class="ws-detail-val"></span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Src Port</span><span class="ws-detail-val">${p.sport||'—'}</span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Dst Port</span><span class="ws-detail-val">${p.dport||'—'} ${_wsServiceName(p.dport)}</span></div>
-    ${p.flags ? `<div class="ws-detail-row"><span class="ws-detail-key">  Flags</span><span class="ws-detail-val">[${p.flags}]</span></div>` : ''}
+    ${p.flags ? `<div class="ws-detail-row"><span class="ws-detail-key">  Flags</span><span class="ws-detail-val">[${esc(p.flags)}]</span></div>` : ''}
     <div class="ws-detail-row" style="background:var(--bg4)"><span class="ws-detail-key" style="color:var(--amber)">► NetGuard Analysis</span><span class="ws-detail-val"></span></div>
     <div class="ws-detail-row"><span class="ws-detail-key">  Decision</span><span class="ws-detail-val" style="color:${p.status==='block'?'var(--red)':p.status==='warn'?'var(--amber)':'var(--green)'}">${p.status?.toUpperCase()||'ALLOW'}</span></div>
-    ${p.reason ? `<div class="ws-detail-row"><span class="ws-detail-key">  Reason</span><span class="ws-detail-val" style="color:var(--amber)">${p.reason}</span></div>` : ''}
+    ${p.reason ? `<div class="ws-detail-row"><span class="ws-detail-key">  Reason</span><span class="ws-detail-val" style="color:var(--amber)">${esc(p.reason)}</span></div>` : ''}
   `;
   wsSelectedPkt = idx;
   if (wsHexView) wsRenderHex(idx);
@@ -3305,7 +3229,8 @@ function wsExportCSV() {
   if (!lastState?.recent_packets) return;
   const pkts = lastState.recent_packets;
   const header = 'Time,Source,Destination,SrcPort,DstPort,Protocol,Flags,Size,Status,Reason,Country\n';
-  const rows = pkts.map(p => `"${p.t||''}","${p.src||''}","${p.dst||''}","${p.sport||''}","${p.dport||''}","${p.proto||''}","${p.flags||''}","${p.size||''}","${p.status||''}","${(p.reason||'').replace(/"/g,"'")}","${p.country||p.location||''}"`).join('\n');
+  const csvCell = v => { let x = String(v == null ? '' : v).replace(/"/g, "'"); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return '"' + x + '"'; };  // no spreadsheet formula injection
+  const rows = pkts.map(p => [p.t, p.src, p.dst, p.sport, p.dport, p.proto, p.flags, p.size, p.status, p.reason, p.country||p.location].map(csvCell).join(',')).join('\n');
   const blob = new Blob([header + rows], {type: 'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -3332,11 +3257,11 @@ function dashRenderLiveIPs(pkts) {
   if (!ips.length) { el.innerHTML = '<div class="empty-msg" style="font-size:11px">Waiting for traffic...</div>'; return; }
   const sc = {allow:'var(--green)',block:'var(--red)',warn:'var(--amber)'};
   el.innerHTML = ips.slice(0, 20).map(p => `
-    <div class="live-ip-row" onclick="wsFilterIP('${p.src}')" style="cursor:pointer" title="Click to filter in Packets">
+    <div class="live-ip-row" onclick="wsFilterIP('${esc(p.src)}')" style="cursor:pointer" title="Click to filter in Packets">
       <span style="width:5px;height:5px;border-radius:50%;background:${sc[p.status]||'var(--green)'};flex-shrink:0"></span>
-      <span style="color:${sc[p.status]||'var(--text2)'};min-width:110px">${p.src}</span>
-      <span style="color:var(--text3);font-size:9px;flex:1">${p.country||p.location||''}</span>
-      <span style="color:var(--blue);font-size:10px">${p.proto||''}</span>
+      <span style="color:${sc[p.status]||'var(--text2)'};min-width:110px">${esc(p.src)}</span>
+      <span style="color:var(--text3);font-size:9px;flex:1">${esc(p.country||p.location||'')}</span>
+      <span style="color:var(--blue);font-size:10px">${esc(p.proto||'')}</span>
       <span style="color:var(--text3);font-size:9px">${p.dport||''}</span>
     </div>`).join('');
 }
@@ -3408,7 +3333,7 @@ function popoutData(type) {
     html = `<h2>🌐 Live IPs (${ips.length})</h2>
       <input class="search" placeholder="Search IP..." oninput="filterRows(this.value)">
       <table><tr><th>IP</th><th>Country</th><th>Protocol</th><th>Port</th><th>Status</th><th>Reason</th></tr>
-      ${ips.map(p => `<tr class="data-row"><td class="c-${p.status==='block'?'red':'green'}">${p.src}</td><td>${p.country||p.location||''}</td><td class="c-blue">${p.proto||''}</td><td>${p.dport||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status}</td><td>${p.reason||''}</td></tr>`).join('')}
+      ${ips.map(p => `<tr class="data-row"><td class="c-${p.status==='block'?'red':'green'}">${esc(p.src)}</td><td>${esc(p.country||p.location||'')}</td><td class="c-blue">${esc(p.proto||'')}</td><td>${p.dport||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status}</td><td>${esc(p.reason||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'geocountries') {
     const countries = s.geo_blocked_countries || [];
@@ -3416,11 +3341,11 @@ function popoutData(type) {
     const hits = s.geo_hits || [];
     html = `<h2>🌍 Blocked Countries (${countries.length})</h2>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
-        ${countries.map(c => `<span class="tag tag-red">${c} ${names[c]||c}</span>`).join('')}
+        ${countries.map(c => `<span class="tag tag-red">${esc(c)} ${esc(names[c]||c)}</span>`).join('')}
       </div>
       <h3 style="font-size:14px;margin:12px 0 8px">Geo Hits</h3>
       <table><tr><th>Country</th><th>Name</th><th>Attacks</th></tr>
-      ${hits.map(h => `<tr><td>${h.country}</td><td>${h.name||''}</td><td class="c-red">${h.hits}</td></tr>`).join('')}
+      ${hits.map(h => `<tr><td>${h.country}</td><td>${esc(h.name||'')}</td><td class="c-red">${h.hits}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'idsalerts') {
     const alerts = s.suricata_alerts || [];
@@ -3428,13 +3353,13 @@ function popoutData(type) {
     html = `<h2>🛡️ IDS Alerts (${alerts.length})</h2>
       <input class="search" placeholder="Search alerts..." oninput="filterRows(this.value)">
       <table><tr><th>Time</th><th>Severity</th><th>SID</th><th>Message</th><th>Source IP</th></tr>
-      ${alerts.map(a => `<tr class="data-row"><td>${a.ts||''}</td><td class="${sc[a.severity]||''}" style="font-weight:700;text-transform:uppercase">${a.severity}</td><td class="c-amber">#${a.sid}</td><td>${a.msg||''}</td><td>${a.src||''}</td></tr>`).join('')}
+      ${alerts.map(a => `<tr class="data-row"><td>${a.ts||''}</td><td class="${sc[a.severity]||''}" style="font-weight:700;text-transform:uppercase">${a.severity}</td><td class="c-amber">#${a.sid}</td><td>${esc(a.msg||'')}</td><td>${esc(a.src||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'threatintel') {
     const hits = s.threat_intel_hits || [];
     html = `<h2>🔒 Threat Intelligence Hits (${hits.length})</h2>
       <table><tr><th>Time</th><th>IP</th><th>Source</th><th>Detail</th></tr>
-      ${hits.map(h => `<tr><td>${h.ts||''}</td><td class="c-red">${h.ip||''}</td><td class="c-purple">${h.source||''}</td><td>${h.detail||''}</td></tr>`).join('')}
+      ${hits.map(h => `<tr><td>${h.ts||''}</td><td class="c-red">${esc(h.ip||'')}</td><td class="c-purple">${esc(h.source||'')}</td><td>${esc(h.detail||'')}</td></tr>`).join('')}
       </table>`;
   } else if (type === 'traffic') {
     const history = s.traffic_history || [];
@@ -3504,11 +3429,11 @@ function popoutData(type) {
       <input class="search" placeholder="Filter packets..." oninput="filterRows(this.value)">
       <div style="overflow:auto;max-height:calc(100vh - 120px)">
       <table><tr><th>#</th><th>Time</th><th>Source</th><th>Country</th><th>Destination</th><th>SPort</th><th>DPort</th><th>Proto</th><th>Flags</th><th>Size</th><th>Status</th><th>Reason</th></tr>
-      ${pkts.map((p, i) => `<tr class="data-row"><td>${i+1}</td><td>${p.t||''}</td><td class="c-${p.status==='block'?'red':'green'}">${p.src||''}</td><td>${p.country||p.location||''}</td><td>${p.dst||''}</td><td>${p.sport||''}</td><td>${p.dport||''}</td><td class="c-blue">${p.proto||''}</td><td>${p.flags||''}</td><td>${p.size||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status||''}</td><td>${p.reason||''}</td></tr>`).join('')}
+      ${pkts.map((p, i) => `<tr class="data-row"><td>${i+1}</td><td>${p.t||''}</td><td class="c-${p.status==='block'?'red':'green'}">${p.src||''}</td><td>${esc(p.country||p.location||'')}</td><td>${p.dst||''}</td><td>${p.sport||''}</td><td>${p.dport||''}</td><td class="c-blue">${esc(p.proto||'')}</td><td>${p.flags||''}</td><td>${p.size||''}</td><td class="c-${p.status==='block'?'red':p.status==='warn'?'amber':'green'}">${p.status||''}</td><td>${esc(p.reason||'')}</td></tr>`).join('')}
       </table></div>`;
   }
 
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — ${type}</title>${css}</head><body>${html}
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — ${type}</title>${css}</head><body>${html}
     <script>function filterRows(q){document.querySelectorAll('.data-row').forEach(r=>{r.style.display=r.textContent.toLowerCase().includes(q.toLowerCase())?'':'none'})}<\/script>
   </body></html>`);
   win.document.close();
@@ -3521,10 +3446,10 @@ function renderThreats(threats, elId, limit) {
   const sc = {high:'sev-high',med:'sev-med',low:'sev-low',critical:'sev-critical'};
   el.innerHTML = threats.slice(0, limit).map(t => `
     <div class="threat-item">
-      <span class="threat-sev ${sc[t.severity]||'sev-low'}">${t.severity||'?'}</span>
-      <span class="threat-type">${t.type||''}</span>
-      <span class="threat-ip">${t.src_ip||''}</span>
-      <span class="threat-desc">${t.description||''}</span>
+      <span class="threat-sev ${sc[t.severity]||'sev-low'}">${esc(t.severity||'?')}</span>
+      <span class="threat-type">${esc(t.type||'')}</span>
+      <span class="threat-ip">${esc(t.src_ip||'')}</span>
+      <span class="threat-desc">${esc(t.description||'')}</span>
       <span style="font-size:10px;color:var(--text3)">${(t.timestamp||'').replace('T',' ').slice(0,19)}</span>
     </div>`).join('');
 }
@@ -3625,9 +3550,9 @@ function renderDpiAlerts(alerts) {
   el.innerHTML = alerts.slice(0,10).map(a => `
     <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px">
       <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:55px">${a.ts||''}</span>
-      <span style="color:${a.type==='attack'?'var(--red)':'var(--amber)'};min-width:70px">${a.type||''}</span>
-      <span style="color:var(--text)">${a.detail||''}</span>
-      <span style="margin-left:auto;color:var(--text3)">${a.src||''}</span>
+      <span style="color:${a.type==='attack'?'var(--red)':'var(--amber)'};min-width:70px">${esc(a.type||'')}</span>
+      <span style="color:var(--text)">${esc(a.detail||'')}</span>
+      <span style="margin-left:auto;color:var(--text3)">${esc(a.src||'')}</span>
     </div>`).join('');
 }
 
@@ -3641,8 +3566,8 @@ function renderSuricataAlerts(alerts) {
       <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:55px">${a.ts||''}</span>
       <span style="color:${sc[a.severity]||'var(--text3)'};font-weight:700;min-width:60px;text-transform:uppercase;font-size:10px">${a.severity||''}</span>
       <span style="color:var(--amber);font-family:'Geist Mono',monospace;min-width:55px">#${a.sid||''}</span>
-      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.msg||''}</span>
-      <span style="color:var(--text3);font-family:'Geist Mono',monospace">${a.src||''}</span>
+      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(a.msg||'')}</span>
+      <span style="color:var(--text3);font-family:'Geist Mono',monospace">${esc(a.src||'')}</span>
     </div>`).join('');
 }
 
@@ -3674,9 +3599,9 @@ function surRenderRules(rules) {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid var(--border);font-size:12px;opacity:${r.enabled?1:0.4}">
       <div class="toggle${r.enabled?' on':''}" style="width:32px;min-width:32px;height:16px" onclick="sendCmd({cmd:'suricata_toggle_rule',sid:${r.sid}})"></div>
       <span style="color:var(--amber);font-family:'Geist Mono',monospace;min-width:65px">#${r.sid}</span>
-      <span style="color:${sc[r.severity]||'var(--text3)'};font-weight:700;min-width:55px;font-size:10px;text-transform:uppercase">${r.severity}</span>
-      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.msg}</span>
-      <span style="color:var(--text3);font-size:10px;min-width:30px;text-align:right">${r.proto}</span>
+      <span style="color:${sc[r.severity]||'var(--text3)'};font-weight:700;min-width:55px;font-size:10px;text-transform:uppercase">${esc(r.severity)}</span>
+      <span style="color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.msg)}</span>
+      <span style="color:var(--text3);font-size:10px;min-width:30px;text-align:right">${esc(r.proto)}</span>
       <span style="color:var(--cyan);font-family:'Geist Mono',monospace;min-width:50px;text-align:right;font-size:11px">${r.hits} hits</span>
       ${r.custom ? `<button onclick="sendCmd({cmd:'suricata_delete_rule',sid:${r.sid}})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;padding:2px 6px" title="Delete">✕</button>` : '<span style="min-width:26px"></span>'}
     </div>`).join('');
@@ -3707,6 +3632,41 @@ function renderTopIps(ips) {
       <span style="font-family:'Geist Mono',monospace;color:var(--text2)">${ip}</span>
       <span style="color:var(--amber);font-weight:600">${hits} hits</span>
     </div>`).join('');
+}
+
+// ── Top Bande passante (audit 2026-04-28: app-id + bandwidth per IP) ─────
+function renderBandwidthPanel(rows, totalLabel) {
+  const el = document.getElementById('dash-bandwidth-list');
+  const tot = document.getElementById('dash-bw-total');
+  if (!el) return;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:8px">Aucune donnée bande passante (capture en cours…)</div>';
+    if (tot) tot.textContent = '— total';
+    return;
+  }
+  const max = rows[0].bytes || 1;
+  const sum = rows.reduce((a,r) => a + (r.bytes||0), 0);
+  if (tot) tot.textContent = fmtBytes(sum) + ' total';
+  el.innerHTML = rows.map(r => {
+    const pct = Math.max(2, Math.round((r.bytes || 0) * 100 / max));
+    const ip = esc(r.ip || '');
+    const proc = esc(r.process || '—');
+    const country = esc(r.country || '');
+    const bytes = fmtBytes(r.bytes || 0);
+    return `
+      <div style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:12px">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:3px">
+          <span style="font-family:'Geist Mono',monospace;color:var(--text)" title="${ip}">${ip}${country ? ' <span style=\"color:var(--text3);font-size:10px\">' + country + '</span>' : ''}</span>
+          <span style="color:var(--blue);font-weight:600;font-family:'Geist Mono',monospace">${bytes}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+          <span style="color:var(--text2);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:60%" title="${proc}">${proc}</span>
+          <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin-left:8px">
+            <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,var(--blue),var(--purple))"></div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 // ── Actions ────────────────────────────────────────────────────────────────
@@ -3761,82 +3721,8 @@ function loadET(ruleset) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// v4.0 — New Module Functions
+// v4.0 — Backup & Recovery (other v4.0 modules trimmed 2026-04-30)
 // ══════════════════════════════════════════════════════════════════════════
-
-// ── Vulnerability Scanner ─────────────────────────────────────────────────
-function vulnScan() {
-  const target = document.getElementById('vuln-target')?.value?.trim() || '127.0.0.1';
-  const ports = document.getElementById('vuln-ports')?.value?.trim() || '1-1024';
-  const btn = document.getElementById('vuln-scan-btn');
-  if (btn) { btn.style.opacity='0.5'; btn.textContent='Scanning...'; }
-  sendCmd({cmd:'vuln_port_scan', target, ports});
-}
-
-function vulnCVELookup() {
-  const cve = document.getElementById('vuln-cve-input')?.value?.trim();
-  if (!cve) return;
-  document.getElementById('vuln-cve-result').innerHTML = '<div style="color:var(--text3);font-size:12px">Looking up...</div>';
-  sendCmd({cmd:'vuln_cve_lookup', cve});
-}
-
-function vulnSystemCheck() {
-  const btn = document.getElementById('vuln-sys-btn');
-  if (btn) { btn.style.opacity='0.5'; btn.textContent='Checking...'; }
-  sendCmd({cmd:'vuln_system_check'});
-}
-
-function vulnRenderScan(data) {
-  const el = document.getElementById('vuln-scan-result');
-  const btn = document.getElementById('vuln-scan-btn');
-  if (btn) { btn.style.opacity=''; btn.textContent='🔍 Scan'; }
-  if (!el) return;
-  if (!data.ok) { el.innerHTML = '<div style="color:var(--red)">Error: ' + (data.error||'') + '</div>'; return; }
-  const rc = {high:'var(--red)',info:'var(--blue)',med:'var(--amber)'};
-  el.innerHTML = `
-    <div style="font-size:13px;color:var(--text2);margin-bottom:12px">
-      <strong>${data.open_ports?.length || 0}</strong> open ports found on <code style="color:var(--cyan)">${data.target}</code> (${data.scanned} scanned)
-    </div>
-    ${(data.open_ports||[]).map(p => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--border);font-size:12px">
-        <span style="font-family:'Geist Mono',monospace;color:var(--amber);min-width:50px;font-weight:600">${p.port}</span>
-        <span style="color:var(--text);min-width:90px">${p.service}</span>
-        <span style="color:var(--green);min-width:50px;font-size:10px;text-transform:uppercase">${p.state}</span>
-        <span style="color:${rc[p.risk]||'var(--text3)'};flex:1;font-size:11px">${p.vulnerability || '—'}</span>
-      </div>`).join('')}`;
-}
-
-function vulnRenderCVE(data) {
-  const el = document.getElementById('vuln-cve-result');
-  if (!el) return;
-  if (!data.ok) { el.innerHTML = '<div style="color:var(--red);font-size:12px">' + (data.error||'CVE not found') + '</div>'; return; }
-  const sc = {CRITICAL:'#ff1a4d',HIGH:'var(--red)',MEDIUM:'var(--amber)',LOW:'var(--blue)'};
-  el.innerHTML = `
-    <div style="background:var(--bg3);padding:16px;border-radius:8px;border-left:3px solid ${sc[data.severity]||'var(--text3)'}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <span style="font-weight:700;font-size:16px;color:var(--text)">${data.id}</span>
-        <span style="font-size:13px;font-weight:600;color:${sc[data.severity]||'var(--text3)'}">Score: ${data.score} (${data.severity})</span>
-      </div>
-      <p style="font-size:12px;color:var(--text2);line-height:1.6;margin:8px 0">${data.description}</p>
-      <div style="font-size:11px;color:var(--text3)">Published: ${data.published?.slice(0,10)} | Modified: ${data.modified?.slice(0,10)}</div>
-      ${data.references?.length ? '<div style="margin-top:8px;font-size:11px">' + data.references.map(r => '<a href="'+r+'" target="_blank" style="color:var(--blue);display:block;margin:2px 0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r+'</a>').join('') + '</div>' : ''}
-    </div>`;
-}
-
-function vulnRenderSystemCheck(data) {
-  const el = document.getElementById('vuln-system-result');
-  const btn = document.getElementById('vuln-sys-btn');
-  if (btn) { btn.style.opacity=''; btn.textContent='🛡️ Run System Check'; }
-  if (!el) return;
-  const sc = {pass:'var(--green)',fail:'var(--red)',warn:'var(--amber)',info:'var(--blue)',unknown:'var(--text3)'};
-  const ic = {pass:'✅',fail:'❌',warn:'⚠️',info:'ℹ️',unknown:'❓'};
-  el.innerHTML = (data.checks||[]).map(c => `
-    <div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border);font-size:13px">
-      <span style="font-size:16px">${ic[c.status]||'❓'}</span>
-      <span style="color:var(--text);min-width:180px;font-weight:500">${c.check}</span>
-      <span style="color:${sc[c.status]||'var(--text3)'};flex:1">${c.detail}</span>
-    </div>`).join('');
-}
 
 // ── Backup & Recovery ─────────────────────────────────────────────────────
 function backupCreate() {
@@ -3863,217 +3749,29 @@ function backupRenderList(backups) {
     </div>`).join('');
 }
 
-// ── Incidents & Tickets ───────────────────────────────────────────────────
-function incidentCreate() {
-  const title = document.getElementById('inc-title')?.value?.trim();
-  const description = document.getElementById('inc-desc')?.value?.trim();
-  const severity = document.getElementById('inc-severity')?.value || 'medium';
-  const assigned_to = document.getElementById('inc-assigned')?.value?.trim();
-  const related_ip = document.getElementById('inc-ip')?.value?.trim();
-  if (!title) { alert('Title required'); return; }
-  sendCmd({cmd:'incident_create', title, description, severity, assigned_to, related_ip});
-  document.getElementById('inc-title').value = '';
-  document.getElementById('inc-desc').value = '';
-}
-
-function incidentList(status) { sendCmd({cmd:'incident_list', status}); }
-
-function incidentRenderList(tickets) {
-  const el = document.getElementById('incident-list');
-  if (!el) return;
-  if (!tickets?.length) { el.innerHTML = '<div class="empty-msg">No incidents</div>'; return; }
-  const sc = {critical:'#ff1a4d',high:'var(--red)',medium:'var(--amber)',low:'var(--blue)'};
-  const stc = {open:'var(--red)',investigating:'var(--amber)',resolved:'var(--green)',closed:'var(--text3)'};
-  el.innerHTML = tickets.map(t => `
-    <div style="display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--border);font-size:12px">
-      <span style="font-family:'Geist Mono',monospace;color:var(--purple);min-width:75px;font-weight:600">${t.id}</span>
-      <span style="color:${sc[t.severity]||'var(--text3)'};min-width:60px;font-weight:700;text-transform:uppercase;font-size:10px">${t.severity}</span>
-      <span style="color:var(--text);flex:1;font-weight:500">${t.title}</span>
-      <span style="color:${stc[t.status]||'var(--text3)'};font-size:11px;font-weight:600;text-transform:uppercase;min-width:90px">${t.status}</span>
-      <span style="color:var(--text3);font-size:10px;min-width:70px">${t.created_at?.slice(0,10)}</span>
-      <select onchange="sendCmd({cmd:'incident_update',id:'${t.id}',status:this.value})" style="padding:4px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-size:11px">
-        <option value="open" ${t.status==='open'?'selected':''}>Open</option>
-        <option value="investigating" ${t.status==='investigating'?'selected':''}>Investigating</option>
-        <option value="resolved" ${t.status==='resolved'?'selected':''}>Resolved</option>
-        <option value="closed" ${t.status==='closed'?'selected':''}>Closed</option>
-      </select>
-      <button class="btn" onclick="if(confirm('Delete?'))sendCmd({cmd:'incident_delete',id:'${t.id}'})" style="font-size:11px;padding:4px 8px;color:var(--red)">✕</button>
-    </div>`).join('');
-}
-
-// ── Training & Awareness ──────────────────────────────────────────────────
-let _trainingCurrentModule = null;
-
-function trainingLoadModules() { sendCmd({cmd:'training_get_modules'}); sendCmd({cmd:'training_get_scores'}); }
-
-function trainingRenderModules(modules) {
-  const el = document.getElementById('training-modules-list');
-  if (!el) return;
-  const dc = {beginner:'var(--green)',intermediate:'var(--amber)',advanced:'var(--red)'};
-  el.innerHTML = modules.map(m => {
-    const score = TRAINING_SCORES_CACHE[m.id];
-    const passed = score?.passed;
-    return `
-    <div class="card" style="padding:20px;margin-bottom:12px;border-left:3px solid ${passed ? 'var(--green)' : 'var(--border2)'}">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <h3 style="margin:0;font-size:15px">${m.title}</h3>
-          <p style="font-size:12px;color:var(--text2);margin:6px 0">${m.description}</p>
-          <div style="display:flex;gap:10px;font-size:11px;color:var(--text3)">
-            <span style="color:${dc[m.difficulty]||'var(--text3)'}">${m.difficulty}</span>
-            <span>⏱ ${m.duration_min} min</span>
-            <span>${m.questions.length} questions</span>
-          </div>
-        </div>
-        <div style="text-align:center">
-          ${score ? `<div style="font-size:22px;font-weight:700;color:${passed?'var(--green)':'var(--red)'}">${score.score}%</div><div style="font-size:10px;color:var(--text3)">${passed?'PASSED':'FAILED'}</div>` : ''}
-          <button class="btn" onclick="trainingStartQuiz('${m.id}')" style="margin-top:8px;padding:8px 16px;font-weight:600">${score ? 'Retry' : 'Start'}</button>
-        </div>
-      </div>
-    </div>`;
+// ── Activité système — Npcap consumer detector (Task B 2026-04-30) ────────
+function renderNpcapConsumers(consumers) {
+  const list = document.getElementById('dash-npcap-list');
+  const cnt = document.getElementById('dash-npcap-count');
+  if (cnt) cnt.textContent = consumers.length || 0;
+  if (!list) return;
+  if (!consumers || !consumers.length) {
+    list.innerHTML = '<div style="font-size:11px;color:var(--text3);padding:8px">Aucun process touchant Npcap</div>';
+    return;
+  }
+  list.innerHTML = consumers.map(c => {
+    const flag = c.whitelisted ? '<span style="color:var(--green)">trusted</span>'
+              : (c.relaunches_in_window > 3 ? '<span style="color:var(--red)">ROGUE</span>' : '<span style="color:var(--text3)">' + c.relaunches_in_window + ' launches</span>');
+    const exeShort = (c.exe || '').split(/[\\/]/).pop();
+    return '<div style="padding:4px 8px;background:var(--bg4);border-radius:4px;margin-bottom:3px;display:flex;justify-content:space-between;font-size:11px"><span title="' + esc(c.exe) + '">' + esc(exeShort) + '</span>' + flag + '</div>';
   }).join('');
 }
 
-let TRAINING_SCORES_CACHE = {};
-
-function trainingStartQuiz(moduleId) {
-  _trainingCurrentModule = moduleId;
-  sendCmd({cmd:'training_get_modules'});
-  document.getElementById('training-modules-list').style.display = 'none';
-  document.getElementById('training-dashboard').style.display = 'none';
-  document.getElementById('training-quiz-panel').style.display = '';
-  document.getElementById('quiz-results').style.display = 'none';
-}
-
-function trainingRenderQuiz(modules) {
-  if (!_trainingCurrentModule) return;
-  const m = modules.find(x => x.id === _trainingCurrentModule);
-  if (!m) return;
-  document.getElementById('quiz-title').textContent = m.title;
-  document.getElementById('quiz-questions').innerHTML = m.questions.map((q, i) => `
-    <div style="margin-bottom:20px;padding:16px;background:var(--bg3);border-radius:8px">
-      <div style="font-size:14px;font-weight:500;color:var(--text);margin-bottom:10px">${i+1}. ${q.q}</div>
-      ${q.options.map((o, j) => `
-        <label style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text2);margin:4px 0;background:var(--bg4)">
-          <input type="radio" name="q${i}" value="${j}" style="accent-color:var(--purple)"> ${o}
-        </label>`).join('')}
-    </div>`).join('');
-}
-
-function trainingSubmit() {
-  if (!_trainingCurrentModule) return;
-  const answers = {};
-  document.querySelectorAll('#quiz-questions input[type=radio]:checked').forEach(r => {
-    const name = r.name;
-    const idx = name.replace('q', '');
-    answers[idx] = r.value;
-  });
-  sendCmd({cmd:'training_submit_quiz', module_id: _trainingCurrentModule, answers});
-}
-
-function trainingRenderResult(data) {
-  const el = document.getElementById('quiz-results');
-  if (!el) return;
-  el.style.display = '';
-  el.innerHTML = `
-    <div style="text-align:center;padding:20px;background:var(--bg3);border-radius:8px;border:2px solid ${data.passed?'var(--green)':'var(--red)'}">
-      <div style="font-size:48px;font-weight:700;color:${data.passed?'var(--green)':'var(--red)'}">${data.score}%</div>
-      <div style="font-size:16px;font-weight:600;color:var(--text);margin:8px 0">${data.passed ? '✅ PASSED!' : '❌ FAILED — Try again'}</div>
-      <div style="font-size:13px;color:var(--text2)">${data.correct}/${data.total} correct answers</div>
-    </div>
-    <div style="margin-top:16px">
-      ${(data.details||[]).map((d,i) => `
-        <div style="display:flex;align-items:center;gap:8px;padding:8px;font-size:12px;border-bottom:1px solid var(--border)">
-          <span style="font-size:14px">${d.correct ? '✅' : '❌'}</span>
-          <span style="color:var(--text);flex:1">${d.question}</span>
-        </div>`).join('')}
-    </div>`;
-  TRAINING_SCORES_CACHE[data.module_id] = {score: data.score, passed: data.passed};
-}
-
-function trainingBack() {
-  _trainingCurrentModule = null;
-  document.getElementById('training-modules-list').style.display = '';
-  document.getElementById('training-dashboard').style.display = '';
-  document.getElementById('training-quiz-panel').style.display = 'none';
-  trainingLoadModules();
-}
-
-// ── NAC ───────────────────────────────────────────────────────────────────
-function nacRefresh() { sendCmd({cmd:'nac_get_devices'}); }
-
-function nacSetPolicy() {
-  const default_action = document.getElementById('nac-default-action')?.value || 'allow';
-  const mac_filter = document.getElementById('nac-mac-filter')?.checked || false;
-  sendCmd({cmd:'nac_set_policy', default_action, mac_filter});
-}
-
-function nacRenderDevices(data) {
-  const renderList = (devices, elId, type) => {
-    const el = document.getElementById(elId);
-    if (!el) return;
-    if (!devices?.length) { el.innerHTML = '<div class="empty-msg">Empty</div>'; return; }
-    el.innerHTML = devices.map(d => `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px;border-bottom:1px solid var(--border);font-size:12px">
-        <span style="font-family:'Geist Mono',monospace;color:var(--text);min-width:120px">${d.ip||''}</span>
-        <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:130px">${d.mac||''}</span>
-        <span style="color:var(--text2);flex:1">${d.name||''}</span>
-        <span style="color:var(--text3);font-size:10px">${(d.approved_at||d.denied_at||d.first_seen||'').slice(0,16)}</span>
-        ${type === 'pending' ? `
-          <button class="btn" onclick="sendCmd({cmd:'nac_approve_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--green)">✓ Approve</button>
-          <button class="btn" onclick="sendCmd({cmd:'nac_deny_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--red)">✕ Deny</button>
-        ` : type === 'approved' ? `
-          <button class="btn" onclick="sendCmd({cmd:'nac_deny_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--red)">Revoke</button>
-        ` : `
-          <button class="btn" onclick="sendCmd({cmd:'nac_approve_device',ip:'${d.ip}',mac:'${d.mac}'})" style="font-size:11px;padding:4px 10px;color:var(--green)">Approve</button>
-        `}
-      </div>`).join('');
-  };
-  renderList(data.approved, 'nac-approved-list', 'approved');
-  renderList(data.pending, 'nac-pending-list', 'pending');
-  renderList(data.denied, 'nac-denied-list', 'denied');
-}
-
-// ── IAM ───────────────────────────────────────────────────────────────────
-function iamCreateUser() {
-  const username = document.getElementById('iam-username')?.value?.trim();
-  const password = document.getElementById('iam-password')?.value;
-  const role = document.getElementById('iam-role')?.value || 'viewer';
-  if (!username || !password) { alert('Username and password required'); return; }
-  sendCmd({cmd:'iam_create_user', username, password, role});
-  document.getElementById('iam-username').value = '';
-  document.getElementById('iam-password').value = '';
-}
-
-function iamRefresh() { sendCmd({cmd:'iam_list_users'}); }
-
-function iamRenderUsers(users) {
-  const el = document.getElementById('iam-users-list');
-  if (!el) return;
-  if (!users?.length) { el.innerHTML = '<div class="empty-msg">No users created</div>'; return; }
-  const rc = {admin:'var(--red)',analyst:'var(--amber)',viewer:'var(--blue)'};
-  el.innerHTML = users.map(u => `
-    <div style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border);font-size:12px">
-      <span style="font-size:16px">👤</span>
-      <span style="color:var(--text);min-width:120px;font-weight:600">${u.username}</span>
-      <span style="color:${rc[u.role]||'var(--text3)'};min-width:70px;font-weight:600;text-transform:uppercase;font-size:10px">${u.role}</span>
-      <span style="color:var(--text3);flex:1">${u.email||''}</span>
-      <span style="font-size:11px;color:${u.mfa_enabled?'var(--green)':'var(--text3)'}">${u.mfa_enabled ? '🔐 MFA ON' : 'MFA OFF'}</span>
-      <button class="btn" onclick="sendCmd({cmd:'iam_toggle_mfa',username:'${u.username}'})" style="font-size:11px;padding:4px 10px">${u.mfa_enabled ? 'Disable MFA' : 'Enable MFA'}</button>
-      <select onchange="sendCmd({cmd:'iam_update_role',username:'${u.username}',role:this.value})" style="padding:4px;background:var(--bg4);border:1px solid var(--border2);border-radius:4px;color:var(--text);font-size:11px">
-        <option value="viewer" ${u.role==='viewer'?'selected':''}>Viewer</option>
-        <option value="analyst" ${u.role==='analyst'?'selected':''}>Analyst</option>
-        <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
-      </select>
-      <button class="btn" onclick="if(confirm('Delete user?'))sendCmd({cmd:'iam_delete_user',username:'${u.username}'})" style="font-size:11px;padding:4px 8px;color:var(--red)">✕</button>
-    </div>`).join('');
-}
-
-const TABS = ['dashboard','packets','threats','blocked','rules','reports','config','honeypot','dns','lan','alerts','blacklist','ratelimit','fingerprint','users','audit','anomaly','threatintel','response','forensics','wireguard','logs','playbooks','support','vulnscan','backup','incidents','training','nac','iam'];
+const TABS = ['dashboard','packets','threats','blocked','rules','reports','config','honeypot','dns','lan','alerts','blacklist','ratelimit','fingerprint','users','audit','anomaly','threatintel','response','forensics','wireguard','logs','playbooks','support','backup'];
 
 const TAB_TITLES_I18N = {
-  fr: {dashboard:'Tableau de bord',packets:'Paquets live',threats:'Menaces',blocked:'IPs bloquées',rules:'Règles pare-feu',reports:'Rapports',config:'Configuration',honeypot:'Honeypot — Piège à attaquants',dns:'DNS Blackhole',lan:'Scan Réseau LAN',alerts:'Alertes — Email & Notifications',blacklist:'Blacklist communautaire',ratelimit:'Rate Limiting dynamique',fingerprint:'Fingerprinting OS',users:'Gestion des utilisateurs',audit:"Log d'audit",anomaly:'Détection d\'anomalies',threatintel:'Renseignement sur les menaces',response:'Réponse active',forensics:'Rapports forensiques',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Conseils & Support',vulnscan:'Scanner de vulnérabilités',backup:'Backup & Recovery',incidents:'Incidents & Tickets',training:'Formation & Sensibilisation',nac:'Contrôle d\'accès réseau (NAC)',iam:'Gestion des identités (IAM)'},
-  en: {dashboard:'Dashboard',packets:'Live Packets',threats:'Threats',blocked:'Blocked IPs',rules:'Firewall Rules',reports:'Reports',config:'Configuration',honeypot:'Honeypot — Attacker Trap',dns:'DNS Blackhole',lan:'LAN Network Scan',alerts:'Alerts — Email & Notifications',blacklist:'Community Blacklist',ratelimit:'Dynamic Rate Limiting',fingerprint:'OS Fingerprinting',users:'User Management',audit:'Audit Log',anomaly:'Anomaly Detection',threatintel:'Threat Intelligence',response:'Active Response',forensics:'Forensic Reports',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tips & Support',vulnscan:'Vulnerability Scanner',backup:'Backup & Recovery',incidents:'Incidents & Tickets',training:'Training & Awareness',nac:'Network Access Control (NAC)',iam:'Identity & Access (IAM)'},
+  fr: {dashboard:'Tableau de bord',packets:'Paquets live',threats:'Menaces',blocked:'IPs bloquées',rules:'Règles pare-feu',reports:'Rapports',config:'Configuration',honeypot:'Honeypot — Piège à attaquants',dns:'DNS Blackhole',lan:'Scan Réseau LAN',alerts:'Alertes — Email & Notifications',blacklist:'Blacklist communautaire',ratelimit:'Rate Limiting dynamique',fingerprint:'Fingerprinting OS',users:'Gestion des utilisateurs',audit:"Log d'audit",anomaly:'Détection d\'anomalies',threatintel:'Renseignement sur les menaces',response:'Réponse active',forensics:'Rapports forensiques',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Conseils & Support',backup:'Backup & Recovery'},
+  en: {dashboard:'Dashboard',packets:'Live Packets',threats:'Threats',blocked:'Blocked IPs',rules:'Firewall Rules',reports:'Reports',config:'Configuration',honeypot:'Honeypot — Attacker Trap',dns:'DNS Blackhole',lan:'LAN Network Scan',alerts:'Alerts — Email & Notifications',blacklist:'Community Blacklist',ratelimit:'Dynamic Rate Limiting',fingerprint:'OS Fingerprinting',users:'User Management',audit:'Audit Log',anomaly:'Anomaly Detection',threatintel:'Threat Intelligence',response:'Active Response',forensics:'Forensic Reports',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tips & Support',backup:'Backup & Recovery'},
   es: {dashboard:'Panel de control',packets:'Paquetes en vivo',threats:'Amenazas',blocked:'IPs bloqueadas',rules:'Reglas de cortafuegos',reports:'Informes',config:'Configuración',honeypot:'Honeypot — Trampa para atacantes',dns:'DNS Blackhole',lan:'Escaneo de red LAN',alerts:'Alertas — Correo y Notificaciones',blacklist:'Lista negra comunitaria',ratelimit:'Limitación dinámica de tasa',fingerprint:'Identificación de SO',users:'Gestión de usuarios',audit:'Registro de auditoría',anomaly:'Detección de anomalías',threatintel:'Inteligencia de amenazas',response:'Respuesta activa',forensics:'Informes forenses',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Consejos & Soporte'},
   de: {dashboard:'Dashboard',packets:'Live-Pakete',threats:'Bedrohungen',blocked:'Blockierte IPs',rules:'Firewall-Regeln',reports:'Berichte',config:'Konfiguration',honeypot:'Honeypot — Angreifer-Falle',dns:'DNS Blackhole',lan:'LAN-Netzwerk-Scan',alerts:'Warnungen — E-Mail & Benachrichtigungen',blacklist:'Community-Blacklist',ratelimit:'Dynamische Rate Limiting',fingerprint:'Betriebssystem-Fingerabdruck',users:'Benutzerverwaltung',audit:'Audit-Protokoll',anomaly:'Anomalie-Erkennung',threatintel:'Bedrohungsintelligenz',response:'Aktive Antwort',forensics:'Forensische Berichte',wireguard:'WireGuard VPN',logs:'Logs',playbooks:'Playbooks',support:'Tipps & Support'},
 };
@@ -4097,13 +3795,101 @@ function showTab(id, navEl) {
   }
   if (id === 'users') loadUsers();
   if (id === 'audit') loadAudit();
-  // v4.0 — Auto-load new module data
-  if (id === 'vulnscan') sendCmd({cmd:'vuln_get_history'});
+  // v4.0 — Backup auto-load (rest trimmed 2026-04-30)
   if (id === 'backup') backupRefresh();
-  if (id === 'incidents') incidentList('');
-  if (id === 'training') trainingLoadModules();
-  if (id === 'nac') nacRefresh();
-  if (id === 'iam') iamRefresh();
+  // 2026-04-30 — License status load
+  if (id === 'support') sendCmd({cmd:'license_status'});
+}
+
+// ── License multi-PC manager (2026-04-30) ──────────────────────────────────
+function renderLicenseStatus(msg) {
+  const sumEl = document.getElementById('license-summary');
+  const devEl = document.getElementById('license-devices');
+  if (!sumEl || !devEl) return;
+  if (!msg.available) {
+    sumEl.innerHTML = '<div style="color:var(--text3)">Licence: '
+      + esc(msg.error || 'indisponible') + '</div>';
+    devEl.innerHTML = '';
+    return;
+  }
+  const fmtDate = s => {
+    if (!s) return '—';
+    try { return new Date(s).toLocaleDateString(); } catch (e) { return s; }
+  };
+  const tier  = (msg.tier || '—').toUpperCase();
+  const plan  = (msg.plan || '—').toUpperCase();
+  const used  = msg.seats_used || 0;
+  const max   = msg.max_seats || 0;
+  const pct   = max > 0 ? Math.round(100 * used / max) : 0;
+  const expColor = (() => {
+    if (!msg.expires_at) return 'var(--text2)';
+    const d = (new Date(msg.expires_at) - Date.now()) / 86400000;
+    if (d < 0) return 'var(--red)';
+    if (d < 30) return '#ffb347';
+    return 'var(--green)';
+  })();
+  const seatBar = max > 0
+    ? `<div style="margin:6px 0;background:var(--bg4);border-radius:4px;height:8px;overflow:hidden">
+         <div style="background:${used>=max?'var(--red)':'#5b8cff'};height:100%;width:${pct}%"></div>
+       </div>`
+    : '';
+  let html = '';
+  if (msg.trial) {
+    html += `<div>Mode: <b>Essai</b> — ${msg.trial_days_left} jour(s) restant(s)</div>`;
+  } else if (msg.expired) {
+    html += `<div style="color:var(--red)">Essai expire — passez a NetGuard AI</div>`;
+  } else {
+    html += `<div>Tier: <b>${tier}</b> | Plan: <b>${plan}</b></div>`;
+    html += `<div>Sieges: <b>${used} / ${max}</b> ${seatBar}</div>`;
+    html += `<div>Expire le: <span style="color:${expColor}"><b>${fmtDate(msg.expires_at)}</b></span></div>`;
+    if (msg.license_id) {
+      html += `<div style="font-size:11px;color:var(--text3);margin-top:4px">License ID: ${esc(msg.license_id)}</div>`;
+    }
+  }
+  if (msg.seat_exhausted && msg.seat_error) {
+    html += `<div style="margin-top:8px;padding:8px;background:#7a1818;border-radius:6px;color:#fff">
+              ⚠ ${esc(msg.seat_error)}</div>`;
+  }
+  sumEl.innerHTML = html;
+
+  const devices = Array.isArray(msg.devices) ? msg.devices : [];
+  if (!devices.length) {
+    devEl.innerHTML = '<div style="font-size:12px;color:var(--text3);margin-top:8px">Aucun appareil active.</div>';
+    return;
+  }
+  let dev = '<div style="font-weight:600;margin-bottom:6px">Appareils actives</div>';
+  dev += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+  dev += '<tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border)">'
+       + '<th style="padding:6px 4px">Hostname</th>'
+       + '<th style="padding:6px 4px">Empreinte</th>'
+       + '<th style="padding:6px 4px">Activee</th>'
+       + '<th style="padding:6px 4px">Vue</th>'
+       + '<th style="padding:6px 4px">Action</th></tr>';
+  devices.forEach(d => {
+    const safe = (d.fingerprint || '').replace(/[^0-9a-fA-F]/g,'').slice(0, 64);
+    const me = d.this_machine
+      ? '<span style="color:#5b8cff;font-weight:600">(cette machine)</span>' : '';
+    dev += `<tr style="border-bottom:1px solid var(--border)">
+              <td style="padding:6px 4px">${esc(d.hostname||'?')} ${me}</td>
+              <td style="padding:6px 4px;font-family:monospace">${d.fingerprint_short||''}</td>
+              <td style="padding:6px 4px">${fmtDate(d.activated_at)}</td>
+              <td style="padding:6px 4px">${fmtDate(d.last_seen)}</td>
+              <td style="padding:6px 4px">
+                <button class="btn" style="padding:4px 10px;font-size:11px;background:var(--red);color:#fff"
+                  onclick="licenseDeactivateDevice('${safe}', ${d.this_machine?1:0})">Deactivate</button>
+              </td>
+            </tr>`;
+  });
+  dev += '</table>';
+  devEl.innerHTML = dev;
+}
+
+function licenseDeactivateDevice(fingerprint, isMe) {
+  const msg = isMe
+    ? "Desactiver CETTE machine ? L'application repassera en mode trial/free."
+    : "Liberer la place de cet appareil ?";
+  if (!confirm(msg)) return;
+  sendCmd({cmd: 'license_deactivate_device', fingerprint: fingerprint});
 }
 
 // ── Lang ───────────────────────────────────────────────────────────────────
@@ -4159,6 +3945,7 @@ function _accumulateThreats(threats) {
     const id = t.id || (t.timestamp + t.src_ip);
     if (_lastThreatIds.has(id)) return; // déjà compté
     _lastThreatIds.add(id);
+    if (_lastThreatIds.size > 5000) _lastThreatIds.clear();   // bounded over long sessions
     const cat = _categorize(t.type);
     if (!_threatAccum[cat]) _threatAccum[cat] = { count: 0, ips: [] };
     _threatAccum[cat].count++;
@@ -4216,8 +4003,8 @@ function renderTimeline(events) {
     <div style="display:flex;align-items:center;gap:8px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:11px">
       <span style="color:var(--text3);font-family:'Geist Mono',monospace;min-width:52px">${e.ts||''}</span>
       <span style="width:6px;height:6px;border-radius:50%;background:${sevColors[e.severity]||'#5a5a72'};flex-shrink:0"></span>
-      <span style="color:var(--text2);min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${e.type||''}</span>
-      <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:100px">${e.ip||''}</span>
+      <span style="color:var(--text2);min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.type||'')}</span>
+      <span style="font-family:'Geist Mono',monospace;color:var(--text3);min-width:100px">${esc(e.ip||'')}</span>
       <span style="font-size:13px">${GEO_FLAGS[e.country]||''}</span>
     </div>`).join('') || '<div class="empty-msg">Aucun événement</div>';
 }
@@ -4265,6 +4052,7 @@ const T = {
   nav_map:         {fr:'Carte mondiale',en:'World Map',es:'Mapa mundial',de:'Weltkarte'},
   nav_network:     {fr:'Vitrine Réseau',en:'Network Showcase',es:'Escaparate de Red',de:'Netzwerk-Vitrine'},
   nav_service:     {fr:'Service Manager',en:'Service Manager',es:'Gestor de Servicios',de:'Service-Manager'},
+  nav_ai:          {fr:'AI Assistant',en:'AI Assistant',es:'Asistente IA',de:'KI-Assistent'},
   nav_history:     {fr:'Bilan & Historique',en:'Summary & History',es:'Resumen e Historial',de:'Zusammenfassung & Verlauf'},
   nav_analyze:     {fr:'Analyse de données',en:'Data Analysis',es:'Análisis de datos',de:'Datenanalyse'},
   nav_audit:       {fr:"Log d'audit",en:'Audit Log',es:'Registro de auditoría',de:'Audit-Protokoll'},
@@ -4605,12 +4393,12 @@ function renderLanDevices(devices) {
   el.innerHTML = `<table>
     <thead><tr><th>IP</th><th>Hostname</th><th>MAC</th><th>Fabricant</th><th>Statut</th><th>Action</th></tr></thead>
     <tbody>${devices.map(d => `<tr>
-      <td style="color:var(--blue)">${d.ip}</td>
-      <td style="color:var(--text2)">${d.hostname||'—'}</td>
-      <td style="color:var(--text3)">${d.mac||'—'}</td>
-      <td style="color:var(--text2)">${d.vendor||'—'}</td>
+      <td style="color:var(--blue)">${esc(d.ip)}</td>
+      <td style="color:var(--text2)">${esc(d.hostname||'—')}</td>
+      <td style="color:var(--text3)">${esc(d.mac||'—')}</td>
+      <td style="color:var(--text2)">${esc(d.vendor||'—')}</td>
       <td><span style="color:var(--green);font-size:11px">● En ligne</span></td>
-      <td><button class="btn btn-red" style="padding:2px 8px;font-size:10px" onclick="sendCmd({cmd:'block_ip',ip:'${d.ip}',reason:'Blocage LAN manuel'})">Bloquer</button></td>
+      <td><button class="btn btn-red" style="padding:2px 8px;font-size:10px" onclick="sendCmd({cmd:'block_ip',ip:'${esc(d.ip)}',reason:'Blocage LAN manuel'})">Bloquer</button></td>
     </tr>`).join('')}</tbody>
   </table>`;
 }
@@ -4687,7 +4475,7 @@ async function changePassword() {
 
 async function loadUsers() {
   try {
-    const r = await fetch('http://localhost:8080/auth/users');
+    const r = await authFetch('/auth/users');
     const users = await r.json();
     const el = document.getElementById('users-list');
     const cnt = document.getElementById('users-count');
@@ -4724,7 +4512,7 @@ async function createUser() {
   if (!username || !password) { showToast('Remplis tous les champs', 'var(--amber)'); return; }
 
   try {
-    const r = await fetch('http://localhost:8080/auth/users', {
+    const r = await authFetch('/auth/users', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username, name, password, role})
     });
@@ -4746,7 +4534,7 @@ async function createUser() {
 async function deleteUser(username) {
   if (!confirm(`Supprimer l'utilisateur "${username}" ?`)) return;
   try {
-    const r = await fetch('http://localhost:8080/auth/users/delete', {
+    const r = await authFetch('/auth/users/delete', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({username})
     });
@@ -4778,7 +4566,7 @@ async function checkAuth() {
   // Vérifier le token si présent, mais ne pas bloquer si backend absent
   if (!_token) return;
   try {
-    const r = await fetch('http://localhost:8080/auth/verify', {
+    const r = await authFetch('/auth/verify', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({token: _token}),
       signal: AbortSignal.timeout(2000)
@@ -4792,8 +4580,20 @@ async function checkAuth() {
   }
 }
 
+function openAI() {
+  const lang = (currentLang && ['fr','en','es'].includes(currentLang)) ? currentLang : 'fr';
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_ai_window) {
+    window.pywebview.api.open_ai_window(lang).catch(err => {
+      console.warn('open_ai_window failed, fallback to direct URL', err);
+      window.open('http://127.0.0.1:8770/?lang=' + lang, '_blank');
+    });
+  } else {
+    window.open('http://127.0.0.1:8770/?lang=' + lang, '_blank');
+  }
+}
+
 function logout() {
-  fetch(`http://localhost:8080/auth/logout`, {
+  authFetch(`/auth/logout`, {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({token: _token})
   }).finally(() => {
@@ -4977,12 +4777,12 @@ function toggleAutostart() {
   const btn   = document.getElementById('autostart-btn');
   const active = dot.style.background === 'var(--green)' || dot.style.background === 'rgb(61, 255, 180)';
   if (active) {
-    const cmd = 'Unregister-ScheduledTask -TaskName "NetGuardPro" -Confirm:$false; Remove-Item "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\NetGuardProTray.vbs" -ErrorAction SilentlyContinue';
+    const cmd = 'Unregister-ScheduledTask -TaskName "NetGuardAI" -Confirm:$false; Remove-Item "$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\NetGuardProTray.vbs" -ErrorAction SilentlyContinue';
     navigator.clipboard.writeText(cmd).then(() => showToast('⚠ Commande copiée — colle dans PowerShell Admin', 'var(--amber)'));
     dot.style.background = 'var(--red)'; label.textContent = 'Démarrage désactivé';
     btn.style.color = 'var(--red)';
   } else {
-    navigator.clipboard.writeText('Start-ScheduledTask -TaskName "NetGuardPro"').then(() => showToast('✓ Commande copiée', 'var(--green)'));
+    navigator.clipboard.writeText('Start-ScheduledTask -TaskName "NetGuardAI"').then(() => showToast('✓ Commande copiée', 'var(--green)'));
     dot.style.background = 'var(--green)'; label.textContent = 'Démarrage auto';
     btn.style.color = '';
   }
@@ -5033,7 +4833,7 @@ function renderEntropyAlerts(alerts) {
   if (!el) return;
   if (!alerts || !alerts.length) { el.innerHTML = '<div style="color:var(--text3);padding:12px">No entropy alerts</div>'; return; }
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>IP</th><th>Type</th><th>Entropy</th><th>Detail</th></tr>' +
-    alerts.map(a => `<tr><td>${a.ts}</td><td>${a.ip}</td><td>${a.type}</td><td style="color:var(--red)"><b>${a.entropy}</b></td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${a.domain||('port:'+a.port)}</td></tr>`).join('') + '</table>';
+    alerts.map(a => `<tr><td>${esc(a.ts)}</td><td>${esc(a.ip)}</td><td>${esc(a.type)}</td><td style="color:var(--red)"><b>${a.entropy}</b></td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(a.domain||('port:'+a.port))}</td></tr>`).join('') + '</table>';
 }
 
 function renderIntelHits(hits) {
@@ -5041,7 +4841,7 @@ function renderIntelHits(hits) {
   if (!el) return;
   if (!hits || !hits.length) { el.innerHTML = '<div style="color:var(--text3);padding:12px">No threat intel hits</div>'; return; }
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>IP</th><th>Source</th><th>Detail</th><th>Sev</th></tr>' +
-    hits.map(h => `<tr><td>${h.ts}</td><td>${h.ip}</td><td><span class="badge badge-blue">${h.source}</span></td><td style="font-size:12px">${h.detail}</td><td><span class="badge badge-${h.severity==='critical'?'red':h.severity==='high'?'red':'amber'}">${h.severity}</span></td></tr>`).join('') + '</table>';
+    hits.map(h => `<tr><td>${esc(h.ts)}</td><td>${esc(h.ip)}</td><td><span class="badge badge-blue">${esc(h.source)}</span></td><td style="font-size:12px">${esc(h.detail)}</td><td><span class="badge badge-${h.severity==='critical'?'red':h.severity==='high'?'red':'amber'}">${esc(h.severity)}</span></td></tr>`).join('') + '</table>';
 }
 
 function renderIsolationList(lanDevices, isolatedDevices) {
@@ -5051,10 +4851,10 @@ function renderIsolationList(lanDevices, isolatedDevices) {
   el.innerHTML = lanDevices.map(d => {
     const isolated = isolatedDevices && isolatedDevices.includes(d.ip);
     return `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--bg4)">
-      <div><b>${d.ip}</b> <span style="color:var(--text3);font-size:11px">${d.hostname||d.mac||''}</span></div>
+      <div><b>${esc(d.ip)}</b> <span style="color:var(--text3);font-size:11px">${esc(d.hostname||d.mac||'')}</span></div>
       ${isolated
-        ? `<button class="btn btn-sm" style="background:var(--green)" onclick="sendCmd({cmd:'unisolate_device',ip:'${d.ip}'})">\uD83D\uDD13 Lib\u00e9rer</button>`
-        : `<button class="btn btn-sm" style="background:var(--red)" onclick="sendCmd({cmd:'isolate_device',ip:'${d.ip}'})">\uD83D\uDD12 Isoler</button>`
+        ? `<button class="btn btn-sm" style="background:var(--green)" onclick="sendCmd({cmd:'unisolate_device',ip:'${esc(d.ip)}'})">\uD83D\uDD13 Lib\u00e9rer</button>`
+        : `<button class="btn btn-sm" style="background:var(--red)" onclick="sendCmd({cmd:'isolate_device',ip:'${esc(d.ip)}'})">\uD83D\uDD12 Isoler</button>`
       }
     </div>`;
   }).join('');
@@ -5097,6 +4897,157 @@ function saveApiKeys() {
   });
   showToast('API keys saved', '#00c853');
 }
+
+// ═══ Secret Vault — UI helpers ════════════════════════════════════════════
+
+function vaultMsg(msg, okText) {
+  const el = document.getElementById('vault-msg');
+  if (!el) return;
+  if (msg.ok) {
+    el.style.color = 'var(--green)';
+    el.textContent = okText;
+  } else {
+    el.style.color = 'var(--red)';
+    el.textContent = (msg.error || 'failed') + (msg.detail ? ' — ' + msg.detail : '');
+  }
+}
+
+function renderVaultStatus(msg) {
+  const badge = document.getElementById('vault-badge');
+  const detail = document.getElementById('vault-detail');
+  const deps = document.getElementById('vault-deps-warn');
+  const list = document.getElementById('vault-secrets-list');
+  const btnInit = document.getElementById('btn-vault-init');
+  const btnUnlock = document.getElementById('btn-vault-unlock');
+  const btnLock = document.getElementById('btn-vault-lock');
+  const btnMigrate = document.getElementById('btn-vault-migrate');
+  const btnChange = document.getElementById('btn-vault-change-master');
+  if (!badge || !detail) return;
+
+  // Hide everything by default; we'll re-enable per-state below.
+  btnInit.style.display = 'none';
+  btnUnlock.style.display = 'none';
+  btnLock.style.display = 'none';
+  btnMigrate.style.display = 'none';
+  btnChange.style.display = 'none';
+  deps.style.display = 'none';
+  list.style.display = 'none';
+
+  if (!msg.available) {
+    badge.textContent = 'Unavailable';
+    badge.className = 'badge badge-red';
+    if (msg.deps_missing && msg.deps_missing.length) {
+      deps.style.display = 'block';
+      deps.textContent = 'Missing dependencies: ' + msg.deps_missing.map(esc).join(', ') +
+        '. Install with: pip install ' + msg.deps_missing.map(esc).join(' ');
+      detail.textContent = 'Encryption disabled — secrets stored as plaintext.';
+    } else {
+      detail.textContent = 'Vault module unreachable.';
+    }
+    return;
+  }
+
+  if (!msg.initialized) {
+    badge.textContent = 'Not initialized';
+    badge.className = 'badge badge-amber';
+    detail.textContent = 'Choose a master password and create the vault.';
+    btnInit.style.display = 'inline-block';
+    if (msg.plaintext_keys && msg.plaintext_keys.length) {
+      btnMigrate.style.display = 'inline-block';
+      btnMigrate.title = 'Will move ' + msg.plaintext_keys.length + ' plaintext secret(s) into the vault on creation';
+    }
+    return;
+  }
+
+  if (!msg.unlocked) {
+    badge.textContent = 'Locked';
+    badge.className = 'badge badge-amber';
+    detail.textContent = 'Unlock to read or write secrets.';
+    btnUnlock.style.display = 'inline-block';
+    return;
+  }
+
+  badge.textContent = 'Unlocked';
+  badge.className = 'badge badge-green';
+  detail.textContent = (msg.secret_names && msg.secret_names.length || 0) + ' secret(s) stored';
+  btnLock.style.display = 'inline-block';
+  btnChange.style.display = 'inline-block';
+
+  if (msg.plaintext_keys && msg.plaintext_keys.length) {
+    btnMigrate.style.display = 'inline-block';
+    btnMigrate.title = 'Move ' + msg.plaintext_keys.length + ' plaintext key(s) from settings into vault';
+  }
+
+  if (msg.secret_names && msg.secret_names.length) {
+    list.style.display = 'block';
+    list.innerHTML = '<div style="font-weight:600;margin-bottom:4px">Stored secrets (names only):</div>' +
+      msg.secret_names.map(n => '<div>✓ ' + esc(n) + '</div>').join('');
+  }
+}
+
+function vaultRefresh() {
+  sendCmd({ cmd: 'vault_status' });
+}
+
+function vaultInit() {
+  const m = prompt('Choose a master password (8+ characters).\nIf you forget this password, the secrets cannot be recovered.');
+  if (m == null) return;
+  if (m.length < 8) { showToast('Master password must be at least 8 characters', 'var(--red)'); return; }
+  const m2 = prompt('Confirm master password:');
+  if (m2 == null) return;
+  if (m !== m2) { showToast('Passwords do not match', 'var(--red)'); return; }
+  sendCmd({ cmd: 'vault_init', master: m });
+}
+
+function vaultUnlock() {
+  const m = prompt('Enter master password to unlock the vault:');
+  if (m == null) return;
+  sendCmd({ cmd: 'vault_unlock', master: m });
+}
+
+function vaultLock() {
+  sendCmd({ cmd: 'vault_lock' });
+}
+
+function vaultChangeMaster() {
+  const old = prompt('Current master password:');
+  if (old == null) return;
+  const nw = prompt('New master password (8+ characters):');
+  if (nw == null) return;
+  if (nw.length < 8) { showToast('New password must be at least 8 characters', 'var(--red)'); return; }
+  const nw2 = prompt('Confirm new master password:');
+  if (nw2 == null) return;
+  if (nw !== nw2) { showToast('Passwords do not match', 'var(--red)'); return; }
+  sendCmd({ cmd: 'vault_change_master', old: old, new: nw });
+}
+
+function vaultMigrate() {
+  // If vault not yet initialised, the backend will demand a master password.
+  // Best-effort: prompt only if user might need it. We send empty master and
+  // let the backend either (a) use the unlocked vault or (b) reject with a
+  // clear "master required" error that surfaces in vault-msg.
+  let master = '';
+  // Heuristic: ask the user if they want to set up a master now.
+  if (!confirm('Migrate plaintext API keys/webhooks from settings into the vault?\nIf the vault has not been initialized yet, you will be asked for a master password next.')) return;
+  // Send first; if "master required" comes back, prompt and retry.
+  sendCmd({ cmd: 'vault_migrate', master: master });
+  // Lightweight retry: if migration fails because master is required, prompt.
+  setTimeout(() => {
+    const el = document.getElementById('vault-msg');
+    if (el && el.textContent && el.textContent.toLowerCase().includes('master required')) {
+      const m = prompt('Choose a master password to create the vault (8+ characters):');
+      if (m && m.length >= 8) sendCmd({ cmd: 'vault_migrate', master: m });
+    }
+  }, 600);
+}
+
+// Auto-refresh vault status when the Threat Intel tab is opened.
+(function _wireVaultAutoRefresh() {
+  document.addEventListener('DOMContentLoaded', () => {
+    // Refresh once after auth is established (state arrives shortly after).
+    setTimeout(vaultRefresh, 1500);
+  });
+})();
 
 function lookupIOC() {
   const val = document.getElementById('ioc-lookup-input').value.trim();
@@ -5141,34 +5092,7 @@ function toggleAutoForensic() {
   sendCmd({ cmd: 'update_param', key: 'auto_forensic_enabled', value: document.getElementById('tgl-auto-forensic').checked });
 }
 
-// ═══ v3.0 — WireGuard VPN Functions ═════════════════════════════════════
-
-function renderWgPeers(peers) {
-  const el = document.getElementById('wg-peers-list');
-  if (!el) return;
-  if (!peers || !peers.length) {
-    el.innerHTML = '<div style="color:var(--text3);padding:12px">No VPN peers configured</div>';
-    return;
-  }
-  el.innerHTML = peers.map(p => `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px;margin-bottom:6px;background:var(--bg3);border-radius:8px">
-    <div>
-      <b>${p.name}</b>
-      <span style="color:var(--text3);font-size:11px;margin-left:8px">${p.address}</span>
-      ${p.last_handshake ? `<span style="color:var(--green);font-size:11px;margin-left:8px">🟢 ${p.last_handshake}</span>` : '<span style="color:var(--text3);font-size:11px;margin-left:8px">⚫ never</span>'}
-      ${p.transfer_info ? `<span style="font-size:11px;margin-left:8px;color:var(--text3)">📊 ${p.transfer_info}</span>` : ''}
-    </div>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-sm" onclick="showWgPeerConfig('${p.name}')" title="Show config">📋</button>
-      <button class="btn btn-sm" style="background:var(--red)" onclick="removeWgPeer('${p.name}')" title="Remove">🗑️</button>
-    </div>
-  </div>`).join('');
-}
-
-function toggleWg() {
-  const statusEl = document.getElementById('m-wg-status');
-  const isRunning = statusEl && statusEl.textContent.includes('Running');
-  sendCmd({ cmd: isRunning ? 'wg_stop' : 'wg_start' });
-}
+// ═══ v3.0 — WireGuard client config (display-only post-trim 2026-04-30) ══
 
 function saveWgConfig() {
   sendCmd({
@@ -5179,23 +5103,6 @@ function saveWgConfig() {
     dns: document.getElementById('wg-dns').value,
   });
   showToast('WireGuard config saved', '#00c853');
-}
-
-function addWgPeer() {
-  const name = document.getElementById('wg-peer-name').value.trim();
-  if (!name) { showToast('Enter a peer name', '#ff5252'); return; }
-  sendCmd({ cmd: 'wg_add_peer', name: name });
-  document.getElementById('wg-peer-name').value = '';
-}
-
-function removeWgPeer(name) {
-  if (confirm('Remove peer ' + name + '?')) {
-    sendCmd({ cmd: 'wg_remove_peer', name: name });
-  }
-}
-
-function showWgPeerConfig(name) {
-  sendCmd({ cmd: 'wg_get_config', name: name });
 }
 
 function copyWgConfig() {
@@ -5235,11 +5142,11 @@ function renderLogs(logs) {
   const catIcons = {threat:'⚠️',block:'🚫',anomaly:'🔬',intel:'🌐',webhook:'📡',system:'⚙️'};
   el.innerHTML = '<table class="tbl"><tr><th>Time</th><th>Cat</th><th>Sev</th><th>IP</th><th>Details</th></tr>' +
     logs.slice(0, 200).map(l => `<tr>
-      <td style="white-space:nowrap">${l.ts}</td>
-      <td>${catIcons[l.cat]||'📋'} ${l.cat}</td>
-      <td><span class="badge badge-${l.sev==='critical'||l.sev==='high'?'red':l.sev==='med'?'amber':'blue'}">${l.sev}</span></td>
-      <td style="font-family:monospace;font-size:11px">${l.ip}</td>
-      <td style="font-size:12px;max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${l.msg}</td>
+      <td style="white-space:nowrap">${esc(l.ts)}</td>
+      <td>${catIcons[l.cat]||'📋'} ${esc(l.cat)}</td>
+      <td><span class="badge badge-${l.sev==='critical'||l.sev==='high'?'red':l.sev==='med'?'amber':'blue'}">${esc(l.sev)}</span></td>
+      <td style="font-family:monospace;font-size:11px">${esc(l.ip)}</td>
+      <td style="font-size:12px;max-width:350px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.msg)}</td>
     </tr>`).join('') + '</table>';
 }
 
@@ -5860,6 +5767,7 @@ function srCaptureThreats(threats) {
   threats.forEach(t => {
     if (!SR.threats.find(x => x.id === t.id || (x.timestamp === t.timestamp && x.src_ip === t.src_ip))) {
       SR.threats.push({...t, _ts: Date.now()});
+      if (SR.threats.length > 2000) SR.threats.splice(0, SR.threats.length - 2000);   // bounded like SR.packets
     }
   });
 }
@@ -6022,7 +5930,7 @@ function dcOpenRecording(idx) {
     }).join('')}</div>`;
   }
 
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Session ${date.toLocaleDateString('fr-FR')}</title>${css}</head><body>
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Session ${date.toLocaleDateString('fr-FR')}</title>${css}</head><body>
     <h2>⏺ Session du ${date.toLocaleDateString('fr-FR')} ${date.toLocaleTimeString('fr-FR')}</h2>
     <p style="color:#5a5a72;margin-bottom:16px">Durée: ${m}m${String(s).padStart(2,'0')}s</p>
 
@@ -6208,7 +6116,7 @@ function dcExportThreatReport() {
   const blocked = lastState.blocked_ips || [];
   const win = window.open('', 'ng_threat_report', 'width=900,height=700');
   if (!win) return;
-  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard Pro — Threat Report</title>
+  win.document.write(`<!DOCTYPE html><html><head><title>NetGuard AI — Threat Report</title>
     <style>body{font-family:system-ui;padding:30px;max-width:800px;margin:0 auto}
     h1{font-size:22px;border-bottom:2px solid #333;padding-bottom:8px}
     h2{font-size:16px;margin-top:20px;color:#666}
@@ -6219,7 +6127,7 @@ function dcExportThreatReport() {
     .stat b{display:block;font-size:20px}
     @media print{body{padding:10px}}
     </style></head><body>
-    <h1>Rapport de menaces — NetGuard Pro</h1>
+    <h1>Rapport de menaces — NetGuard AI</h1>
     <p style="color:#888">Généré le ${new Date().toLocaleString('fr-FR')}</p>
     <div style="margin:16px 0">
       <div class="stat"><b>${threats.length}</b>Menaces</div>
@@ -6228,12 +6136,12 @@ function dcExportThreatReport() {
     </div>
     <h2>Menaces détectées</h2>
     <table><tr><th>Date</th><th>Sévérité</th><th>Type</th><th>IP source</th><th>Description</th></tr>
-    ${threats.map(t => `<tr><td>${(t.timestamp||'').replace('T',' ').slice(0,19)}</td><td style="text-transform:uppercase;font-weight:700;color:${t.severity==='critical'?'red':t.severity==='high'?'#d32f2f':'#f57c00'}">${t.severity}</td><td>${t.type}</td><td>${t.src_ip}</td><td>${t.description||''}</td></tr>`).join('')}
+    ${threats.map(t => `<tr><td>${(t.timestamp||'').replace('T',' ').slice(0,19)}</td><td style="text-transform:uppercase;font-weight:700;color:${t.severity==='critical'?'red':t.severity==='high'?'#d32f2f':'#f57c00'}">${esc(t.severity)}</td><td>${esc(t.type)}</td><td>${esc(t.src_ip)}</td><td>${esc(t.description||'')}</td></tr>`).join('')}
     </table>
     <h2>IPs bloquées (${blocked.length})</h2>
-    <p style="font-family:monospace;font-size:12px;word-break:break-all">${blocked.join(', ') || 'Aucune'}</p>
+    <p style="font-family:monospace;font-size:12px;word-break:break-all">${esc(blocked.join(', ')) || 'Aucune'}</p>
     <hr style="margin-top:30px;border:none;border-top:1px solid #ddd">
-    <p style="color:#aaa;font-size:11px;margin-top:8px">NetGuard Pro v4.0 — Rapport de sécurité automatique</p>
+    <p style="color:#aaa;font-size:11px;margin-top:8px">NetGuard AI v4.0 — Rapport de sécurité automatique</p>
     <script>setTimeout(()=>window.print(),500)<\\/script>
   </body></html>`);
   win.document.close();
@@ -6308,7 +6216,462 @@ function dcRenderAnalysis() {
     </tr>`).join('') + '</table>';
 }
 
+// ═══ AI Chat Drawer (inline) ══════════════════════════════════════════════
+const AI_API = 'http://127.0.0.1:8770';
+// Every AI API call carries the NetGuard token (same trust domain as the WebSocket).
+function aiHeaders(extra){ return Object.assign({'X-NetGuard-Token': (localStorage.getItem('ng_token') || '')}, extra || {}); }
+const AI_T = {
+  fr: {
+    open: 'Demander à l\'IA', title: 'Assistant IA', placeholder: 'Pose une question…',
+    send: '↑', welcome: 'Demande-moi n\'importe quoi sur l\'état de ton réseau.',
+    q_explain: 'Que signifient ces données ?', q_weak: 'Analyse mes faiblesses',
+    q_summary: 'Résume la situation', q_threat: 'Quelles menaces sont prioritaires ?',
+    offline: 'Démarrage du serveur IA…', no_key: 'Aucune clé API.',
+    no_key_link: 'Configurer la clé', popout: 'Plein écran',
+    err_net: 'Erreur réseau : ', copy: 'Copier', copied: 'Copié !', export: 'Exporter la conversation',
+    agent_label: 'AGENT', agent_off: 'Mode conseiller (lecture seule)', agent_on: 'Mode agent (peut exécuter avec approbation)',
+    tc_proposes: 'L\'IA propose d\'exécuter une action', tc_safe: 'Lecture seule', tc_danger: 'Action sensible',
+    tc_approve: 'Approuver', tc_reject: 'Refuser', tc_executing: 'Exécution…', tc_executed: 'Exécuté', tc_rejected: 'Refusé',
+    tc_failed: 'Échec', netguard_offline: 'NetGuard ne tourne pas — démarre-le pour utiliser le mode agent.',
+  },
+  en: {
+    open: 'Ask the AI', title: 'AI Assistant', placeholder: 'Ask a question…',
+    send: '↑', welcome: 'Ask me anything about the state of your network.',
+    q_explain: 'What does this data mean?', q_weak: 'Analyze my weaknesses',
+    q_summary: 'Summarize the situation', q_threat: 'Which threats are priority?',
+    offline: 'Booting the AI server…', no_key: 'No API key set.',
+    no_key_link: 'Configure the key', popout: 'Open fullscreen',
+    err_net: 'Network error: ', copy: 'Copy', copied: 'Copied!', export: 'Export conversation',
+    agent_label: 'AGENT', agent_off: 'Advisor mode (read-only)', agent_on: 'Agent mode (can act with your approval)',
+    tc_proposes: 'AI proposes to execute an action', tc_safe: 'Read-only', tc_danger: 'Modifies state',
+    tc_approve: 'Approve', tc_reject: 'Reject', tc_executing: 'Executing…', tc_executed: 'Done', tc_rejected: 'Rejected',
+    tc_failed: 'Failed', netguard_offline: 'NetGuard not running — start it to use agent mode.',
+  },
+  es: {
+    open: 'Preguntar a la IA', title: 'Asistente IA', placeholder: 'Haz una pregunta…',
+    send: '↑', welcome: 'Pregúntame lo que sea sobre el estado de tu red.',
+    q_explain: '¿Qué significan estos datos?', q_weak: 'Analiza mis debilidades',
+    q_summary: 'Resume la situación', q_threat: '¿Qué amenazas son prioritarias?',
+    offline: 'Iniciando el servidor IA…', no_key: 'Sin clave API.',
+    no_key_link: 'Configurar la clave', popout: 'Pantalla completa',
+    err_net: 'Error de red: ', copy: 'Copiar', copied: '¡Copiado!', export: 'Exportar conversación',
+    agent_label: 'AGENTE', agent_off: 'Modo asesor (solo lectura)', agent_on: 'Modo agente (puede actuar con tu aprobación)',
+    tc_proposes: 'La IA propone ejecutar una acción', tc_safe: 'Solo lectura', tc_danger: 'Modifica estado',
+    tc_approve: 'Aprobar', tc_reject: 'Rechazar', tc_executing: 'Ejecutando…', tc_executed: 'Ejecutado', tc_rejected: 'Rechazado',
+    tc_failed: 'Fallo', netguard_offline: 'NetGuard no está activo — inícialo para usar el modo agente.',
+  },
+  de: {
+    open: 'KI fragen', title: 'KI-Assistent', placeholder: 'Stelle eine Frage…',
+    send: '↑', welcome: 'Frag mich alles über den Zustand deines Netzwerks.',
+    q_explain: 'Was bedeuten diese Daten?', q_weak: 'Analysiere meine Schwächen',
+    q_summary: 'Fasse die Lage zusammen', q_threat: 'Welche Bedrohungen sind priorität?',
+    offline: 'KI-Server wird gestartet…', no_key: 'Kein API-Schlüssel.',
+    no_key_link: 'Schlüssel konfigurieren', popout: 'Vollbild',
+    err_net: 'Netzwerkfehler: ', copy: 'Kopieren', copied: 'Kopiert!', export: 'Konversation exportieren',
+    agent_label: 'AGENT', agent_off: 'Berater-Modus (nur lesen)', agent_on: 'Agent-Modus (kann handeln mit Genehmigung)',
+    tc_proposes: 'Die KI schlägt eine Aktion vor', tc_safe: 'Nur lesen', tc_danger: 'Ändert Zustand',
+    tc_approve: 'Genehmigen', tc_reject: 'Ablehnen', tc_executing: 'Ausführen…', tc_executed: 'Erledigt', tc_rejected: 'Abgelehnt',
+    tc_failed: 'Fehlgeschlagen', netguard_offline: 'NetGuard läuft nicht — starte es, um den Agent-Modus zu verwenden.',
+  },
+};
+function aiT(k){ return (AI_T[currentLang] && AI_T[currentLang][k]) || AI_T.fr[k] || k; }
+
+const aiHistory = [];
+let aiBooted = false;
+let aiAgentMode = (localStorage.getItem('ng_ai_agent_mode') === '1');
+let aiPendingTools = [];   // tool_calls awaiting user decision
+let aiToolDecisions = {};  // tool_use_id -> 'approved'|'rejected' + result
+
+function buildDashboardContext(){
+  const s = lastState || {};
+  const counts = s.counts || {};
+  return {
+    locale: currentLang,
+    timestamp: new Date().toISOString(),
+    metrics: {
+      packets_per_sec: counts.pkt_per_sec || counts.pps || 0,
+      total_packets: counts.total || 0,
+      blocked: counts.blocked || 0,
+      threats: counts.threats || 0,
+      active_connections: counts.connections || 0,
+    },
+    recent_threats: (s.threats || []).slice(-10),
+    top_suspicious_ips: (s.top_ips || []).slice(0, 8),
+    blocked_countries: s.blocked_countries || [],
+    paused: !!s.paused,
+  };
+}
+
+async function aiEnsureServer(){
+  try {
+    const r = await fetch(AI_API + '/api/health', {cache:'no-store', headers: aiHeaders()});
+    if (r.ok) return await r.json();
+  } catch {}
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.start_ai_server) {
+    try { await window.pywebview.api.start_ai_server(); } catch {}
+  }
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 250));
+    try {
+      const r = await fetch(AI_API + '/api/health', {cache:'no-store', headers: aiHeaders()});
+      if (r.ok) return await r.json();
+    } catch {}
+  }
+  return null;
+}
+
+function aiAddMsg(role, text){
+  const chat = document.getElementById('ai-d-chat');
+  const div = document.createElement('div');
+  div.className = 'ai-msg ' + role;
+  // Use a span for the text so the copy button stays out of the selection.
+  const span = document.createElement('span');
+  span.textContent = text;
+  span.dataset.raw = text;
+  div.appendChild(span);
+  if (role === 'ai' || role === 'user' || role === 'err') {
+    const btn = document.createElement('button');
+    btn.className = 'ai-copy';
+    btn.title = aiT('copy') || 'Copier';
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    btn.onclick = (e) => { e.stopPropagation(); aiCopyMessage(btn, span.dataset.raw); };
+    div.appendChild(btn);
+  }
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+async function aiCopyMessage(btn, text){
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+      document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+    }
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><path d="M3 8l3 3 7-7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" fill="none"><rect x="4" y="4" width="9" height="10" rx="1.4" stroke="currentColor" stroke-width="1.3"/><path d="M3 11V3a1 1 0 0 1 1-1h7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
+    }, 1500);
+  } catch (e) {
+    console.warn('clipboard write failed', e);
+  }
+}
+
+function aiExportConversation(){
+  const chat = document.getElementById('ai-d-chat');
+  const lines = [];
+  const stamp = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+  lines.push('# NetGuard AI — Conversation');
+  lines.push('');
+  lines.push('Exported: ' + new Date().toLocaleString());
+  lines.push('Provider: ' + (document.getElementById('ai-d-status')?.textContent || '—'));
+  lines.push('');
+  for (const m of chat.children) {
+    if (m.classList.contains('ai-thinking')) continue;
+    const span = m.querySelector('span');
+    const txt = span ? (span.dataset.raw || span.textContent) : m.textContent;
+    if (m.classList.contains('user')) {
+      lines.push('## You'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('ai')) {
+      lines.push('## AI'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('err')) {
+      lines.push('### Error'); lines.push(''); lines.push(txt); lines.push('');
+    } else if (m.classList.contains('sys')) {
+      lines.push('_' + txt + '_'); lines.push('');
+    }
+  }
+  const blob = new Blob([lines.join('\n')], {type: 'text/markdown;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'netguard-ai-conversation_' + stamp + '.md';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+function aiAddThinking(){
+  const chat = document.getElementById('ai-d-chat');
+  const div = document.createElement('div');
+  div.className = 'ai-thinking';
+  div.innerHTML = '<span></span><span></span><span></span>';
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  return div;
+}
+
+async function aiSend(prompt, withState){
+  if (!prompt || !prompt.trim()) return;
+  const text = prompt.trim();
+  aiAddMsg('user', text);
+
+  let userContent = text;
+  if (withState) {
+    const ctx = buildDashboardContext();
+    userContent = text + "\n\n[Dashboard live state]\n" + JSON.stringify(ctx, null, 2).slice(0, 18000);
+  }
+
+  aiHistory.push({role: 'user', content: userContent});
+  await aiCallChat();
+}
+
+async function aiCallChat(){
+  const t = aiAddThinking();
+  const sendBtn = document.getElementById('ai-d-send');
+  sendBtn.disabled = true;
+  try {
+    const r = await fetch(AI_API + '/api/chat', {
+      method: 'POST',
+      headers: aiHeaders({'Content-Type': 'application/json'}),
+      body: JSON.stringify({messages: aiHistory, lang: currentLang, agent_mode: aiAgentMode}),
+    });
+    const j = await r.json();
+    t.remove();
+    if (!j.ok) {
+      if (j.error === 'missing_api_key') {
+        document.getElementById('ai-d-keyhint').classList.add('show');
+        aiAddMsg('err', aiT('no_key'));
+      } else {
+        aiAddMsg('err', (j.error || '') + (j.reply ? '\n' + j.reply.slice(0, 500) : ''));
+      }
+      return;
+    }
+    if (j.reply) aiAddMsg('ai', j.reply);
+    if (j.assistant_blocks && j.assistant_blocks.length) {
+      aiHistory.push({role: 'assistant', content: j.assistant_blocks});
+    } else if (j.reply) {
+      aiHistory.push({role: 'assistant', content: j.reply});
+    }
+    if (j.tool_calls && j.tool_calls.length) {
+      aiPendingTools = j.tool_calls.slice();
+      aiToolDecisions = {};
+      for (const c of j.tool_calls) aiRenderToolCard(c);
+    }
+  } catch (e) {
+    t.remove();
+    aiAddMsg('err', aiT('err_net') + e);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+function aiRenderToolCard(call){
+  const chat = document.getElementById('ai-d-chat');
+  const card = document.createElement('div');
+  card.className = 'ai-tool-card' + (call.needs_approval ? ' danger' : '');
+  card.dataset.toolUseId = call.id || '';
+  const head = document.createElement('div');
+  head.className = 'tc-head';
+  head.innerHTML = `<span>${aiT('tc_proposes')}</span> <span class="tc-pill ${call.needs_approval ? 'danger' : 'safe'}">${call.needs_approval ? aiT('tc_danger') : aiT('tc_safe')}</span>`;
+  card.appendChild(head);
+  const name = document.createElement('div');
+  name.className = 'tc-name';
+  name.textContent = call.name + '(' + (Object.keys(call.input || {}).join(', ')) + ')';
+  card.appendChild(name);
+  const inp = document.createElement('div');
+  inp.className = 'tc-input';
+  inp.textContent = JSON.stringify(call.input || {}, null, 2);
+  card.appendChild(inp);
+  const status = document.createElement('div');
+  status.className = 'tc-status';
+  card.appendChild(status);
+  const result = document.createElement('div');
+  result.className = 'tc-result';
+  card.appendChild(result);
+  const btns = document.createElement('div');
+  btns.className = 'tc-buttons';
+  const yes = document.createElement('button');
+  yes.className = 'tc-approve';
+  yes.textContent = aiT('tc_approve');
+  yes.onclick = () => aiToolDecide(call, true, card);
+  const no = document.createElement('button');
+  no.className = 'tc-reject';
+  no.textContent = aiT('tc_reject');
+  no.onclick = () => aiToolDecide(call, false, card);
+  btns.appendChild(no);
+  btns.appendChild(yes);
+  card.appendChild(btns);
+  chat.appendChild(card);
+  chat.scrollTop = chat.scrollHeight;
+  if (!call.needs_approval) {
+    // auto-approve safe read-only tools
+    yes.click();
+  }
+}
+
+async function aiToolDecide(call, approve, card){
+  const status = card.querySelector('.tc-status');
+  const result = card.querySelector('.tc-result');
+  status.className = 'tc-status';
+  status.textContent = approve ? aiT('tc_executing') : aiT('tc_rejected');
+  card.classList.add('executed');
+  let payloadResult = approve ? null : 'User rejected this action.';
+  try {
+    if (approve) {
+      const r = await fetch(AI_API + '/api/tool-execute', {
+        method: 'POST',
+        headers: aiHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({name: call.name, input: call.input, tool_use_id: call.id, decision: 'approve', approval: call.approval || ''}),
+      });
+      const j = await r.json();
+      payloadResult = j.tool_result || JSON.stringify(j.raw || {});
+      const okFlag = j.raw && (j.raw.ok !== false);
+      status.classList.add(okFlag ? 'ok' : 'err');
+      status.textContent = okFlag ? aiT('tc_executed') : aiT('tc_failed');
+      result.textContent = payloadResult;
+      result.classList.add('show');
+    } else {
+      status.classList.add('err');
+      result.textContent = payloadResult;
+      result.classList.add('show');
+    }
+  } catch (e) {
+    status.classList.add('err');
+    status.textContent = aiT('tc_failed') + ': ' + e;
+    payloadResult = 'Execution error: ' + e;
+  }
+  aiToolDecisions[call.id] = {approved: approve, result: payloadResult};
+  // When all decided, continue chat with tool_result blocks
+  if (Object.keys(aiToolDecisions).length === aiPendingTools.length) {
+    const toolResults = aiPendingTools.map(c => ({
+      type: 'tool_result',
+      tool_use_id: c.id,
+      content: aiToolDecisions[c.id]?.result ?? 'No result.',
+    }));
+    aiHistory.push({role: 'user', content: toolResults});
+    aiPendingTools = []; aiToolDecisions = {};
+    await aiCallChat();
+  }
+}
+
+function aiToggleAgent(){
+  aiAgentMode = !aiAgentMode;
+  localStorage.setItem('ng_ai_agent_mode', aiAgentMode ? '1' : '0');
+  aiSyncAgentBtn();
+}
+function aiSyncAgentBtn(){
+  const btn = document.getElementById('ai-d-agent-btn');
+  if (!btn) return;
+  btn.classList.toggle('on', aiAgentMode);
+  btn.title = aiAgentMode ? aiT('agent_on') : aiT('agent_off');
+  const lbl = document.getElementById('ai-d-agent-label');
+  if (lbl) lbl.textContent = aiT('agent_label');
+}
+
+async function aiOpenDrawer(){
+  document.getElementById('ai-drawer').classList.add('open');
+  if (aiBooted) return;
+  aiBooted = true;
+  const status = document.getElementById('ai-d-status');
+  status.textContent = aiT('offline');
+  const h = await aiEnsureServer();
+  if (!h) { status.textContent = '—'; return; }
+  status.textContent = (h.provider || 'anthropic') + ' · ' + (h.model || '');
+  if (!h.has_key) document.getElementById('ai-d-keyhint').classList.add('show');
+}
+
+function aiCloseDrawer(){ document.getElementById('ai-drawer').classList.remove('open'); }
+
+function aiPopout(){
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.open_ai_window) {
+    window.pywebview.api.open_ai_window(currentLang);
+  } else {
+    window.open(AI_API + '/?lang=' + currentLang, '_blank');
+  }
+}
+
+function aiApplyTranslations(){
+  const fab = document.getElementById('ai-fab-label');
+  if (fab) fab.textContent = aiT('open');
+  const title = document.getElementById('ai-d-title-text');
+  if (title) title.textContent = aiT('title');
+  const ph = document.getElementById('ai-d-input');
+  if (ph) ph.placeholder = aiT('placeholder');
+  const send = document.getElementById('ai-d-send');
+  if (send) send.textContent = aiT('send');
+  const wel = document.getElementById('ai-d-welcome');
+  if (wel) wel.textContent = aiT('welcome');
+  for (const [id, k] of [['aiq-explain','q_explain'],['aiq-weak','q_weak'],['aiq-summary','q_summary'],['aiq-threat','q_threat']]) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = aiT(k);
+  }
+  const link = document.getElementById('ai-d-key-link');
+  if (link) link.textContent = aiT('no_key_link');
+  const exp = document.getElementById('ai-d-export');
+  if (exp) exp.title = aiT('export');
+  for (const b of document.querySelectorAll('.ai-msg .ai-copy')) b.title = aiT('copy');
+  aiSyncAgentBtn();
+}
+
+// Hook into existing setLang to re-translate the drawer when lang changes.
+(function(){
+  const orig = window.setLang;
+  if (typeof orig === 'function') {
+    window.setLang = function(l){ orig(l); aiApplyTranslations(); };
+  }
+})();
+
+document.addEventListener('DOMContentLoaded', () => {
+  aiApplyTranslations();
+  const input = document.getElementById('ai-d-input');
+  if (input) input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const v = input.value;
+      input.value = '';
+      aiSend(v, true);
+    }
+  });
+});
+
 // ═══ FIN ══════════════════════════════════════════════════════════════════
 </script>
+
+<!-- AI Chat Drawer -->
+<button class="ai-fab" onclick="aiOpenDrawer()" title="AI Assistant">
+  <svg viewBox="0 0 16 16" width="16" height="16" fill="none"><path d="M8 1.5L13.5 4v4.5c0 3-2 5.2-5.5 6.5C4.5 13.7 2.5 11.5 2.5 8.5V4z" stroke="white" stroke-width="1.4"/><path d="M8 5v6M5 8h6" stroke="white" stroke-width="1.3" stroke-linecap="round"/></svg>
+  <span id="ai-fab-label">Ask the AI</span>
+  <span class="ai-fab-dot"></span>
+</button>
+
+<div class="ai-drawer" id="ai-drawer">
+  <div class="ai-d-head">
+    <div class="ai-d-title">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5L13.5 4v4.5c0 3-2 5.2-5.5 6.5C4.5 13.7 2.5 11.5 2.5 8.5V4z" stroke="url(#dgrad)" stroke-width="1.4"/><defs><linearGradient id="dgrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4d9fff"/><stop offset="1" stop-color="#b47dff"/></linearGradient></defs></svg>
+      <span class="grad" id="ai-d-title-text">AI Assistant</span>
+    </div>
+    <span class="ai-d-status" id="ai-d-status">—</span>
+    <button class="ai-d-agent" id="ai-d-agent-btn" onclick="aiToggleAgent()" title="Agent mode"><span class="agent-dot"></span><span id="ai-d-agent-label">AGENT</span></button>
+    <button onclick="aiExportConversation()" id="ai-d-export" title="Export">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M8 1.5v9M5 7.5L8 10.5L11 7.5M2.5 12v1.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button onclick="aiPopout()" title="Pop out">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M9 2h5v5M14 2L8 8M6 4H3v9h9v-3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+    </button>
+    <button onclick="aiCloseDrawer()" title="Close">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none"><path d="M3 3l10 10M13 3L3 13" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="ai-d-quick">
+    <button id="aiq-explain" onclick="aiSend(aiT('q_explain'), true)"></button>
+    <button id="aiq-weak" onclick="aiSend(aiT('q_weak'), true)"></button>
+    <button id="aiq-summary" onclick="aiSend(aiT('q_summary'), true)"></button>
+    <button id="aiq-threat" onclick="aiSend(aiT('q_threat'), true)"></button>
+  </div>
+  <div class="ai-d-chat" id="ai-d-chat">
+    <div class="ai-msg sys" id="ai-d-welcome"></div>
+  </div>
+  <div class="ai-d-keyhint" id="ai-d-keyhint">
+    <span id="ai-d-key-msg"></span> <a onclick="aiPopout()" id="ai-d-key-link"></a>
+  </div>
+  <div class="ai-d-comp">
+    <textarea id="ai-d-input" rows="1"></textarea>
+    <button class="ai-send" id="ai-d-send" onclick="(function(){const i=document.getElementById('ai-d-input');const v=i.value;i.value='';aiSend(v,true);})()">↑</button>
+  </div>
+</div>
+
 </body>
 </html>

@@ -1,0 +1,75 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# We DO NOT sign in CI — signing requires the production identity that
+# only lives on the maintainer's signing machine. The artifact uploaded
+# here is intentionally an unsigned portable zip; promoting it to a
+# release is a manual sign-and-upload step (see docs/BUILD.md §7).
+
+jobs:
+  build-windows:
+    name: Windows portable bundle
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          pip install pyinstaller
+
+      - name: Build Argus (one-folder bundle)
+        shell: cmd
+        run: tools\build_argus.bat
+
+      - name: Smoke-test the bundle
+        shell: pwsh
+        run: |
+          # Launch the bundled exe headless-ish; if the binary is broken
+          # (missing DLL, hidden import gone) it crashes within seconds and
+          # this step fails. We don't expect a clean exit because the GUI
+          # blocks; we only check that the process stays alive for >2 s.
+          $exe = "build\dist\Argus\Argus.exe"
+          if (-not (Test-Path $exe)) {
+              throw "Build did not produce $exe"
+          }
+          $proc = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 4
+          if ($proc.HasExited) {
+              throw "Argus.exe exited within 4 s — exit code $($proc.ExitCode)"
+          }
+          Write-Host "Argus.exe is alive after 4 s — smoke test passed."
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Argus-windows-portable
+          path: build/dist/Argus-portable.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload full bundle folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: Argus-windows-folder
+          path: build/dist/Argus/
+          if-no-files-found: error
+          retention-days: 30

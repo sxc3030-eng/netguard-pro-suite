@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>NetGuard Pro — Service Manager</title>
+<title>NetGuard AI — Service Manager</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Outfit:wght@300;400;500;600&display=swap');
 *{box-sizing:border-box;margin:0;padding:0}
@@ -97,7 +97,7 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
 
 <div class="titlebar">
   <div>
-    <div class="logo" style="display:flex;align-items:center;gap:8px"><svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG8" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG8)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG8)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span><span>Net</span>Guard Pro — <span style="-webkit-text-fill-color:var(--text2);background:none">Service Manager</span></span></div>
+    <div class="logo" style="display:flex;align-items:center;gap:8px"><svg viewBox="0 0 200 200" width="28" height="28" style="flex-shrink:0"><defs><linearGradient id="ngG8" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#4d9fff"/><stop offset="100%" stop-color="#b47dff"/></linearGradient></defs><path d="M100 18L162 42V100C162 140 132 163 100 178C68 163 38 140 38 100V42Z" fill="#16161d" stroke="url(#ngG8)" stroke-width="3"/><path d="M72 70V130M72 70L128 130M128 70V130" stroke="url(#ngG8)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg><span><span>Net</span>Guard AI — <span style="-webkit-text-fill-color:var(--text2);background:none">Service Manager</span></span></div>
     <div class="subtitle">Gestion du service arrière-plan • Logs en direct</div>
   </div>
   <a href="netguard_dashboard.html" style="text-decoration:none;background:var(--bg4);border:1px solid var(--border2);color:var(--text2);font-size:12px;padding:6px 14px;border-radius:6px;display:flex;align-items:center;gap:6px">
@@ -212,13 +212,13 @@ body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);min-
         </div>
         <div class="cmd-block">
           # Vérifier le statut<br>
-          Get-ScheduledTask -TaskName "NetGuardPro" | Select-Object State<br><br>
+          Get-ScheduledTask -TaskName "NetGuardAI" | Select-Object State<br><br>
           # Démarrer<br>
-          Start-ScheduledTask -TaskName "NetGuardPro"<br><br>
+          Start-ScheduledTask -TaskName "NetGuardAI"<br><br>
           # Arrêter<br>
-          Stop-ScheduledTask -TaskName "NetGuardPro"<br><br>
+          Stop-ScheduledTask -TaskName "NetGuardAI"<br><br>
           # Désinstaller<br>
-          Unregister-ScheduledTask -TaskName "NetGuardPro" -Confirm:$false
+          Unregister-ScheduledTask -TaskName "NetGuardAI" -Confirm:$false
           <button class="copy-btn" onclick="copyCmd(this)">Copier</button>
         </div>
       </div>
@@ -315,7 +315,7 @@ function updateUptime() {
 function startService() {
   addLog('[SERVICE] Démarrage en cours…', 'info');
   // Windows: ouvre PowerShell avec la commande
-  const cmd = 'Start-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Start-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--blue)');
   });
@@ -324,7 +324,7 @@ function startService() {
 
 function stopService() {
   addLog('[SERVICE] Arrêt en cours…', 'warn');
-  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--amber)');
   });
@@ -333,7 +333,7 @@ function stopService() {
 
 function restartService() {
   addLog('[SERVICE] Redémarrage en cours…', 'warn');
-  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardPro"; Start-Sleep 2; Start-ScheduledTask -TaskName "NetGuardPro"';
+  const cmd = 'Stop-ScheduledTask -TaskName "NetGuardAI"; Start-Sleep 2; Start-ScheduledTask -TaskName "NetGuardAI"';
   navigator.clipboard.writeText(cmd).then(() => {
     showToast('Commande copiée — colle dans PowerShell Admin', 'var(--blue)');
   });
@@ -422,7 +422,7 @@ document.getElementById('info-dir').textContent = window.location.pathname.repla
 
 // ── Init ──────────────────────────────────────────────────────────────────
 addLog('[SERVICE] Interface de gestion démarrée', 'info');
-addLog('[SERVICE] Connexion au backend NetGuard Pro…', 'info');
+addLog('[SERVICE] Connexion au backend NetGuard AI…', 'info');
 connect();
 
 // Polling log toutes les 5s via WS

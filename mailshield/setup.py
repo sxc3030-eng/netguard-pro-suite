@@ -26,7 +26,7 @@ try:
         name="MailShield Pro",
         version="2.0.0",
         description="Client Email Securise avec Filtrage Intelligent",
-        author="NetGuard Pro",
+        author="NetGuard AI",
         options={"build_exe": build_exe_options},
         executables=[
             Executable(

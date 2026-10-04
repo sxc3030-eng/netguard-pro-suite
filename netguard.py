@@ -1,14 +1,20 @@
 """
-NetGuard Pro - Moteur de surveillance réseau
+NetGuard AI - Moteur de surveillance réseau
 Capture, analyse et bloque les paquets en temps réel
-Auteur: NetGuard Pro
-Version: 4.0.0
+Auteur: NetGuard AI
+Version: 4.1.0
 Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
 
 import asyncio
+import importlib
 import json
 import logging
+from logging.handlers import RotatingFileHandler
+import queue
+import atexit
+from netguard_paths import DATA_DIR, RESOURCE_DIR, data_path, resource_path, ensure_data_dirs, is_frozen, self_command, is_store_build
+import html as _html
 import argparse
 import time
 import threading
@@ -24,16 +30,65 @@ from typing import Optional
 import os
 import sys
 import hashlib
+import secrets as _ng_secrets
+import tempfile
 import base64
 
 # License manager
-try:
-    from license_manager import init_license, has_feature, get_trial_banner
-    LICENSE = init_license()
-except Exception:
-    LICENSE = {"tier": "trial", "features": [], "trial": True, "trial_days_left": 30, "expired": False}
+# Store build: the purchase went through the Store, so the homemade NGPRO key /
+# 30-day trial / seat count must never lock a paying customer out (policy 10.8.1).
+if is_store_build():
+    LICENSE = {"tier": "pro", "plan": "store", "features": ["*"], "trial": False,
+               "trial_days_left": 0, "expired": False, "source": "microsoft-store"}
+    LICENSE_SEAT_EXHAUSTED = False
+    LICENSE_SEAT_ERROR = ""
     def has_feature(f): return True
     def get_trial_banner(): return ""
+    LicenseManager = None
+    LicenseSeatExhaustedError = Exception
+    LicenseError = Exception
+    _LICENSE_SKIP = True
+else:
+    _LICENSE_SKIP = False
+try:
+    if _LICENSE_SKIP:
+        raise ImportError("store build: licence gérée par le Store")
+    from license_manager import (
+        init_license, has_feature, get_trial_banner,
+        LicenseManager, LicenseSeatExhaustedError, LicenseError,
+    )
+    LICENSE = init_license()
+    # Multi-PC validation: only triggers if a real Ed25519 license is present.
+    # Trial/free users skip this entirely (no license_key in netguard_license.json).
+    LICENSE_SEAT_EXHAUSTED = False
+    LICENSE_SEAT_ERROR = ""
+    try:
+        _lm_state = LicenseManager().validate(auto_activate=True)
+        LICENSE.update({
+            "plan": _lm_state.get("plan"),
+            "max_seats": _lm_state.get("max_seats"),
+            "seats_used": _lm_state.get("seats_used"),
+            "license_id": _lm_state.get("license_id"),
+            "fingerprint": _lm_state.get("fingerprint"),
+            "fingerprint_short": _lm_state.get("fingerprint_short"),
+        })
+    except LicenseSeatExhaustedError as e:
+        LICENSE_SEAT_EXHAUSTED = True
+        LICENSE_SEAT_ERROR = str(e)
+        print(f"[LICENSE] {e}")
+    except LicenseError:
+        # No multi-PC license active (trial, free, or legacy single-PC) — fine.
+        pass
+except Exception:
+    if not _LICENSE_SKIP:
+        LICENSE = {"tier": "trial", "features": [], "trial": True, "trial_days_left": 30, "expired": False}
+        LICENSE_SEAT_EXHAUSTED = False
+        LICENSE_SEAT_ERROR = ""
+        def has_feature(f): return True
+        def get_trial_banner(): return ""
+        LicenseManager = None
+        LicenseSeatExhaustedError = Exception
+        LicenseError = Exception
 
 # Fix pythonw (no console) — redirect None stdout/stderr to devnull
 if sys.stdout is None:
@@ -87,7 +142,7 @@ class Config:
     interface:              str   = "auto"
     ws_port:                int   = 8765
     can_block:              bool  = True
-    log_file:               str   = "netguard.log"
+    log_file:               str   = data_path("netguard.log")
     max_packets_log:        int   = 10_000
     port_scan_threshold:    int   = 15
     port_scan_window:       int   = 10
@@ -97,12 +152,27 @@ class Config:
     syn_flood_window:       int   = 5
     dns_tunnel_threshold:   int   = 50
     whitelist: list = field(default_factory=lambda: [
-        "127.0.0.1", "::1", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"
+        # Loopback + RFC1918
+        "127.0.0.1", "::1", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12",
+        # IPv4 multicast (mDNS Bonjour, IGMP, etc.)
+        "224.0.0.0/4",
+        # IPv6 multicast (FF00::/8) + link-local (FE80::/10)
+        "ff00::/8", "fe80::/10",
+        # Anthropic API (Claude.ai / Claude Code / Claude Desktop)
+        "160.79.104.0/21", "2607:6bc0::/32",
+        # Vidéotron infrastructure (DNS + user LAN /64)
+        "2607:fa48::/32", "2607:fa49::/32",
+        # Cloudflare CDN (104.16-31.x.x) — required for ipapi.co + tons of websites
+        "104.16.0.0/12", "172.64.0.0/13", "2606:4700::/32",
+        # Google public DNS + GCP edge
+        "8.8.8.0/24", "8.8.4.0/24", "2001:4860:4860::/48",
+        # ip-api.com (208.95.112.0/24 ~)
+        "208.95.112.0/24",
     ])
     sensitive_ports:    list = field(default_factory=lambda: [22, 3389, 5900, 23])
     always_block_ports: list = field(default_factory=lambda: [135, 137, 138, 139, 445, 1433, 3306])
     record_enabled:     bool  = False
-    record_dir:         str   = "captures"
+    record_dir:         str   = data_path("captures")
     record_rotate_min:  int   = 60
     record_max_files:   int   = 24
     dpi_enabled:        bool  = True
@@ -139,6 +209,13 @@ class Config:
     isolation_enabled:      bool  = False
     quarantine_enabled:     bool  = False
     auto_forensic_enabled:  bool  = True
+    # Privacy: online geo providers (ip-api.com / ipapi.co) receive every public
+    # IP seen on the wire. MaxMind GeoLite2 (local) is always preferred when present.
+    geo_online_enabled:     bool  = not is_store_build()   # Store build: local GeoLite2 only unless opted in
+    # Store policy 10.2: never interfere with other software unless the user opts in.
+    npcap_kill_rogue:       bool  = False
+    # Honeypot listeners bind address ("0.0.0.0" = every interface, or the LAN IP only)
+    honeypot_bind:          str   = "0.0.0.0"
     auto_forensic_severity: str   = "critical"
     # v3.0 — WireGuard VPN
     wg_enabled:         bool  = False
@@ -152,6 +229,217 @@ class Config:
     wg_post_down:       str   = ""
 
 CFG = Config()
+
+
+# ─── Secret Vault integration ─────────────────────────────────────────────
+# All long-lived API tokens / webhooks live inside ``secret_vault`` rather
+# than ``netguard_settings.json``. The vault is a process-wide lazy
+# singleton so we only construct one. ``False`` is a sentinel meaning "we
+# tried and the dependencies are missing — degrade gracefully".
+
+_VAULT = None  # type: ignore[var-annotated]
+_VAULT_INIT_LOCK = threading.Lock()
+_VAULT_LOCKED_WARNED = False  # one-shot warning when reads hit a locked vault
+
+# Map of "settings.json key" -> "vault secret name". The dashboard / WS
+# layer uses the vault name; legacy code paths can still ask by settings
+# key via ``get_secret(vault_name, fallback_settings_key=...)``.
+VAULT_SECRET_NAMES = {
+    "virustotal_api_key":   "netguard.virustotal.api_key",
+    "otx_api_key":          "netguard.otx.api_key",
+    "abuseipdb_api_key":    "netguard.abuseipdb.api_key",
+    "discord_webhook_url":  "netguard.discord.webhook_url",
+    "telegram_bot_token":   "netguard.telegram.bot_token",
+}
+
+# Brute-force throttle on vault_unlock — 3 attempts per 30s, then 5 min lock.
+_VAULT_UNLOCK_ATTEMPTS: list = []      # list of monotonic timestamps
+_VAULT_UNLOCK_BLOCKED_UNTIL: float = 0.0
+_VAULT_UNLOCK_WINDOW   = 30.0
+_VAULT_UNLOCK_MAX      = 3
+_VAULT_UNLOCK_PENALTY  = 300.0
+_VAULT_RL_LOCK = threading.Lock()
+
+
+def _get_vault():
+    """Return the process-wide ``SecretVault`` instance, or ``None`` if the
+    optional dependencies are missing.
+
+    The first call constructs the vault. Construction is cheap (no I/O) so
+    even a missing-deps build only logs a single warning.
+    """
+    global _VAULT
+    if _VAULT is not None:
+        return _VAULT if _VAULT is not False else None
+    with _VAULT_INIT_LOCK:
+        if _VAULT is None:
+            try:
+                from secret_vault import SecretVault
+                _VAULT = SecretVault()
+            except Exception as e:  # pragma: no cover - defensive
+                try:
+                    log.warning("[VAULT] unavailable: %s — using plaintext fallback", e)
+                except Exception:
+                    pass
+                _VAULT = False
+    return _VAULT if _VAULT is not False else None
+
+
+def _vault_deps_missing():
+    """List of missing optional packages. Used by ``vault_status`` so the
+    UI can prompt the user with an actionable message."""
+    missing = []
+    try:
+        import secret_vault as _sv
+    except Exception:
+        return ["secret_vault"]
+    if not getattr(_sv, "_HAS_ARGON2", False):
+        missing.append("argon2-cffi")
+    if not getattr(_sv, "_HAS_KEYRING", False):
+        missing.append("keyring")
+    # pywin32 / DPAPI is degradable, not required — only flag on Windows.
+    if IS_WINDOWS and not getattr(_sv, "_HAS_DPAPI", False):
+        missing.append("pywin32")
+    return missing
+
+
+def get_secret(name: str, fallback_settings_key=None):
+    """Unified secret lookup.
+
+    Lookup order:
+      1. If the vault is initialized AND unlocked, return its value (which
+         may legitimately be ``None`` — treat that as "no secret stored").
+      2. If the vault is initialized but locked, return ``None`` and log a
+         one-shot warning (subsequent calls are silent until next unlock).
+      3. If the vault is unavailable (deps missing or never initialized)
+         and ``fallback_settings_key`` is provided, return ``CFG``'s
+         current attribute value for that key — that path keeps existing
+         clean installs working without forcing a vault.
+
+    Note: a stored secret of empty string is treated like "no secret" —
+    the caller's existing ``if not key`` guards continue to work.
+    """
+    global _VAULT_LOCKED_WARNED
+    v = _get_vault()
+    if v is not None:
+        try:
+            if v.exists():
+                if v.is_unlocked():
+                    val = v.get(name)
+                    if val:
+                        return val
+                else:
+                    if not _VAULT_LOCKED_WARNED:
+                        try:
+                            log.warning("[VAULT] locked — secret '%s' not retrievable until unlock", name)
+                        except Exception:
+                            pass
+                        _VAULT_LOCKED_WARNED = True
+                    return None
+        except Exception as e:  # defensive: never raise from a hot path
+            try:
+                log.debug("[VAULT] get(%s) failed: %s", name, e)
+            except Exception:
+                pass
+    # Fallback to plaintext config — only when vault is unavailable / not init.
+    if fallback_settings_key is not None:
+        return getattr(CFG, fallback_settings_key, None) or None
+    return None
+
+
+def _run_sister_module_migrations() -> dict:
+    """Walk Sentinel + MailShield + any other suite module that exposes
+    a ``migrate_to_vault()`` callable and run each migration in turn.
+
+    Each module's directory is added to ``sys.path`` before the import
+    so the ``from foo import bar`` paths inside that module resolve as
+    they would when launched standalone (cortex.py and mailshield.py
+    both rely on this).
+
+    Returns a per-module dict suitable for embedding in a WS reply::
+
+        {
+            "sentinel":   {"migrated": [...], "count": N},
+            "mailshield": {"error": "VaultLockedError"},
+        }
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    targets = (
+        # (display_name, sub-dir, module-name)
+        ("sentinel",   "sentinel",   "cortex"),
+        ("mailshield", "mailshield", "mailshield"),
+    )
+    out: dict = {}
+    for display_name, subdir, module_name in targets:
+        mod_dir = os.path.join(base_dir, subdir)
+        added = False
+        try:
+            if mod_dir not in sys.path:
+                sys.path.insert(0, mod_dir)
+                added = True
+            try:
+                mod = importlib.import_module(module_name)
+            except Exception as e:
+                log.warning("[VAULT] sister %s import failed: %s",
+                            display_name, type(e).__name__)
+                out[display_name] = {"error": f"import:{type(e).__name__}"}
+                continue
+            fn = getattr(mod, "migrate_to_vault", None)
+            if not callable(fn):
+                out[display_name] = {"error": "no migrate_to_vault hook"}
+                continue
+            try:
+                m_keys, m_count = fn()
+                out[display_name] = {
+                    "migrated": list(m_keys),
+                    "count": int(m_count),
+                }
+            except Exception as e:
+                log.warning("[VAULT] sister %s migrate failed: %s",
+                            display_name, type(e).__name__)
+                out[display_name] = {"error": str(type(e).__name__)}
+        finally:
+            # Best-effort cleanup. We only remove what we added; leaving
+            # legitimately-imported paths alone.
+            if added:
+                try:
+                    sys.path.remove(mod_dir)
+                except ValueError:
+                    pass
+    return out
+
+
+def _vault_unlock_throttle_check():
+    """Return ``(allowed, reason)``. Caller must NOT call ``vault.unlock``
+    if ``allowed`` is False."""
+    now = time.monotonic()
+    with _VAULT_RL_LOCK:
+        global _VAULT_UNLOCK_BLOCKED_UNTIL
+        if now < _VAULT_UNLOCK_BLOCKED_UNTIL:
+            wait = int(_VAULT_UNLOCK_BLOCKED_UNTIL - now)
+            return False, f"too many failures, locked for {wait}s"
+        # purge old attempts
+        cutoff = now - _VAULT_UNLOCK_WINDOW
+        _VAULT_UNLOCK_ATTEMPTS[:] = [t for t in _VAULT_UNLOCK_ATTEMPTS if t > cutoff]
+        return True, ""
+
+
+def _vault_unlock_record_failure():
+    now = time.monotonic()
+    global _VAULT_UNLOCK_BLOCKED_UNTIL
+    with _VAULT_RL_LOCK:
+        _VAULT_UNLOCK_ATTEMPTS.append(now)
+        cutoff = now - _VAULT_UNLOCK_WINDOW
+        _VAULT_UNLOCK_ATTEMPTS[:] = [t for t in _VAULT_UNLOCK_ATTEMPTS if t > cutoff]
+        if len(_VAULT_UNLOCK_ATTEMPTS) >= _VAULT_UNLOCK_MAX:
+            _VAULT_UNLOCK_BLOCKED_UNTIL = now + _VAULT_UNLOCK_PENALTY
+            _VAULT_UNLOCK_ATTEMPTS.clear()
+
+
+def _vault_unlock_record_success():
+    with _VAULT_RL_LOCK:
+        _VAULT_UNLOCK_ATTEMPTS.clear()
+
 
 RULES = {
     "block_port_scan":   {"enabled": True,  "label": "Bloquer scan de ports",  "hits": 0},
@@ -182,8 +470,8 @@ GEO_IP_RANGES = {
            "178.140.0.0/14","185.71.76.0/22","193.232.0.0/14","194.8.0.0/15","195.2.0.0/16"],
     "CN": ["1.0.1.0/24","1.0.2.0/23","27.0.0.0/13","36.0.0.0/11","39.0.0.0/8",
            "42.0.0.0/8","49.0.0.0/8","58.0.0.0/7","60.0.0.0/8","61.0.0.0/8",
-           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.0.0.0/8",
-           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.0.0.0/7","163.0.0.0/8",
+           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.1.0.0/8",
+           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.1.0.0/7","163.0.0.0/8",
            "171.0.0.0/8","175.0.0.0/8","180.0.0.0/6","182.0.0.0/7","183.0.0.0/8"],
     "KP": ["175.45.176.0/22","210.52.109.0/24"],
     "IR": ["2.144.0.0/13","5.22.0.0/15","5.52.0.0/14","31.2.128.0/17","37.98.128.0/17",
@@ -191,7 +479,7 @@ GEO_IP_RANGES = {
            "82.99.192.0/18","85.133.0.0/16","87.107.0.0/16","89.32.0.0/14","91.98.0.0/15",
            "94.182.0.0/15","95.38.0.0/15","109.120.128.0/17","176.65.192.0/18",
            "188.136.0.0/13","194.225.0.0/16","195.146.32.0/19"],
-    "KR": ["1.16.0.0/12","1.176.0.0/12","14.0.0.0/11","27.96.0.0/14","49.142.0.0/17",
+    "KR": ["1.16.0.0/12","1.176.0.0/12","14.1.0.0/11","27.96.0.0/14","49.142.0.0/17",
            "58.120.0.0/13","59.0.0.0/11","61.32.0.0/13","61.40.0.0/13","112.144.0.0/12",
            "119.64.0.0/11","121.128.0.0/11","122.32.0.0/11","125.128.0.0/11",
            "175.192.0.0/11","203.226.0.0/15","210.94.0.0/15","211.36.0.0/14"],
@@ -200,10 +488,10 @@ GEO_IP_RANGES = {
     "IN": ["1.6.0.0/15","14.96.0.0/11","27.4.0.0/14","43.224.0.0/11","45.112.0.0/12",
            "49.32.0.0/12","59.88.0.0/13","103.0.0.0/8","106.64.0.0/10","115.240.0.0/13",
            "117.192.0.0/11","119.224.0.0/11","122.160.0.0/11","180.64.0.0/12","182.64.0.0/10"],
-    "US": ["3.0.0.0/8","4.0.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
-           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.0.0.0/8",
-           "34.0.0.0/8","35.0.0.0/8","44.0.0.0/8","45.0.0.0/8","52.0.0.0/8",
-           "54.0.0.0/8","64.0.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
+    "US": ["3.0.0.0/8","4.1.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
+           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.1.0.0/8",
+           "34.1.0.0/8","35.0.0.0/8","44.1.0.0/8","45.0.0.0/8","52.0.0.0/8",
+           "54.1.0.0/8","64.1.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
     "DE": ["5.1.0.0/17","46.4.0.0/14","78.42.0.0/15","80.154.0.0/15","81.169.0.0/16",
            "82.113.0.0/16","84.44.0.0/14","85.14.0.0/15","87.77.0.0/16","89.0.0.0/16",
            "91.65.0.0/16","94.130.0.0/15","213.160.0.0/14"],
@@ -238,27 +526,395 @@ def get_geo_info(ip: str) -> dict:
     _geo_city_cache[ip] = result
     return result
 
-def _fetch_city_async(ip: str):
-    """Récupère la ville et coordonnées en arrière-plan"""
+# ── App identification (which local process owns each connection) ─────────
+# Refreshes psutil.net_connections() periodically and caches a fast
+# (ip, port) -> "process_name (pid)" lookup. Cheap to call from the packet
+# handler hot path because all the work happens once per refresh.
+_CONN_CACHE: dict = {}  # ((laddr_ip, laddr_port), (raddr_ip, raddr_port)) -> "name (pid)"
+_CONN_CACHE_TS: float = 0.0
+_CONN_CACHE_LOCK = threading.Lock()
+_CONN_CACHE_TTL = 1.0  # seconds — re-enumerate at most once per second
+
+try:
+    import psutil as _psutil
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
+
+
+def _refresh_conn_cache(force: bool = False):
+    """Rebuild the (laddr,raddr)->process map from psutil.net_connections().
+    Skips if cache is fresh (< _CONN_CACHE_TTL old). Thread-safe."""
+    global _CONN_CACHE, _CONN_CACHE_TS
+    if not _HAS_PSUTIL:
+        return
+    now = time.time()
+    if not force and (now - _CONN_CACHE_TS) < _CONN_CACHE_TTL:
+        return
+    with _CONN_CACHE_LOCK:
+        if not force and (time.time() - _CONN_CACHE_TS) < _CONN_CACHE_TTL:
+            return  # double-check after acquiring lock
+        new_cache: dict = {}
+        try:
+            for conn in _psutil.net_connections(kind="inet"):
+                if not conn.laddr or not conn.pid:
+                    continue
+                try:
+                    proc = _psutil.Process(conn.pid)
+                    pname = proc.name()
+                except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                    pname = "?"
+                label = f"{pname} ({conn.pid})"
+                la = (conn.laddr.ip, conn.laddr.port)
+                if conn.raddr:
+                    ra = (conn.raddr.ip, conn.raddr.port)
+                    new_cache[(la, ra)] = label
+                    new_cache[(ra, la)] = label  # bidirectional lookup
+                else:
+                    new_cache[(la, None)] = label  # listening socket
+        except Exception as e:
+            log.debug(f"[APPID] psutil.net_connections failed: {e}")
+        _CONN_CACHE = new_cache
+        _CONN_CACHE_TS = time.time()
+
+
+def process_for_packet(src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> str:
+    """Return 'process_name (pid)' for a captured packet, or '' if unknown.
+    Uses a 1-second cache to keep the packet hot path cheap."""
+    if not _HAS_PSUTIL:
+        return ""
+    _refresh_conn_cache()
+    if not _CONN_CACHE:
+        return ""
+    # Try outbound first (we are src), then inbound (we are dst)
+    return (_CONN_CACHE.get(((src_ip, src_port), (dst_ip, dst_port)))
+            or _CONN_CACHE.get(((dst_ip, dst_port), (src_ip, src_port)))
+            or "")
+
+
+def _traceroute(target_ip: str, max_hops: int = 30) -> dict:
+    """Trace the network path to target_ip via scapy ICMP probes. Returns ordered hops with geo data.
+    Uses scapy.sr() to fan out all TTL probes in parallel — total wall time ~3-6s for 30 hops."""
+    if not _validate_ip(target_ip):
+        return {"ok": False, "error": "invalid_ip"}
+    if is_private(target_ip):
+        return {"ok": False, "error": "target_is_private"}
+    if not HAS_SCAPY:
+        return {"ok": False, "error": "scapy_not_installed"}
+    max_hops = max(1, min(int(max_hops or 30), 64))
     try:
-        import urllib.request
-        url = f"https://ipapi.co/{ip}/json/"
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.9"})
-        with urllib.request.urlopen(req, timeout=3) as r:
-            data = json.loads(r.read().decode())
-        _geo_city_cache[ip] = {
-            "country":   data.get("country_code", ""),
-            "country_name": data.get("country_name", ""),
-            "city":      data.get("city", ""),
-            "latitude":  data.get("latitude"),
-            "longitude": data.get("longitude"),
-            "org":       data.get("org", ""),
-            "asn":       data.get("asn", ""),
+        from scapy.all import sr, IP as _IP, ICMP as _ICMP
+        from scapy.layers.inet6 import IPv6 as _IPv6
+        # IPv4 vs IPv6 probe construction
+        is_v6 = ":" in target_ip
+        if is_v6:
+            from scapy.layers.inet6 import ICMPv6EchoRequest as _ICMPv6
+            probes = [_IPv6(dst=target_ip, hlim=ttl) / _ICMPv6() for ttl in range(1, max_hops + 1)]
+        else:
+            probes = [_IP(dst=target_ip, ttl=ttl) / _ICMP() for ttl in range(1, max_hops + 1)]
+        ans, unans = sr(probes, timeout=3, verbose=0)
+        hops_dict = {}
+        for snd, rcv in ans:
+            ttl = int(snd.ttl if not is_v6 else snd.hlim)
+            rtt = (rcv.time - snd.sent_time) * 1000 if rcv.time and snd.sent_time else None
+            hops_dict[ttl] = {
+                "hop":       ttl,
+                "ip":        rcv.src,
+                "rtt_ms":    round(rtt, 1) if rtt is not None else None,
+                "is_target": rcv.src == target_ip,
+            }
+        for snd in unans:
+            ttl = int(snd.ttl if not is_v6 else snd.hlim)
+            if ttl not in hops_dict:
+                hops_dict[ttl] = {"hop": ttl, "ip": None, "rtt_ms": None, "is_target": False}
+        hops = sorted(hops_dict.values(), key=lambda h: h["hop"])
+        # Truncate after the target hop (further TTL probes are noise)
+        for i, h in enumerate(hops):
+            if h.get("is_target"):
+                hops = hops[:i + 1]
+                break
+        # Geolocate each public hop (uses provider chain we wired earlier)
+        for h in hops:
+            if h["ip"] and not is_private(h["ip"]):
+                if h["ip"] not in _geo_city_cache:
+                    try:
+                        _fetch_city_async(h["ip"])  # sync call here — populates _geo_city_cache
+                    except Exception as e:
+                        log.debug(f"[TRACE] geo lookup failed for {h['ip']}: {e}")
+                geo = _geo_city_cache.get(h["ip"], {})
+                h["country"]  = geo.get("country", "")
+                h["city"]     = geo.get("city", "")
+                h["lat"]      = geo.get("latitude")
+                h["lon"]      = geo.get("longitude")
+                h["org"]      = geo.get("org", "")
+        return {"ok": True, "target": target_ip, "hops": hops, "max_hops": max_hops}
+    except PermissionError:
+        return {"ok": False, "error": "needs_admin: scapy probes require Administrator/root"}
+    except Exception as e:
+        log.error(f"[TRACE] {target_ip}: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"traceroute_error: {type(e).__name__}: {e}"}
+
+
+# ── MaxMind GeoLite2 (local DB, no rate limit, no internet) ──────────────────
+def _geoip_file(name: str) -> str:
+    """User-downloaded DB (DATA_DIR/geoip) wins over a bundled one (RESOURCE_DIR/geoip)."""
+    for cand in (data_path("geoip", name), resource_path("geoip", name)):
+        if os.path.exists(cand):
+            return cand
+    return data_path("geoip", name)
+
+_MAXMIND_DB_PATH = _geoip_file("GeoLite2-City.mmdb")
+_MAXMIND_ASN_PATH = _geoip_file("GeoLite2-ASN.mmdb")
+_MAXMIND_READER = None
+_MAXMIND_ASN_READER = None
+_MAXMIND_INIT_TRIED = False
+
+
+def _get_maxmind_reader():
+    """Lazy-init the geoip2 City reader. Returns the reader or None if unavailable."""
+    global _MAXMIND_READER, _MAXMIND_ASN_READER, _MAXMIND_INIT_TRIED
+    if _MAXMIND_READER is not None:
+        return _MAXMIND_READER
+    if _MAXMIND_INIT_TRIED:
+        return None
+    _MAXMIND_INIT_TRIED = True
+    try:
+        import geoip2.database  # type: ignore
+    except ImportError:
+        log.info("[GEO] geoip2 not installed (pip install geoip2). Skipping MaxMind, using online providers.")
+        return None
+    if not os.path.exists(_MAXMIND_DB_PATH):
+        log.info(f"[GEO] MaxMind GeoLite2-City.mmdb not found at {_MAXMIND_DB_PATH}; using online providers.")
+        return None
+    try:
+        _MAXMIND_READER = geoip2.database.Reader(_MAXMIND_DB_PATH)
+        log.info(f"[GEO] MaxMind GeoLite2 City loaded -> {_MAXMIND_DB_PATH}")
+        # ASN DB is optional; if present, gives us org+asn locally too
+        if os.path.exists(_MAXMIND_ASN_PATH):
+            try:
+                _MAXMIND_ASN_READER = geoip2.database.Reader(_MAXMIND_ASN_PATH)
+                log.info(f"[GEO] MaxMind GeoLite2 ASN loaded -> {_MAXMIND_ASN_PATH}")
+            except Exception as e:
+                log.debug(f"[GEO] MaxMind ASN load failed: {e}")
+        return _MAXMIND_READER
+    except Exception as e:
+        log.warning(f"[GEO] MaxMind init failed: {e}")
+        return None
+
+
+def _fetch_geo_maxmind(ip: str):
+    """Provider 0 — MaxMind GeoLite2 local DB. <1ms, no rate limit, no internet, no key per call."""
+    reader = _get_maxmind_reader()
+    if not reader:
+        return None
+    try:
+        r = reader.city(ip)
+        org = ""
+        asn = ""
+        if _MAXMIND_ASN_READER:
+            try:
+                a = _MAXMIND_ASN_READER.asn(ip)
+                org = a.autonomous_system_organization or ""
+                asn = f"AS{a.autonomous_system_number}" if a.autonomous_system_number else ""
+            except Exception:
+                pass
+        return {
+            "country_code": (r.country.iso_code or "") if r.country else "",
+            "country_name": (r.country.name or "") if r.country else "",
+            "city":         (r.city.name or "") if r.city else "",
+            "latitude":     r.location.latitude if r.location else None,
+            "longitude":    r.location.longitude if r.location else None,
+            "org":          org,
+            "asn":          asn,
+            "_provider":    "maxmind",
         }
-        # Update intel after geo fetch
-        _update_ip_intel(ip, data)
     except Exception:
-        pass
+        # Common case: IP not in DB (private, reserved, brand-new allocation). Fall through to online.
+        return None
+
+
+def _fetch_geo_ipapi_co(ip: str):
+    """Provider 1 — ipapi.co (HTTPS, 1000 req/day free, no key). Returns normalized dict or None."""
+    import urllib.request
+    url = f"https://ipapi.co/{ip}/json/"
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.9"})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        data = json.loads(r.read().decode())
+    if data.get("error") or not data.get("country_code"):
+        return None
+    return {
+        "country_code": data.get("country_code") or "",
+        "country_name": data.get("country_name") or "",
+        "city":         data.get("city") or "",
+        "latitude":     data.get("latitude"),
+        "longitude":    data.get("longitude"),
+        "org":          data.get("org") or "",
+        "asn":          data.get("asn") or "",
+        "_provider":    "ipapi.co",
+    }
+
+
+def _fetch_geo_ip_api_com(ip: str):
+    """Provider 2 — ip-api.com (HTTP, 45 req/min free, no key). Used as fallback when ipapi.co rate-limits or fails."""
+    import urllib.request
+    fields = "status,country,countryCode,city,lat,lon,org,as,isp,query"
+    url = f"http://ip-api.com/json/{ip}?fields={fields}"
+    req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.9"})
+    with urllib.request.urlopen(req, timeout=3) as r:
+        data = json.loads(r.read().decode())
+    if data.get("status") != "success" or not data.get("countryCode"):
+        return None
+    # ip-api 'as' field is e.g. "AS8075 Microsoft Corporation" — extract the AS number alone
+    as_field = data.get("as") or ""
+    asn_num = as_field.split(" ", 1)[0] if as_field.startswith("AS") else ""
+    return {
+        "country_code": data.get("countryCode") or "",
+        "country_name": data.get("country") or "",
+        "city":         data.get("city") or "",
+        "latitude":     data.get("lat"),
+        "longitude":    data.get("lon"),
+        "org":          data.get("org") or data.get("isp") or "",
+        "asn":          asn_num,
+        "_provider":    "ip-api.com",
+    }
+
+
+_GEO_PROVIDERS = (_fetch_geo_maxmind, _fetch_geo_ip_api_com, _fetch_geo_ipapi_co)
+
+# ── Geo lookup worker (audit mémoire 2026-09-30) ─────────────────────────
+# One worker thread + bounded queue instead of one thread per packet. The packet
+# path only writes a placeholder in _geo_city_cache and enqueues the IP; a failed
+# lookup leaves a negative entry that is retried after _GEO_RETRY_SEC.
+_GEO_RETRY_SEC     = 900          # retry a failed lookup after 15 min
+_GEO_PENDING_SEC   = 120          # re-enqueue if a pending lookup never completed
+_GEO_QUEUE: "queue.Queue[str]" = queue.Queue(maxsize=5000)
+_GEO_WORKER_STARTED = False
+_GEO_WORKER_LOCK = threading.Lock()
+
+
+def _geo_worker():
+    while True:
+        ip = _GEO_QUEUE.get()
+        try:
+            _fetch_city_async(ip)
+        except Exception as e:
+            log.debug(f"[GEO] worker error for {ip}: {e}")
+        finally:
+            _GEO_QUEUE.task_done()
+
+
+def _ensure_geo_worker():
+    global _GEO_WORKER_STARTED
+    if _GEO_WORKER_STARTED:
+        return
+    with _GEO_WORKER_LOCK:
+        if not _GEO_WORKER_STARTED:
+            threading.Thread(target=_geo_worker, name="geo-worker", daemon=True).start()
+            _GEO_WORKER_STARTED = True
+
+
+def _schedule_geo_lookup(ip: str):
+    """Non-blocking: enqueue a geo lookup for `ip` at most once per retry window."""
+    now = time.time()
+    entry = _geo_city_cache.get(ip)
+    if entry is not None:
+        retry_at = entry.get("_retry_at")
+        if retry_at is None or retry_at > now:
+            return  # resolved, pending, or negative entry still fresh
+    # Placeholder written BEFORE enqueue so concurrent packets don't re-enqueue
+    country = get_country(ip) or ""
+    _geo_city_cache[ip] = {
+        "country":      country,
+        "country_name": GEO_COUNTRY_NAMES.get(country, country),
+        "city":         "",
+        "_retry_at":    now + _GEO_PENDING_SEC,
+    }
+    _ensure_geo_worker()
+    try:
+        _GEO_QUEUE.put_nowait(ip)
+    except queue.Full:
+        # Queue saturated: leave the placeholder, it will be retried later
+        entry = _geo_city_cache.get(ip)
+        if entry is not None:
+            entry["_retry_at"] = now + _GEO_RETRY_SEC
+
+
+# ── Threat-intel lookup worker (VirusTotal): same pattern as the geo worker ─
+_INTEL_QUEUE: "queue.Queue[str]" = queue.Queue(maxsize=2000)
+_INTEL_WORKER_STARTED = False
+
+
+def _intel_worker():
+    while True:
+        ip = _INTEL_QUEUE.get()
+        try:
+            _vt_check_ip(ip)
+        except Exception as e:
+            log.debug(f"[INTEL] worker error for {ip}: {e}")
+        finally:
+            _INTEL_QUEUE.task_done()
+
+
+def _schedule_intel_lookup(ip: str):
+    global _INTEL_WORKER_STARTED
+    if not _INTEL_WORKER_STARTED:
+        with _GEO_WORKER_LOCK:
+            if not _INTEL_WORKER_STARTED:
+                threading.Thread(target=_intel_worker, name="intel-worker", daemon=True).start()
+                _INTEL_WORKER_STARTED = True
+    try:
+        _INTEL_QUEUE.put_nowait(ip)
+    except queue.Full:
+        _CHECKED_IPS.discard(ip)   # let a later packet retry
+
+
+def _fetch_city_async(ip: str):
+    """Resolve geo for `ip` via provider chain (ipapi.co → ip-api.com fallback). Caches result."""
+    result = None
+    for provider in _GEO_PROVIDERS:
+        if provider is not _fetch_geo_maxmind and not CFG.geo_online_enabled:
+            continue   # user opted out of sending IPs to online geo services
+        try:
+            result = provider(ip)
+            if result:
+                break
+        except Exception as e:
+            log.debug(f"[GEO] {provider.__name__} failed for {ip}: {e}")
+            continue
+    if result:
+        # Provider strings are rendered in dashboards: sanitise before caching
+        # (ip-api.com answers over plain HTTP — an on-path attacker controls them).
+        for k in ("country_name", "city", "org", "asn"):
+            if k in result:
+                result[k] = _safe_str(result[k], 120)
+        result["country_code"] = _safe_str(result.get("country_code"), 8).upper()
+    if not result:
+        # All providers failed: write a NEGATIVE entry so the packet path stops
+        # re-scheduling this IP on every packet. Retried after _GEO_RETRY_SEC.
+        country = get_country(ip) or ""
+        _geo_city_cache[ip] = {
+            "country":      country,
+            "country_name": GEO_COUNTRY_NAMES.get(country, country),
+            "city":         "",
+            "_retry_at":    time.time() + _GEO_RETRY_SEC,
+        }
+        return
+    _geo_city_cache[ip] = {
+        "country":      result["country_code"],
+        "country_name": result["country_name"],
+        "city":         result["city"],
+        "latitude":     result["latitude"],
+        "longitude":    result["longitude"],
+        "org":          result["org"],
+        "asn":          result["asn"],
+    }
+    # _update_ip_intel expects ipapi.co-style 'country_code'/'org'/'asn' keys — bridge them
+    _update_ip_intel(ip, {
+        "country_code": result["country_code"],
+        "city":         result["city"],
+        "org":          result["org"],
+        "asn":          result["asn"],
+    })
 
 # ─── Listes VPN/Tor/Proxy connues ─────────────────────────────────────────
 _KNOWN_VPN_ORGS = [
@@ -322,7 +978,7 @@ def _compute_risk_score(ip: str) -> int:
     elif country in MED_RISK: score += 8
 
     # Menaces détectées
-    threat_count = sum(1 for t in STATE.threats if t.get("src_ip") == ip)
+    threat_count = sum(1 for t in list(STATE.threats) if t.get("src_ip") == ip)   # snapshot: deque mutated by sniff thread
     score += min(threat_count * 5, 25)
 
     score = min(score, 100)
@@ -331,7 +987,10 @@ def _compute_risk_score(ip: str) -> int:
 
 def _fetch_abuseipdb(ip: str):
     """Vérifie l'IP sur AbuseIPDB (si clé API configurée)"""
-    if not ABUSEIPDB_API_KEY or ip in _ABUSEIPDB_CACHE:
+    if not ABUSEIPDB_API_KEY:
+        return
+    cached = _ABUSEIPDB_CACHE.get(ip)
+    if cached is not None and not cached.get("_pending"):
         return
     try:
         import urllib.request
@@ -422,7 +1081,15 @@ class NetState:
         self.bytes_out             = 0
         self.active_conns          = defaultdict(set)
         self.threats               = deque(maxlen=100)
-        self.recent_packets        = deque(maxlen=500)
+        self.recent_packets        = deque(maxlen=2000)
+        # Per-IP ring buffer — guarantees every IP gets airtime in state broadcasts
+        # so chatty IPs (CDN, Claude API) don't starve quiet/new IPs.
+        self.ip_recent_packets     = defaultdict(lambda: deque(maxlen=4))
+        self.ip_first_seen_ts      = {}  # ip -> first time we ever saw it (for "new IP priority")
+        # Bandwidth + app identification (cumulative session counters)
+        self.bytes_per_ip          = defaultdict(int)        # ip -> total bytes seen this session
+        self.bytes_per_ip_per_sec  = defaultdict(lambda: deque(maxlen=60))  # ip -> [(ts, bytes)] last 60s
+        self.process_per_ip        = {}                      # ip -> "chrome.exe (1234)" or similar (last seen)
         self.geo_hits              = defaultdict(int)
         self.proto_stats           = defaultdict(int)
         self.traffic_history       = deque(maxlen=60)
@@ -431,12 +1098,21 @@ class NetState:
         self._syn_flood_tracker    = defaultdict(list)
         self._dns_tracker          = defaultdict(list)
         self.ip_hit_counter        = defaultdict(int)
+        self.ip_last_seen          = {}   # ip -> last packet ts (drives prune_ip_tables)
+        # Anti-spoofing: flows WE initiated. Key (remote_ip, remote_port, local_port) -> ts.
+        # An inbound packet whose reverse key is here belongs to a real conversation;
+        # a blind spoofer cannot know the ephemeral-port pairing.
+        self.flows                 = {}
+        self.outbound_seen         = {}   # remote ip -> ts of our last packet TO it
+        self.block_failures        = 0    # netsh/iptables returned non-zero (no admin?)
+        self.capture_error         = ""   # why packet capture is not running (shown in UI)
+        self.is_admin              = False
         self.dpi_alerts            = deque(maxlen=200)
         self.suricata_alerts       = deque(maxlen=200)
         self.record_active         = False
         self.record_file           = None
         self.record_file_path      = ""
-        self.record_packets        = []
+        self.record_count          = 0    # int counter (was a list of sizes: 1 entry per packet)
         self.record_start_time     = None
         self.record_lock           = threading.Lock()
         # v1.9.0
@@ -455,13 +1131,26 @@ class NetState:
 
 STATE = NetState()
 
+def _build_log_handlers():
+    """File log is best-effort: a read-only install dir (Store/MSIX) or a locked
+    file must never crash the process at import time."""
+    handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        os.makedirs(os.path.dirname(CFG.log_file) or ".", exist_ok=True)
+        handlers.insert(0, RotatingFileHandler(
+            CFG.log_file,
+            maxBytes=5 * 1024 * 1024,   # 5 MB
+            backupCount=3,
+            encoding="utf-8",
+        ))
+    except OSError as e:
+        print(f"[LOG] fichier journal indisponible ({e}) — console seulement", file=sys.stderr)
+    return handlers
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(CFG.log_file, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers=_build_log_handlers(),
 )
 log = logging.getLogger("netguard")
 
@@ -471,6 +1160,7 @@ log = logging.getLogger("netguard")
 
 # ─── Anomaly Detection ────────────────────────────────────────────────────
 _anomaly_accum: dict = {}  # ip -> {pkts, bytes, ports: set, protos: defaultdict(int)}
+_ANOMALY_LOCK = threading.Lock()  # guards _anomaly_accum between sniff thread and anomaly_flush
 
 class BaselineProfile:
     """Profil statistique par IP pour détection d'anomalies (sans numpy)"""
@@ -513,7 +1203,10 @@ class BehaviorProfile:
         self._recent_protos = deque(maxlen=50)
 
     def update(self, dst_port, proto, pkt_size):
-        self.port_counter[dst_port] += 1
+        # Cap distinct ports per profile: a port-scanner would otherwise create
+        # up to 65 535 keys in this dict for a single IP.
+        if dst_port in self.port_counter or len(self.port_counter) < 256:
+            self.port_counter[dst_port] += 1
         self.proto_counter[proto] += 1
         self.pkt_sizes.append(pkt_size)
         self.hour_counter[datetime.now().hour] += 1
@@ -597,15 +1290,17 @@ _CHECKED_IPS: set = set()  # IPs already submitted to VT/OTX
 QUARANTINED_IPS:  set = set()
 ISOLATED_DEVICES: set = set()
 ALERT_COOLDOWNS:  dict = {}
+_FORENSIC_LAST:   dict = {}   # ip -> ts of last auto-forensic report
+_FORENSIC_COOLDOWN_SEC = 600
+_FORENSIC_MAX_FILES    = 200  # cap on reports/forensic_*.json
 WEBHOOK_COOLDOWN: int  = 60
 
 # ─── Forensic ─────────────────────────────────────────────────────────────
 FORENSIC_QUEUE: list = []
 
-# ─── WireGuard VPN ────────────────────────────────────────────────────────
-WG_SERVER_PRIVKEY: str = ""
-WG_SERVER_PUBKEY:  str = ""
-WG_PEERS: list = []  # [{name, pubkey, privkey, address, allowed_ips, last_handshake, transfer}]
+# ─── WireGuard VPN (display-only post-trim 2026-04-30) ────────────────────
+# Only kept for state-shape backwards compat with the dashboard.
+WG_PEERS: list = []
 WG_STATUS: dict = {"running": False, "interface": "", "peers_connected": 0}
 
 _SENSITIVE_PATTERNS = [
@@ -740,7 +1435,7 @@ def _parse_rule_line(line: str) -> Optional[dict]:
             raw = pcre_m.group(1)
             # Retirer les flags Snort (/i, /s, etc.)
             raw = re.sub(r'[/][gimsuy]*$', '', raw).lstrip('/')
-            pattern = re.compile(raw.encode(), re.DOTALL | re.IGNORECASE)
+            pattern = _safe_compile(raw.encode())
         except Exception:
             pattern = None
     if pattern is None and cont_m:
@@ -753,6 +1448,28 @@ def _parse_rule_line(line: str) -> Optional[dict]:
         return None
     return {"sid": sid, "msg": msg, "pattern": pattern, "proto": "TCP", "action": "alert", "severity": severity}
 
+_RULE_MAX_LEN = 512
+_RULES_MAX_DOWNLOAD = 20 * 1024 * 1024   # 20 MB per ruleset
+# Quantified group followed by another quantifier: (a+)+, (\w*)*, (x{1,}){2,} …
+_NESTED_QUANT_RE = re.compile(rb"\((?:[^()\\]|\\.)*[*+}](?:[^()\\]|\\.)*\)\s*[*+{?]")
+
+def _safe_compile(raw: bytes):
+    """Compile a payload regex with ReDoS guard rails: every rule runs against
+    every packet payload on the capture thread, so one catastrophic pattern
+    (from a downloaded ruleset or a custom rule typed in the UI) = packet loss."""
+    if not raw or len(raw) > _RULE_MAX_LEN:
+        raise ValueError("pattern trop long")
+    if _NESTED_QUANT_RE.search(raw):
+        raise ValueError("quantificateurs imbriqués refusés (ReDoS)")
+    pat = re.compile(raw, re.DOTALL | re.IGNORECASE)
+    # Smoke test on a 64 KB adversarial-ish buffer; must be fast
+    t0 = time.perf_counter()
+    pat.search(b"a" * 65536)
+    pat.search(b"\x00\xff" * 32768)
+    if time.perf_counter() - t0 > 0.25:
+        raise ValueError("pattern trop lent (ReDoS)")
+    return pat
+
 def load_et_rules_online(ruleset_key: str) -> dict:
     """Télécharge un ruleset Emerging Threats depuis internet"""
     import urllib.request
@@ -760,9 +1477,12 @@ def load_et_rules_online(ruleset_key: str) -> dict:
     if not url:
         return {"ok": False, "error": f"Ruleset inconnu: {ruleset_key}"}
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/1.6"})
+        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardAI/1.6"})
         with urllib.request.urlopen(req, timeout=15) as r:
-            content = r.read().decode("utf-8", errors="ignore")
+            content = r.read(_RULES_MAX_DOWNLOAD + 1)
+            if len(content) > _RULES_MAX_DOWNLOAD:
+                return {"ok": False, "error": "ruleset trop volumineux (> 20 Mo)"}
+            content = content.decode("utf-8", errors="ignore")
         rules = []
         for line in content.splitlines():
             parsed = _parse_rule_line(line)
@@ -812,10 +1532,11 @@ def suricata_add_custom_rule(msg: str, pattern_str: str, proto: str = "TCP",
                               severity: str = "high", action: str = "alert") -> dict:
     """Ajoute une règle personnalisée"""
     global SURICATA_LOADED
+    msg = _safe_str(msg, 120)
     try:
         sid = 9900000 + len(SURICATA_CUSTOM_RULES) + 1
-        pattern = re.compile(pattern_str.encode() if isinstance(pattern_str, str) else pattern_str,
-                            re.DOTALL | re.IGNORECASE)
+        # ReDoS guard: the pattern is typed in the UI, persisted, and run on every packet
+        pattern = _safe_compile(pattern_str.encode() if isinstance(pattern_str, str) else pattern_str)
         rule = {
             "sid": sid, "msg": msg, "pattern": pattern,
             "proto": proto.upper(), "action": action, "severity": severity,
@@ -863,189 +1584,104 @@ SURICATA_LOADED = len(SURICATA_RULES)
 print(f"[SURICATA] {SURICATA_LOADED} règles intégrées chargées")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# v4.0 — NEW MODULES: Vulnerability / Backup / Incidents / Training / NAC / IAM
+# v4.0 — NetGuard Modules: Backup / Login Auth Helpers
+# (IAM/NAC/Incidents/Training/Vuln-scan trimmed — see TRIM_REPORT.md)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ─── Vulnerability Scanner ────────────────────────────────────────────────────
-VULN_SCAN_HISTORY = deque(maxlen=50)
-
-def vuln_scan_ports(target: str, port_range: str = "1-1024") -> dict:
-    """Scan TCP ports on a target"""
-    import socket
-    open_ports = []
-    try:
-        parts = port_range.split("-")
-        start = int(parts[0])
-        end = int(parts[1]) if len(parts) > 1 else start
-        end = min(end, 65535)
-        start = max(start, 1)
-    except Exception:
-        start, end = 1, 1024
-
-    KNOWN_SERVICES = {
-        21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
-        80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
-        993: "IMAPS", 995: "POP3S", 1433: "MSSQL", 3306: "MySQL",
-        3389: "RDP", 5432: "PostgreSQL", 5900: "VNC", 6379: "Redis",
-        8080: "HTTP-Alt", 8443: "HTTPS-Alt", 27017: "MongoDB",
-    }
-    VULN_PORTS = {
-        21: "FTP anonymous access possible",
-        23: "Telnet unencrypted protocol",
-        445: "SMB exposed (WannaCry, EternalBlue risk)",
-        3389: "RDP exposed (BlueKeep risk)",
-        5900: "VNC exposed (often unencrypted)",
-        6379: "Redis exposed (usually no auth)",
-        27017: "MongoDB exposed (usually no auth)",
-    }
-
-    scanned = 0
-    for port in range(start, end + 1):
-        scanned += 1
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.3)
-            result = sock.connect_ex((target, port))
-            if result == 0:
-                service = KNOWN_SERVICES.get(port, "unknown")
-                vuln = VULN_PORTS.get(port, "")
-                open_ports.append({
-                    "port": port,
-                    "service": service,
-                    "state": "open",
-                    "vulnerability": vuln,
-                    "risk": "high" if vuln else "info",
-                })
-            sock.close()
-        except Exception:
-            pass
-
-    scan_result = {
-        "ok": True,
-        "target": target,
-        "open_ports": open_ports,
-        "scanned": scanned,
-        "timestamp": datetime.now().isoformat(),
-    }
-    VULN_SCAN_HISTORY.appendleft(scan_result)
-    log.info(f"[VULN] Port scan {target}: {len(open_ports)} open ports / {scanned} scanned")
-    return scan_result
-
-def vuln_cve_lookup(cve_id: str) -> dict:
-    """Lookup CVE from NIST NVD API"""
-    import urllib.request
-    try:
-        url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
-        req = urllib.request.Request(url, headers={"User-Agent": "NetGuardPro/4.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode())
-        if data.get("vulnerabilities"):
-            vuln = data["vulnerabilities"][0]["cve"]
-            desc = ""
-            for d in vuln.get("descriptions", []):
-                if d.get("lang") == "en":
-                    desc = d.get("value", "")
-                    break
-            metrics = vuln.get("metrics", {})
-            score = ""
-            severity = ""
-            for k in ["cvssMetricV31", "cvssMetricV30", "cvssMetricV2"]:
-                if k in metrics and metrics[k]:
-                    score = metrics[k][0].get("cvssData", {}).get("baseScore", "")
-                    severity = metrics[k][0].get("cvssData", {}).get("baseSeverity", "")
-                    break
-            return {
-                "ok": True,
-                "id": vuln.get("id", cve_id),
-                "description": desc,
-                "score": score,
-                "severity": severity,
-                "published": vuln.get("published", ""),
-                "modified": vuln.get("lastModified", ""),
-                "references": [ref.get("url", "") for ref in vuln.get("references", [])[:5]],
-            }
-        return {"ok": False, "error": "CVE not found"}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-def vuln_system_check() -> dict:
-    """Basic system security check"""
-    checks = []
-    import subprocess
-    _si = None
-    _cf = 0
-    if os.name == 'nt':
-        _si = subprocess.STARTUPINFO()
-        _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        _si.wShowWindow = 0
-        _cf = subprocess.CREATE_NO_WINDOW
-
-    # Check firewall
-    try:
-        r = subprocess.run(["netsh", "advfirewall", "show", "allprofiles", "state"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        fw_on = "ON" in r.stdout.upper()
-        checks.append({"check": "Windows Firewall", "status": "pass" if fw_on else "fail",
-                       "detail": "Enabled" if fw_on else "DISABLED - Enable immediately!"})
-    except Exception:
-        checks.append({"check": "Windows Firewall", "status": "unknown", "detail": "Could not check"})
-
-    # Check Windows Update
-    try:
-        r = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "(Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 1).InstalledOn"], capture_output=True, text=True, timeout=10, startupinfo=_si, creationflags=_cf)
-        last_update = r.stdout.strip()
-        checks.append({"check": "Last Windows Update", "status": "info", "detail": last_update or "Unknown"})
-    except Exception:
-        checks.append({"check": "Last Windows Update", "status": "unknown", "detail": "Could not check"})
-
-    # Check antivirus
-    try:
-        r = subprocess.run(["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", "Get-MpComputerStatus | Select-Object RealTimeProtectionEnabled,AntivirusEnabled"], capture_output=True, text=True, timeout=10, startupinfo=_si, creationflags=_cf)
-        av_on = "True" in r.stdout
-        checks.append({"check": "Windows Defender", "status": "pass" if av_on else "warn",
-                       "detail": "Active" if av_on else "Real-time protection may be disabled"})
-    except Exception:
-        checks.append({"check": "Windows Defender", "status": "unknown", "detail": "Could not check"})
-
-    # Check open ports
-    try:
-        r = subprocess.run(["netstat", "-an"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        listening = [l for l in r.stdout.splitlines() if "LISTENING" in l]
-        checks.append({"check": "Listening Ports", "status": "info", "detail": f"{len(listening)} ports listening"})
-    except Exception:
-        checks.append({"check": "Listening Ports", "status": "unknown", "detail": "Could not check"})
-
-    # Check RDP
-    try:
-        r = subprocess.run(["reg", "query", r"HKLM\SYSTEM\CurrentControlSet\Control\Terminal Server", "/v", "fDenyTSConnections"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        rdp_disabled = "0x1" in r.stdout
-        checks.append({"check": "Remote Desktop (RDP)", "status": "pass" if rdp_disabled else "warn",
-                       "detail": "Disabled" if rdp_disabled else "ENABLED - Consider disabling if not needed"})
-    except Exception:
-        checks.append({"check": "Remote Desktop (RDP)", "status": "unknown", "detail": "Could not check"})
-
-    # Check password policy
-    try:
-        r = subprocess.run(["net", "accounts"], capture_output=True, text=True, timeout=5, startupinfo=_si, creationflags=_cf)
-        checks.append({"check": "Password Policy", "status": "info", "detail": "Checked"})
-    except Exception:
-        pass
-
-    return {"ok": True, "checks": checks, "timestamp": datetime.now().isoformat()}
-
-
 # ─── Backup & Recovery ────────────────────────────────────────────────────────
-BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backups")
+BACKUP_DIR = data_path("backups")
 BACKUP_SCHEDULE = {"enabled": False, "interval_hours": 24, "last_backup": ""}
 
+
+def _restrict_file_acl(path: str) -> None:
+    """os.chmod(0o600) only toggles the read-only bit on Windows: any local
+    account could read the WS token / backup key / settings. Replace the ACL
+    with owner-only full control (icacls), best-effort and never fatal."""
+    if not IS_WINDOWS or not os.path.exists(path):
+        return
+    user = os.environ.get("USERNAME") or ""
+    if not user:
+        return
+    try:
+        _subprocess.run(["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+                        capture_output=True, timeout=10)
+    except Exception as e:
+        log.debug(f"[ACL] icacls {path}: {e}")
+
+def _secure_json_write(path: str, data, mode: int = 0o600, indent: int = 2):
+    """Atomic JSON write + chmod (default 0600). Writes to temp file in same dir then os.replace().
+    Hardening: combines Phase 2.2 (perms) and Phase 5.1 (atomicity) from the security audit."""
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(parent, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp_", dir=parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent, ensure_ascii=False, default=str)
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        _restrict_file_acl(path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ── Backup encryption (Phase 5.2) ───────────────────────────────────────────
+_BACKUP_KEY_FILE = data_path(".netguard_backup_key")
+_BACKUP_FERNET = None  # lazy cache
+
+
+def _get_backup_fernet():
+    """Return a Fernet instance using a key persisted at .netguard_backup_key (0600).
+    Generate the key on first call if missing. Returns None if cryptography lib is not available."""
+    global _BACKUP_FERNET
+    if _BACKUP_FERNET is not None:
+        return _BACKUP_FERNET
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:
+        log.warning("[BACKUP] cryptography not installed; backups will be plaintext (pip install cryptography)")
+        return None
+    try:
+        if os.path.exists(_BACKUP_KEY_FILE):
+            with open(_BACKUP_KEY_FILE, "rb") as f:
+                key = f.read().strip()
+        else:
+            key = Fernet.generate_key()
+            with open(_BACKUP_KEY_FILE, "wb") as f:
+                f.write(key)
+            try:
+                os.chmod(_BACKUP_KEY_FILE, 0o600)
+            except OSError:
+                pass
+            _restrict_file_acl(_BACKUP_KEY_FILE)
+            log.info(f"[BACKUP] Encryption key generated -> {_BACKUP_KEY_FILE}")
+        _BACKUP_FERNET = Fernet(key)
+        return _BACKUP_FERNET
+    except Exception as e:
+        log.error(f"[BACKUP] Cannot init backup encryption: {e}")
+        return None
+
+_BACKUP_BASENAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
 def backup_create(name: str = "", include: list = None) -> dict:
-    """Create a backup of NetGuard Pro configuration"""
+    """Create a backup of NetGuard configuration"""
     os.makedirs(BACKUP_DIR, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if name and (not isinstance(name, str) or not _BACKUP_BASENAME_RE.match(name) or ".." in name):
+        return {"ok": False, "error": "Nom de backup invalide (lettres/chiffres/_/.- seulement)"}
+    if not isinstance(include, (list, type(None))):
+        return {"ok": False, "error": "include invalide"}
     backup_name = name or f"netguard_backup_{ts}"
     backup_path = os.path.join(BACKUP_DIR, f"{backup_name}.json")
 
     backup_data = {
-        "version": "4.0.0",
+        "version": "4.1.0",
         "timestamp": datetime.now().isoformat(),
         "name": backup_name,
     }
@@ -1074,35 +1710,67 @@ def backup_create(name: str = "", include: list = None) -> dict:
         backup_data["suricata_disabled_sids"] = list(SURICATA_DISABLED_SIDS)
 
     try:
-        with open(backup_path, "w", encoding="utf-8") as f:
-            json.dump(backup_data, f, indent=2, ensure_ascii=False)
+        fer = _get_backup_fernet()
+        if fer:
+            plaintext = json.dumps(backup_data, ensure_ascii=False, default=str).encode("utf-8")
+            ciphertext = fer.encrypt(plaintext)
+            envelope = {"_format": "fernet-v1", "ciphertext": ciphertext.decode("ascii")}
+            _secure_json_write(backup_path, envelope)
+            encrypted = True
+        else:
+            _secure_json_write(backup_path, backup_data)
+            encrypted = False
         size = os.path.getsize(backup_path)
         BACKUP_SCHEDULE["last_backup"] = datetime.now().isoformat()
-        log.info(f"[BACKUP] Created: {backup_path} ({size} bytes)")
-        return {"ok": True, "path": backup_path, "size": size, "name": backup_name}
+        log.info(f"[BACKUP] Created: {backup_path} ({size} bytes, encrypted={encrypted})")
+        return {"ok": True, "path": backup_path, "size": size, "name": backup_name, "encrypted": encrypted}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+_BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,128}\.json$")
+
+
 def backup_restore(filename: str) -> dict:
-    """Restore from a backup file"""
-    path = os.path.join(BACKUP_DIR, filename)
+    """Restore from a backup file (path-traversal hardened)"""
+    if not isinstance(filename, str) or not _BACKUP_NAME_RE.match(filename):
+        return {"ok": False, "error": "Nom de backup invalide (lettres/chiffres/_/.- only, .json)"}
+    base_real = os.path.realpath(BACKUP_DIR)
+    path = os.path.realpath(os.path.join(BACKUP_DIR, filename))
+    if not (path == base_real or path.startswith(base_real + os.sep)):
+        return {"ok": False, "error": "Chemin hors du dossier de backups"}
     if not os.path.exists(path):
         return {"ok": False, "error": "Backup file not found"}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            raw = json.load(f)
+
+        if isinstance(raw, dict) and raw.get("_format") == "fernet-v1":
+            fer = _get_backup_fernet()
+            if not fer:
+                return {"ok": False, "error": "Backup chiffre mais cle absente. Restaure .netguard_backup_key d'abord"}
+            try:
+                plaintext = fer.decrypt(raw["ciphertext"].encode("ascii"))
+                data = json.loads(plaintext.decode("utf-8"))
+            except Exception as e:
+                return {"ok": False, "error": f"Dechiffrement echoue: {e}"}
+        else:
+            data = raw  # legacy plaintext backup
 
         if "settings" in data:
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data["settings"], f, indent=2, ensure_ascii=False)
+            _secure_json_write(SETTINGS_FILE, data["settings"])
 
         if "blocked_ips" in data:
-            BLOCKED_IPS.clear()
-            BLOCKED_IPS.update(data["blocked_ips"])
+            ips = data["blocked_ips"]
+            if isinstance(ips, list):            # a string would add one entry per character
+                BLOCKED_IPS.clear()
+                BLOCKED_IPS.update(ip for ip in ips if isinstance(ip, str) and _validate_ip(ip))
 
         if "geo_countries" in data:
             global GEO_BLOCKED_COUNTRIES
-            GEO_BLOCKED_COUNTRIES = set(data["geo_countries"])
+            countries = data["geo_countries"]
+            if isinstance(countries, list):
+                GEO_BLOCKED_COUNTRIES = {c.upper() for c in countries
+                                         if isinstance(c, str) and re.fullmatch(r"[A-Za-z]{2}", c)}
 
         load_settings()
         log.info(f"[BACKUP] Restored: {filename}")
@@ -1126,272 +1794,72 @@ def backup_list() -> list:
     return backups
 
 def backup_delete(filename: str) -> dict:
-    """Delete a backup file"""
-    path = os.path.join(BACKUP_DIR, filename)
-    if os.path.exists(path):
+    """Delete a backup file (same containment rules as backup_restore).
+    Before: os.path.join(BACKUP_DIR, filename) with an absolute or ../ filename
+    deleted ANY file reachable by the process."""
+    if not isinstance(filename, str) or not _BACKUP_NAME_RE.match(filename):
+        return {"ok": False, "error": "Nom de backup invalide"}
+    base_real = os.path.realpath(BACKUP_DIR)
+    path = os.path.realpath(os.path.join(BACKUP_DIR, filename))
+    if os.path.dirname(path) != base_real:
+        return {"ok": False, "error": "Chemin hors du dossier de backups"}
+    if os.path.isfile(path):
         os.remove(path)
         return {"ok": True}
     return {"ok": False, "error": "File not found"}
 
 
-# ─── Incident Response / Ticketing ────────────────────────────────────────────
-INCIDENTS = []  # list of ticket dicts
-INCIDENT_COUNTER = 0
-
-def incident_create(title: str, description: str, severity: str = "medium",
-                    assigned_to: str = "", related_ip: str = "") -> dict:
-    global INCIDENT_COUNTER
-    INCIDENT_COUNTER += 1
-    ticket = {
-        "id": f"INC-{INCIDENT_COUNTER:04d}",
-        "title": title,
-        "description": description,
-        "severity": severity,
-        "status": "open",
-        "assigned_to": assigned_to,
-        "related_ip": related_ip,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-        "notes": [],
-    }
-    INCIDENTS.insert(0, ticket)
-    log.info(f"[INCIDENT] Created: {ticket['id']} — {title}")
-    return ticket
-
-def incident_update(ticket_id: str, updates: dict) -> dict:
-    for t in INCIDENTS:
-        if t["id"] == ticket_id:
-            if "notes" in updates:
-                t["notes"].append({
-                    "text": updates["notes"],
-                    "timestamp": datetime.now().isoformat(),
-                })
-                del updates["notes"]
-            t.update(updates)
-            t["updated_at"] = datetime.now().isoformat()
-            return {"ok": True, "ticket": t}
-    return {"ok": False, "error": "Ticket not found"}
-
-def incident_list(status_filter: str = "") -> list:
-    if status_filter:
-        return [t for t in INCIDENTS if t["status"] == status_filter]
-    return INCIDENTS
-
-def incident_get(ticket_id: str) -> dict:
-    for t in INCIDENTS:
-        if t["id"] == ticket_id:
-            return t
-    return {}
-
-def incident_delete(ticket_id: str) -> dict:
-    global INCIDENTS
-    INCIDENTS = [t for t in INCIDENTS if t["id"] != ticket_id]
-    return {"ok": True}
+# ─── Login Auth Helpers (password hashing — used by netguard_login.html) ──────
+def _hash_password(password: str) -> str:
+    """Hash password with scrypt (OWASP n=16384, r=8, p=1). Format: 'scrypt$<salt-hex>$<hash-hex>'."""
+    salt = _ng_secrets.token_bytes(16)
+    h = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return f"scrypt${salt.hex()}${h.hex()}"
 
 
-# ─── Training & Awareness ────────────────────────────────────────────────────
-TRAINING_MODULES = [
-    {
-        "id": "phishing_101",
-        "title": "Phishing Detection 101",
-        "description": "Learn to identify phishing emails, suspicious links, and social engineering attacks.",
-        "category": "email",
-        "difficulty": "beginner",
-        "duration_min": 15,
-        "questions": [
-            {"q": "What is the most common sign of a phishing email?", "options": ["Misspelled sender domain", "Blue text", "Long email", "Has images"], "correct": 0},
-            {"q": "A colleague sends you an urgent link to 'verify your password'. What should you do?", "options": ["Click immediately", "Forward to IT security", "Verify via another channel", "Delete and ignore"], "correct": 2},
-            {"q": "Which URL is likely a phishing attempt?", "options": ["https://google.com", "https://g00gle-security.com/verify", "https://mail.google.com", "https://accounts.google.com"], "correct": 1},
-            {"q": "What is 'spear phishing'?", "options": ["Mass email spam", "Targeted attack on specific person", "Fishing website", "Email with attachments"], "correct": 1},
-            {"q": "What should you check before clicking a link in an email?", "options": ["The font size", "Hover over to see actual URL", "The email length", "The sender's profile picture"], "correct": 1},
-        ],
-    },
-    {
-        "id": "password_security",
-        "title": "Password Security & MFA",
-        "description": "Best practices for creating strong passwords and using multi-factor authentication.",
-        "category": "access",
-        "difficulty": "beginner",
-        "duration_min": 10,
-        "questions": [
-            {"q": "Which is the strongest password?", "options": ["password123", "P@ssw0rd!", "correct-horse-battery-staple", "admin"], "correct": 2},
-            {"q": "How often should you change your password?", "options": ["Every day", "When there's a breach", "Never", "Every hour"], "correct": 1},
-            {"q": "What is MFA?", "options": ["Multiple File Access", "Multi-Factor Authentication", "Main Firewall Admin", "Managed File Archive"], "correct": 1},
-            {"q": "Which MFA method is most secure?", "options": ["SMS code", "Hardware security key", "Email code", "Security questions"], "correct": 1},
-            {"q": "Should you use the same password for multiple accounts?", "options": ["Yes, easier to remember", "Only for unimportant sites", "Never", "Only with MFA"], "correct": 2},
-        ],
-    },
-    {
-        "id": "social_engineering",
-        "title": "Social Engineering Defense",
-        "description": "Recognize and defend against social engineering tactics used by attackers.",
-        "category": "awareness",
-        "difficulty": "intermediate",
-        "duration_min": 20,
-        "questions": [
-            {"q": "What is pretexting?", "options": ["Writing code", "Creating false scenario to gain trust", "Sending spam", "Hacking passwords"], "correct": 1},
-            {"q": "A caller claims to be from IT and asks for your password. What do you do?", "options": ["Give it immediately", "Hang up and call IT directly", "Email your password instead", "Give a fake password"], "correct": 1},
-            {"q": "What is tailgating in security?", "options": ["Following someone through a secure door", "Sending follow-up emails", "Tracking someone online", "Using VPN"], "correct": 0},
-            {"q": "Which is a sign of a social engineering attack?", "options": ["Unusual urgency", "Proper grammar", "Known sender", "Normal request"], "correct": 0},
-            {"q": "What is baiting?", "options": ["Using malicious USB drives", "Email fishing", "Phone calls", "Web browsing"], "correct": 0},
-        ],
-    },
-    {
-        "id": "ransomware_defense",
-        "title": "Ransomware Prevention",
-        "description": "Learn to prevent, detect, and respond to ransomware attacks.",
-        "category": "malware",
-        "difficulty": "intermediate",
-        "duration_min": 15,
-        "questions": [
-            {"q": "What is the best defense against ransomware?", "options": ["Paying the ransom", "Regular backups", "Stronger passwords", "Faster internet"], "correct": 1},
-            {"q": "How does ransomware typically spread?", "options": ["Through Bluetooth", "Phishing emails with malicious attachments", "Through Wi-Fi signals", "Via printer"], "correct": 1},
-            {"q": "Should you pay the ransom if hit?", "options": ["Always", "Never recommended", "Only if cheap", "Wait a week"], "correct": 1},
-            {"q": "What file extension indicates a potentially dangerous attachment?", "options": [".pdf", ".exe", ".jpg", ".txt"], "correct": 1},
-            {"q": "What is the 3-2-1 backup rule?", "options": ["3 passwords, 2 emails, 1 phone", "3 copies, 2 media types, 1 offsite", "3 users, 2 admins, 1 root", "3 networks, 2 firewalls, 1 VPN"], "correct": 1},
-        ],
-    },
-    {
-        "id": "network_security",
-        "title": "Network Security Basics",
-        "description": "Understanding network threats, firewalls, VPNs, and secure configurations.",
-        "category": "network",
-        "difficulty": "advanced",
-        "duration_min": 20,
-        "questions": [
-            {"q": "What does a firewall do?", "options": ["Speeds up internet", "Filters network traffic", "Stores passwords", "Creates backups"], "correct": 1},
-            {"q": "What is a VPN used for?", "options": ["Blocking ads", "Encrypting network traffic", "Speeding up downloads", "Creating websites"], "correct": 1},
-            {"q": "What is a Man-in-the-Middle attack?", "options": ["Physical break-in", "Intercepting communications", "DDoS attack", "Brute force"], "correct": 1},
-            {"q": "Which port is commonly used for HTTPS?", "options": ["80", "443", "22", "3389"], "correct": 1},
-            {"q": "What does DNS stand for?", "options": ["Digital Network System", "Domain Name System", "Data Network Security", "Dynamic Node Service"], "correct": 1},
-        ],
-    },
-]
-
-TRAINING_SCORES = {}
-
-def training_submit_quiz(module_id: str, answers: dict) -> dict:
-    module = next((m for m in TRAINING_MODULES if m["id"] == module_id), None)
-    if not module:
-        return {"ok": False, "error": "Module not found"}
-
-    correct = 0
-    total = len(module["questions"])
-    details = []
-    for i, q in enumerate(module["questions"]):
-        user_answer = answers.get(str(i), -1)
-        is_correct = int(user_answer) == q["correct"]
-        if is_correct:
-            correct += 1
-        details.append({
-            "question": q["q"],
-            "correct": is_correct,
-            "user_answer": int(user_answer),
-            "correct_answer": q["correct"],
-        })
-
-    score = round((correct / total) * 100)
-    TRAINING_SCORES[module_id] = {
-        "score": score,
-        "correct": correct,
-        "total": total,
-        "passed": score >= 70,
-        "timestamp": datetime.now().isoformat(),
-    }
-
-    return {"ok": True, "score": score, "correct": correct, "total": total,
-            "passed": score >= 70, "details": details, "module_id": module_id}
-
-def training_phishing_sim(target_email: str) -> dict:
-    """Simulate a phishing test (local only, no actual email sent)"""
-    sim_id = f"SIM-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    return {
-        "ok": True,
-        "sim_id": sim_id,
-        "message": "Phishing simulation created (local mode — no actual email sent)",
-        "target": target_email,
-        "template": "Password Reset Notification",
-    }
-
-
-# ─── NAC Enhanced ─────────────────────────────────────────────────────────────
-NAC_APPROVED = []   # [{"ip": ..., "mac": ..., "name": ..., "approved_at": ...}]
-NAC_DENIED = []     # [{"ip": ..., "mac": ..., "denied_at": ...}]
-NAC_PENDING = []    # [{"ip": ..., "mac": ..., "first_seen": ...}]
-NAC_POLICY = {"default_action": "allow", "require_approval": False, "mac_filter": False}
-
-def nac_approve_device(ip: str, mac: str, name: str = ""):
-    NAC_APPROVED.append({"ip": ip, "mac": mac, "name": name or ip, "approved_at": datetime.now().isoformat()})
-    NAC_PENDING[:] = [d for d in NAC_PENDING if d.get("ip") != ip]
-    NAC_DENIED[:] = [d for d in NAC_DENIED if d.get("ip") != ip]
-    log.info(f"[NAC] Device approved: {ip} ({mac})")
-
-def nac_deny_device(ip: str, mac: str):
-    NAC_DENIED.append({"ip": ip, "mac": mac, "denied_at": datetime.now().isoformat()})
-    NAC_PENDING[:] = [d for d in NAC_PENDING if d.get("ip") != ip]
-    NAC_APPROVED[:] = [d for d in NAC_APPROVED if d.get("ip") != ip]
-    log.info(f"[NAC] Device denied: {ip} ({mac})")
-
-
-# ─── IAM Enhanced ─────────────────────────────────────────────────────────────
-IAM_USERS = {}      # {username: {password_hash, role, email, mfa_enabled, created_at}}
-IAM_SESSIONS = {}   # {session_id: {username, ip, created_at}}
-IAM_ROLES = {
-    "admin":   {"permissions": ["all"]},
-    "analyst": {"permissions": ["read", "alerts", "reports", "threats"]},
-    "viewer":  {"permissions": ["read"]},
-}
-
-def iam_create_user(username: str, password: str, role: str = "viewer", email: str = "") -> dict:
-    if not username or not password:
-        return {"ok": False, "error": "Username and password required"}
-    if username in IAM_USERS:
-        return {"ok": False, "error": "User already exists"}
-    if role not in IAM_ROLES:
-        return {"ok": False, "error": f"Invalid role. Valid: {list(IAM_ROLES.keys())}"}
-    pw_hash = hashlib.sha256(password.encode()).hexdigest()
-    IAM_USERS[username] = {
-        "password_hash": pw_hash,
-        "role": role,
-        "email": email,
-        "mfa_enabled": False,
-        "mfa_secret": "",
-        "created_at": datetime.now().isoformat(),
-        "last_login": "",
-    }
-    log.info(f"[IAM] User created: {username} (role: {role})")
-    return {"ok": True, "username": username, "role": role}
-
-def iam_delete_user(username: str) -> dict:
-    if username in IAM_USERS:
-        del IAM_USERS[username]
-        return {"ok": True}
-    return {"ok": False, "error": "User not found"}
-
-def iam_list_users() -> list:
-    return [
-        {"username": u, "role": d["role"], "email": d.get("email", ""),
-         "mfa_enabled": d.get("mfa_enabled", False),
-         "created_at": d["created_at"], "last_login": d.get("last_login", "")}
-        for u, d in IAM_USERS.items()
-    ]
-
-def iam_update_role(username: str, role: str) -> dict:
-    if username not in IAM_USERS:
-        return {"ok": False, "error": "User not found"}
-    if role not in IAM_ROLES:
-        return {"ok": False, "error": "Invalid role"}
-    IAM_USERS[username]["role"] = role
-    return {"ok": True, "username": username, "role": role}
-
-def iam_toggle_mfa(username: str) -> dict:
-    if username not in IAM_USERS:
-        return {"ok": False, "error": "User not found"}
-    IAM_USERS[username]["mfa_enabled"] = not IAM_USERS[username]["mfa_enabled"]
-    if IAM_USERS[username]["mfa_enabled"]:
-        import secrets
-        IAM_USERS[username]["mfa_secret"] = secrets.token_hex(16)
-    return {"ok": True, "mfa_enabled": IAM_USERS[username]["mfa_enabled"]}
+def iam_verify_password(password: str, stored: str) -> bool:
+    """Verify password against stored hash. Supports scrypt (new) + sha256 + salt:hash legacy formats.
+    Name kept for backwards compatibility with login flow + tests."""
+    if not stored or not password:
+        return False
+    try:
+        if stored.startswith("scrypt$"):
+            _, salt_hex, hash_hex = stored.split("$", 2)
+            salt = bytes.fromhex(salt_hex)
+            expected = bytes.fromhex(hash_hex)
+            actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+            return _ng_secrets.compare_digest(actual, expected)
+        # Legacy bare SHA256 hex (64 chars)
+        if len(stored) == 64 and all(c in "0123456789abcdef" for c in stored.lower()):
+            return _ng_secrets.compare_digest(
+                hashlib.sha256(password.encode()).hexdigest(),
+                stored.lower(),
+            )
+        # Legacy salt:hash format from netguard_users.json (salt-hex : base64-of-sha256(salt+password))
+        if ":" in stored:
+            import base64 as _b64
+            salt_part, hash_part = stored.split(":", 1)
+            try:
+                expected = _b64.b64decode(hash_part)
+            except Exception:
+                return False
+            # Try sha256(salt+password)
+            try:
+                actual = hashlib.sha256((salt_part + password).encode()).digest()
+                if _ng_secrets.compare_digest(actual, expected):
+                    return True
+            except Exception:
+                pass
+            # Try PBKDF2-HMAC-SHA256 with hex salt
+            try:
+                actual = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt_part), 100000)
+                if _ng_secrets.compare_digest(actual, expected):
+                    return True
+            except (ValueError, TypeError):
+                pass
+    except Exception:
+        return False
+    return False
 
 
 def dpi_inspect(src_ip: str, payload: bytes) -> list:
@@ -1407,10 +1875,191 @@ def dpi_inspect(src_ip: str, payload: bytes) -> list:
             alerts.append({"type": "attack", "detail": label, "masked": False})
     return alerts
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task B 2026-04-30 — Rogue Npcap Consumer Detector
+# ═══════════════════════════════════════════════════════════════════════════
+# Background: orphan pytest sessions loading scapy triggered the Windows UAC
+# popup loop because Npcap was running in admin-only mode. We detect this
+# pattern proactively: track processes that map Packet.dll / wpcap.dll, and
+# if a launch-loop signature is observed (>3 short-lived restarts of the
+# same exe in 5 min), log a critical alert and kill the rogue process.
+#
+# Detection signals:
+#  - psutil.Process.memory_maps()  -> Packet.dll / wpcap.dll in mapped DLLs
+#  - Fast-relaunch heuristic       -> same exe path, multiple short-lived PIDs
+# Whitelist: netguard.py itself, python.exe running netguard.py, plus any
+# absolute exe path listed in settings.json:npcap_whitelist.
+
+NPCAP_WHITELIST: set = set()                   # user-config absolute exe paths
+_NPCAP_CONSUMERS: dict = {}                    # {exe_path: {pids:set, first_seen, last_pids:deque, hits:int}}
+_NPCAP_SCAN_INTERVAL_SEC = 30
+_NPCAP_RELAUNCH_WINDOW_SEC = 300               # 5 min
+_NPCAP_RELAUNCH_THRESHOLD = 3                  # > 3 relaunches in 5 min -> rogue
+_NPCAP_DLLS = {"packet.dll", "wpcap.dll"}      # lowercased
+
+
+def _npcap_self_paths() -> set:
+    """Return absolute exe paths that should never be flagged as rogue
+    (NetGuard itself + the Python interpreter running netguard.py)."""
+    paths = set()
+    try:
+        paths.add(os.path.realpath(sys.executable))
+    except Exception:
+        pass
+    try:
+        paths.add(os.path.realpath(os.path.abspath(__file__)))
+    except Exception:
+        pass
+    try:
+        # Argv[0] handles bundled .exe (PyInstaller) where __file__ = .py
+        if sys.argv and sys.argv[0]:
+            paths.add(os.path.realpath(os.path.abspath(sys.argv[0])))
+    except Exception:
+        pass
+    return paths
+
+
+def _npcap_process_uses_npcap(proc) -> bool:
+    """True if the given psutil.Process has Packet.dll or wpcap.dll mapped."""
+    try:
+        for m in proc.memory_maps():
+            # m.path is a string; lower-case the basename for match
+            try:
+                base = os.path.basename(m.path).lower()
+            except Exception:
+                continue
+            if base in _NPCAP_DLLS:
+                return True
+    except Exception:
+        # Access denied / process gone / not supported on this platform
+        return False
+    return False
+
+
+def _npcap_is_whitelisted(exe_path: str) -> bool:
+    """Whitelist check: NetGuard self + user-configured paths."""
+    if not exe_path:
+        return True  # cannot identify -> don't kill
+    norm = os.path.normcase(os.path.realpath(exe_path))
+    if norm in {os.path.normcase(p) for p in _npcap_self_paths()}:
+        return True
+    if norm in {os.path.normcase(os.path.realpath(p)) for p in NPCAP_WHITELIST if p}:
+        return True
+    return False
+
+
+def detect_npcap_uac_spammers() -> list:
+    """Scan running processes once. Return list of consumer entries.
+    Side-effect: kill rogue processes (>N relaunches in window) and log critical."""
+    try:
+        import psutil
+    except ImportError:
+        log.debug("[NPCAP] psutil not installed — detector idle")
+        return []
+    now = time.time()
+    found = []  # current-scan snapshot
+    rogue_killed = []
+    seen_exes = set()
+    for proc in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+        try:
+            info = proc.info
+            exe = info.get("exe") or ""
+            if not exe:
+                continue
+            if not _npcap_process_uses_npcap(proc):
+                continue
+            seen_exes.add(exe)
+            entry = _NPCAP_CONSUMERS.setdefault(exe, {
+                "first_seen": now,
+                "pids": set(),
+                "last_pids": deque(maxlen=20),  # (pid, ts)
+                "hits": 0,
+            })
+            pid = info.get("pid")
+            if pid is not None and pid not in entry["pids"]:
+                entry["pids"].add(pid)
+                entry["last_pids"].append((pid, now))
+                if len(entry["pids"]) > 200:   # a relaunching harness must not grow this forever
+                    entry["pids"] = {p for p, _ in entry["last_pids"]}
+            # Prune relaunches outside the 5-min window
+            cutoff = now - _NPCAP_RELAUNCH_WINDOW_SEC
+            recent = [(p, t) for (p, t) in entry["last_pids"] if t >= cutoff]
+            entry["last_pids"] = deque(recent, maxlen=20)
+            relaunches = len(recent)
+            entry["hits"] = relaunches
+            found.append({
+                "exe": exe,
+                "name": info.get("name", ""),
+                "pid": pid,
+                "relaunches_in_window": relaunches,
+                "first_seen": entry["first_seen"],
+            })
+            # Rogue trigger: > N relaunches in 5 min, not whitelisted
+            if relaunches > _NPCAP_RELAUNCH_THRESHOLD and not _npcap_is_whitelisted(exe):
+                if not CFG.npcap_kill_rogue:
+                    # Opt-in only: Wireshark, nmap or a VPN client would qualify as
+                    # "rogue" and killing them violates Store policy 10.2.
+                    log.warning(f"[NPCAP] Consommateur Npcap suspect: {exe} ({relaunches} relances en {_NPCAP_RELAUNCH_WINDOW_SEC}s) — non tué (npcap_kill_rogue=False)")
+                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches, "killed": False})
+                    continue
+                log.critical(f"[NPCAP] Rogue Npcap consumer: {exe} ({relaunches} relaunches in {_NPCAP_RELAUNCH_WINDOW_SEC}s) — killing PID {pid}")
+                try:
+                    proc.kill()
+                    rogue_killed.append({"exe": exe, "pid": pid, "relaunches": relaunches, "killed": True})
+                except Exception as e:
+                    log.error(f"[NPCAP] Failed to kill {exe} PID {pid}: {e}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        except Exception as e:
+            log.debug(f"[NPCAP] scan error on PID {proc.pid if hasattr(proc, 'pid') else '?'}: {e}")
+            continue
+    # Drop entries for exes we no longer see and that have aged out of window
+    cutoff = now - _NPCAP_RELAUNCH_WINDOW_SEC * 2
+    stale = [k for k, v in _NPCAP_CONSUMERS.items()
+             if k not in seen_exes and v["first_seen"] < cutoff]
+    for k in stale:
+        del _NPCAP_CONSUMERS[k]
+    if rogue_killed:
+        log.warning(f"[NPCAP] Killed {len(rogue_killed)} rogue consumer(s): {rogue_killed}")
+    return found
+
+
+def npcap_get_consumers() -> list:
+    """JSON-safe consumer snapshot for /api/npcap_consumers and dashboard."""
+    out = []
+    for exe, entry in _NPCAP_CONSUMERS.items():
+        out.append({
+            "exe": exe,
+            "pids": sorted(entry.get("pids", [])),
+            "first_seen": entry.get("first_seen", 0),
+            "relaunches_in_window": entry.get("hits", 0),
+            "whitelisted": _npcap_is_whitelisted(exe),
+        })
+    return out
+
+
+def _npcap_detector_loop():
+    """Background thread: run detect_npcap_uac_spammers() every 30s."""
+    log.info("[NPCAP] Detector started (interval=%ds, threshold=%d/%ds)",
+             _NPCAP_SCAN_INTERVAL_SEC, _NPCAP_RELAUNCH_THRESHOLD, _NPCAP_RELAUNCH_WINDOW_SEC)
+    while True:
+        try:
+            detect_npcap_uac_spammers()
+        except Exception as e:
+            log.error(f"[NPCAP] detector loop error: {e}")
+        time.sleep(_NPCAP_SCAN_INTERVAL_SEC)
+
+
 def _record_filename() -> str:
     os.makedirs(CFG.record_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return os.path.join(CFG.record_dir, f"capture_{ts}.pcap")
+    path = os.path.join(CFG.record_dir, f"capture_{ts}.pcap")
+    n = 1
+    while os.path.exists(path):   # never truncate an existing capture (same-second rotation)
+        path = os.path.join(CFG.record_dir, f"capture_{ts}_{n}.pcap")
+        n += 1
+    return path
 
 def _write_pcap_global_header(f):
     f.write(struct.pack("<IHHiIII", 0xa1b2c3d4, 2, 4, 0, 0, 65535, 1))
@@ -1423,17 +2072,22 @@ def _write_pcap_record(f, raw_bytes: bytes):
     f.write(struct.pack("<IIII", ts_sec, ts_usec, length, length))
     f.write(raw_bytes)
 
+def _record_open_locked() -> str:
+    """Open a fresh pcap file. Caller must hold STATE.record_lock."""
+    path = _record_filename()
+    STATE.record_file_path = path
+    STATE.record_file = open(path, "wb")
+    _write_pcap_global_header(STATE.record_file)
+    STATE.record_active = True
+    STATE.record_start_time = datetime.now()
+    STATE.record_count = 0
+    return path
+
 def record_start():
     with STATE.record_lock:
         if STATE.record_active:
             return False
-        path = _record_filename()
-        STATE.record_file_path = path
-        STATE.record_file = open(path, "wb")
-        _write_pcap_global_header(STATE.record_file)
-        STATE.record_active = True
-        STATE.record_start_time = datetime.now()
-        STATE.record_packets = []
+        path = _record_open_locked()
     log.info(f"[RECORD] Démarré → {path}")
     return True
 
@@ -1455,16 +2109,21 @@ def record_write_packet(raw_bytes: bytes):
         if not STATE.record_active or not STATE.record_file:
             return
         _write_pcap_record(STATE.record_file, raw_bytes)
-        STATE.record_packets.append(len(raw_bytes))
+        STATE.record_count += 1
         if STATE.record_start_time:
             elapsed = (datetime.now() - STATE.record_start_time).total_seconds()
             if elapsed >= CFG.record_rotate_min * 60:
                 STATE.record_file.flush()
                 STATE.record_file.close()
                 STATE.record_file = None
-                STATE.record_active = False
-                log.info("[RECORD] Rotation automatique")
                 _cleanup_old_captures()
+                # Real rotation: keep recording into a new file (before: recording stopped)
+                try:
+                    path = _record_open_locked()
+                    log.info(f"[RECORD] Rotation automatique → {path}")
+                except Exception as e:
+                    STATE.record_active = False
+                    log.error(f"[RECORD] Rotation impossible, arrêt: {e}")
 
 def _cleanup_old_captures():
     try:
@@ -1494,10 +2153,18 @@ def record_list() -> list:
     except Exception:
         return []
 
-def auto_block_check(src_ip: str):
+def _flow_established(src_ip: str, src_port: int, dst_port: int) -> bool:
+    """True when we previously sent a packet to (src_ip, src_port) from dst_port."""
+    return (src_ip, src_port, dst_port) in STATE.flows
+
+def auto_block_check(src_ip: str, established: bool = False):
     if not CFG.auto_block_enabled:
         return
     if is_whitelisted(src_ip) or is_private(src_ip):
+        return
+    # Evidence from a packet that is NOT part of a conversation we initiated is
+    # spoofable: never let it block a server we are actively talking to.
+    if not established and src_ip in STATE.outbound_seen:
         return
     STATE.ip_hit_counter[src_ip] += 1
     if STATE.ip_hit_counter[src_ip] >= CFG.auto_block_hits:
@@ -1557,8 +2224,32 @@ def get_protocol_name(pkt) -> str:
 
 import subprocess as _subprocess
 
+def _label_special_ip(ip: str) -> str:
+    """Return a short readable label for non-routable IPs (LAN / multicast / link-local / loopback).
+    Returns '' for public IPs — caller should fall back to GeoIP lookup for those."""
+    if not ip or not isinstance(ip, str):
+        return ""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ""
+    if addr.is_loopback:
+        return "Loopback"
+    if addr.is_multicast:
+        return "Multicast"
+    if addr.is_link_local:
+        return "Link-Local"
+    if addr.is_private:
+        return "LAN"
+    if addr.is_reserved or addr.is_unspecified:
+        return "Reserved"
+    return ""
+
+
 def _validate_ip(ip: str) -> bool:
     """Valide qu'une chaîne est une adresse IP légitime (anti-injection)"""
+    if not isinstance(ip, str):        # JSON int 16843009 would parse as 1.1.1.1
+        return False
     try:
         ipaddress.ip_address(ip)
         return True
@@ -1566,27 +2257,122 @@ def _validate_ip(ip: str) -> bool:
         log.error(f"[SECURITY] IP invalide rejetée: {ip!r}")
         return False
 
-def block_ip_os(ip: str, reason: str):
+_NET_STR_MAX = 200
+
+def _safe_str(value, limit: int = _NET_STR_MAX) -> str:
+    """Network-derived strings (DNS names, geo city/org, hostnames, rule messages,
+    honeypot banners) end up in dashboards via innerHTML and in log lines.
+    Strip control characters and HTML delimiters, collapse to one line, cap length.
+    (superaudit 2026-09-30: stored XSS via DNS qname / ip-api.com city / PTR hostname)"""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    value = re.sub(r"\s+", " ", value)          # tabs/newlines become separators, not glue
+    cleaned = "".join(ch for ch in value if ch.isprintable() and ch not in "<>\"'`")
+    return " ".join(cleaned.split())[:limit]
+
+def _as_int(value, default: int, lo: int, hi: int) -> int:
+    """Coerce a client-supplied value to a bounded int (never raises)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, v))
+
+# ── Automatic blocking guard rails (superaudit 2026-09-30) ───────────────
+# Before: any detector could call block_ip_os() on any public IP, including the
+# whitelist (8.8.8.8, 1.1.1.1), with no rate limit, and the netsh call ran under
+# STATE.lock inside the sniff callback. A spoofed-source flood could lock the
+# user out of its own DNS / CDN / update servers and stall packet capture.
+_AUTO_BLOCK_WINDOW: deque = deque(maxlen=500)   # timestamps of recent auto-blocks
+_AUTO_BLOCK_MAX_PER_MIN = 20
+_OS_RULE_QUEUE: "queue.Queue[tuple]" = queue.Queue(maxsize=2000)
+_OS_RULE_WORKER_STARTED = False
+_OS_RULE_LOCK = threading.Lock()
+
+def _apply_os_rule(action: str, ip: str) -> bool:
+    """Run the firewall command for one IP. Returns True when the OS accepted it."""
+    try:
+        if IS_LINUX:
+            flag = "-I" if action == "block" else "-D"
+            tool = "ip6tables" if ":" in ip else "iptables"
+            r = _subprocess.run([tool, flag, "INPUT", "-s", ip, "-j", "DROP"],
+                                capture_output=True, timeout=10)
+        elif IS_WINDOWS:
+            rule_name = f"NetGuard_Block_{ip.replace('.', '_').replace(':', '-')}"
+            if action == "block":
+                r = _subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
+                                     f"name={rule_name}", "dir=in", "action=block",
+                                     f"remoteip={ip}", "enable=yes"],
+                                    capture_output=True, timeout=10)
+            else:
+                r = _subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule",
+                                     f"name={rule_name}"],
+                                    capture_output=True, timeout=10)
+        else:
+            return False
+        if r.returncode != 0:
+            err = (r.stderr or r.stdout or b"").decode(errors="replace").strip()[:200]
+            log.error(f"[FIREWALL] {action} {ip} refusé par l'OS (code {r.returncode}): {err}")
+            STATE.block_failures += 1
+            STATE.timeline_events.appendleft({
+                "ts": datetime.now().strftime("%H:%M:%S"), "type": "block_failed",
+                "ip": ip, "country": "", "severity": "high",
+            })
+            return False
+        return True
+    except Exception as e:
+        log.error(f"[FIREWALL] Erreur {action} OS pour {ip}: {e}")
+        STATE.block_failures += 1
+        return False
+
+def _os_rule_worker():
+    while True:
+        action, ip = _OS_RULE_QUEUE.get()
+        try:
+            _apply_os_rule(action, ip)
+        finally:
+            _OS_RULE_QUEUE.task_done()
+
+def _enqueue_os_rule(action: str, ip: str):
+    """Firewall commands run on a worker thread so the sniff callback (which holds
+    STATE.lock) never blocks on netsh (up to 10 s each)."""
+    global _OS_RULE_WORKER_STARTED
+    if not _OS_RULE_WORKER_STARTED:
+        with _OS_RULE_LOCK:
+            if not _OS_RULE_WORKER_STARTED:
+                threading.Thread(target=_os_rule_worker, name="os-rule-worker", daemon=True).start()
+                _OS_RULE_WORKER_STARTED = True
+    try:
+        _OS_RULE_QUEUE.put_nowait((action, ip))
+    except queue.Full:
+        log.error(f"[FIREWALL] file de règles saturée, {action} {ip} non appliqué")
+
+def block_ip_os(ip: str, reason: str, manual: bool = False):
+    """Add `ip` to the blocklist and schedule the OS rule.
+    Automatic blocks (manual=False) never touch private / whitelisted IPs and are
+    rate-limited to _AUTO_BLOCK_MAX_PER_MIN per minute."""
     if ip in BLOCKED_IPS:
         return
     if not _validate_ip(ip):
         return
+    if not manual:
+        if is_private(ip) or is_whitelisted(ip):
+            log.info(f"[BLOCK] ignoré (privée/liste blanche): {ip} — {reason}")
+            return
+        now = time.time()
+        while _AUTO_BLOCK_WINDOW and _AUTO_BLOCK_WINDOW[0] < now - 60:
+            _AUTO_BLOCK_WINDOW.popleft()
+        if len(_AUTO_BLOCK_WINDOW) >= _AUTO_BLOCK_MAX_PER_MIN:
+            log.warning(f"[BLOCK] limite de {_AUTO_BLOCK_MAX_PER_MIN} blocages/min atteinte, {ip} non bloquée")
+            return
+        _AUTO_BLOCK_WINDOW.append(now)
     BLOCKED_IPS.add(ip)
-    log.warning(f"[BLOCK] {ip} — {reason}")
+    log.warning(f"[BLOCK] {ip} — {_safe_str(reason)}")
     if not CFG.can_block:
         return
-    try:
-        if IS_LINUX:
-            _subprocess.run(["iptables", "-I", "INPUT", "-s", ip, "-j", "DROP"],
-                            capture_output=True, timeout=10)
-        elif IS_WINDOWS:
-            rule_name = f"NetGuard_Block_{ip.replace('.','_')}"
-            _subprocess.run(["netsh", "advfirewall", "firewall", "add", "rule",
-                             f"name={rule_name}", "dir=in", "action=block",
-                             f"remoteip={ip}", "enable=yes"],
-                            capture_output=True, timeout=10)
-    except Exception as e:
-        log.error(f"Erreur blocage OS pour {ip}: {e}")
+    _enqueue_os_rule("block", ip)
 
 def unblock_ip_os(ip: str):
     if not _validate_ip(ip):
@@ -1604,7 +2390,21 @@ def unblock_ip_os(ip: str):
     except Exception as e:
         log.error(f"Erreur déblocage OS pour {ip}: {e}")
 
+_THREAT_LAST: dict = {}          # (ip, type) -> (ts, threat dict)
+_THREAT_COOLDOWN_SEC = 10        # same (ip, type) at most once per 10 s
+
 def add_threat(src_ip: str, threat_type: str, description: str, severity: str, rule_key: str = None):
+    threat_type = _safe_str(threat_type, 120)
+    description = _safe_str(description, 300)
+    # Per-(ip, type) cooldown: a spoofed feed/OTX IP at 10k pps would otherwise
+    # create one threat + one log line + one webhook thread per packet.
+    key = (src_ip, threat_type)
+    now_ts = time.time()
+    last = _THREAT_LAST.get(key)
+    if last and now_ts - last[0] < _THREAT_COOLDOWN_SEC:
+        return last[1]
+    if len(_THREAT_LAST) > 10000:
+        _THREAT_LAST.clear()
     country = get_country(src_ip) or ""
     now = datetime.now()
     threat = {
@@ -1618,6 +2418,7 @@ def add_threat(src_ip: str, threat_type: str, description: str, severity: str, r
         "country":     country,
     }
     STATE.threats.appendleft(threat)
+    _THREAT_LAST[key] = (now_ts, threat)
     if rule_key and rule_key in RULES:
         RULES[rule_key]["hits"] += 1
 
@@ -1650,9 +2451,13 @@ def add_threat(src_ip: str, threat_type: str, description: str, severity: str, r
     # v3.0 — Correlation & Alerts
     correlate_attack_phase(src_ip, threat_type)
     dispatch_alert(threat)
-    # Auto-forensic on critical
+    # Auto-forensic on critical — at most one report per IP per _FORENSIC_COOLDOWN_SEC
+    # (a known-bad JA3 fires a critical threat on EVERY TLS ClientHello)
     if severity == "critical" and CFG.auto_forensic_enabled:
-        threading.Thread(target=generate_forensic_report, args=(src_ip, threat_type), daemon=True).start()
+        _now = time.time()
+        if _now - _FORENSIC_LAST.get(src_ip, 0) >= _FORENSIC_COOLDOWN_SEC:
+            _FORENSIC_LAST[src_ip] = _now
+            threading.Thread(target=generate_forensic_report, args=(src_ip, threat_type), daemon=True).start()
 
     log.warning(f"[THREAT/{severity.upper()}] {threat_type} — {src_ip} — {description}")
     return threat
@@ -1752,11 +2557,15 @@ def anomaly_check_ip(ip: str, pkt_rate: int, byte_vol: int, port_count: int):
 def anomaly_flush():
     """Appelé chaque seconde depuis snapshot_traffic pour traiter les accumulateurs"""
     global _anomaly_accum
-    for ip, acc in _anomaly_accum.items():
+    # Swap under lock, then iterate the private snapshot: the sniff thread keeps
+    # inserting into the fresh dict (fixes "dictionary changed size during iteration").
+    with _ANOMALY_LOCK:
+        accum, _anomaly_accum = _anomaly_accum, {}
+    for ip, acc in accum.items():
         anomaly_check_ip(ip, acc.get("pkts", 0), acc.get("bytes", 0), len(acc.get("ports", set())))
         # Behavioral profile
-        if CFG.profile_enabled and ip in IP_BEHAVIOR_PROFILES:
-            prof = IP_BEHAVIOR_PROFILES[ip]
+        prof = IP_BEHAVIOR_PROFILES.get(ip) if CFG.profile_enabled else None
+        if prof is not None:
             if prof.total_packets >= 100 and prof.total_packets % 50 == 0:
                 score = prof.deviation_score()
                 if score < 0.7:
@@ -1773,7 +2582,6 @@ def anomaly_flush():
                     })
                     add_threat(ip, "Changement comportemental",
                               f"Score similarité={score:.2f} (seuil=0.70)", "high")
-    _anomaly_accum = {}
 
 # ─── v3.0 — Attack Correlation ───────────────────────────────────────────
 def correlate_attack_phase(ip: str, threat_type: str):
@@ -1896,7 +2704,10 @@ def extract_ja3(raw_payload: bytes) -> str:
             "-".join(elliptic_curves),
             "-".join(ec_point_formats),
         ])
-        return hashlib.md5(ja3_str.encode()).hexdigest()
+        # nosec B324 - JA3 fingerprint is defined by the spec to use MD5
+        # (Salesforce JA3 standard). It is not a security primitive; it is
+        # an identifier used to match against KNOWN_BAD_JA3 lookup tables.
+        return hashlib.md5(ja3_str.encode(), usedforsecurity=False).hexdigest()
     except Exception:
         return ""
 
@@ -1988,7 +2799,7 @@ def _fetch_threat_feeds():
     new_ips = set()
     for name, url in feeds.items():
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "NetGuard-Pro/3.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "NetGuard-AI/3.0"})
             resp = urllib.request.urlopen(req, timeout=15)
             for line in resp.read().decode(errors="replace").splitlines():
                 line = line.strip()
@@ -2001,8 +2812,11 @@ def _fetch_threat_feeds():
             log.info(f"[THREAT-FEED] {name}: {len(new_ips)} IPs")
         except Exception as e:
             log.warning(f"[THREAT-FEED] Erreur {name}: {e}")
-    THREAT_FEED_IPS = new_ips
-    THREAT_FEED_LAST_UPDATE = time.time()
+    if new_ips:                       # both feeds down → keep the previous list
+        THREAT_FEED_IPS = new_ips
+        THREAT_FEED_LAST_UPDATE = time.time()
+    else:
+        log.warning("[THREAT-FEED] aucun feed téléchargé, liste précédente conservée")
     log.info(f"[THREAT-FEED] Total: {len(THREAT_FEED_IPS)} IPs de threat feeds")
 
 def _schedule_feed_refresh():
@@ -2021,7 +2835,8 @@ def _schedule_feed_refresh():
 
 def _vt_check_ip(ip: str):
     """Vérifie une IP sur VirusTotal (thread)"""
-    if not CFG.virustotal_enabled or not CFG.virustotal_api_key:
+    vt_key = get_secret("netguard.virustotal.api_key", "virustotal_api_key")
+    if not CFG.virustotal_enabled or not vt_key:
         return
     # Rate limiting: 4 req/min
     now = time.time()
@@ -2034,8 +2849,8 @@ def _vt_check_ip(ip: str):
     try:
         url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
         req = urllib.request.Request(url, headers={
-            "x-apikey": CFG.virustotal_api_key,
-            "User-Agent": "NetGuard-Pro/3.0",
+            "x-apikey": vt_key,
+            "User-Agent": "NetGuard-AI/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
@@ -2063,13 +2878,14 @@ def _vt_check_ip(ip: str):
 def _otx_fetch_pulses():
     """Récupère les IOC depuis AlienVault OTX (thread)"""
     global OTX_IOC_IPS, OTX_IOC_DOMAINS
-    if not CFG.otx_enabled or not CFG.otx_api_key:
+    otx_key = get_secret("netguard.otx.api_key", "otx_api_key")
+    if not CFG.otx_enabled or not otx_key:
         return
     try:
         url = "https://otx.alienvault.com/api/v1/pulses/subscribed?limit=50"
         req = urllib.request.Request(url, headers={
-            "X-OTX-API-KEY": CFG.otx_api_key,
-            "User-Agent": "NetGuard-Pro/3.0",
+            "X-OTX-API-KEY": otx_key,
+            "User-Agent": "NetGuard-AI/3.0",
         })
         resp = urllib.request.urlopen(req, timeout=15)
         data = json.loads(resp.read().decode())
@@ -2083,20 +2899,21 @@ def _otx_fetch_pulses():
                     new_ips.add(val)
                 elif itype in ("domain", "hostname"):
                     new_domains.add(val)
-        OTX_IOC_IPS |= new_ips
-        OTX_IOC_DOMAINS |= new_domains
+        OTX_IOC_IPS = new_ips          # replace, don't accumulate across refreshes
+        OTX_IOC_DOMAINS = new_domains
         log.info(f"[OTX] Chargé: {len(new_ips)} IPs, {len(new_domains)} domaines")
     except Exception as e:
         log.warning(f"[OTX] Erreur: {e}")
 
 def _abuseipdb_check(ip: str):
     """Vérifie une IP sur AbuseIPDB"""
-    if not CFG.abuseipdb_enabled or not CFG.abuseipdb_api_key:
+    abuse_key = get_secret("netguard.abuseipdb.api_key", "abuseipdb_api_key")
+    if not CFG.abuseipdb_enabled or not abuse_key:
         return
     try:
         url = f"https://api.abuseipdb.com/api/v2/check?ipAddress={ip}"
         req = urllib.request.Request(url, headers={
-            "Key": CFG.abuseipdb_api_key,
+            "Key": abuse_key,
             "Accept": "application/json",
         })
         resp = urllib.request.urlopen(req, timeout=10)
@@ -2126,7 +2943,8 @@ def ioc_match_ip(ip: str) -> list:
 # ─── v3.0 — Active Response ──────────────────────────────────────────────
 def _send_discord_alert(threat: dict):
     """Envoie une alerte Discord via webhook (thread)"""
-    if not CFG.discord_enabled or not CFG.discord_webhook_url:
+    discord_url = get_secret("netguard.discord.webhook_url", "discord_webhook_url")
+    if not CFG.discord_enabled or not discord_url:
         return
     key = f"discord:{threat.get('src_ip', '')}"
     now = time.time()
@@ -2145,11 +2963,11 @@ def _send_discord_alert(threat: dict):
                     {"name": "Sévérité", "value": threat.get("severity", "?").upper(), "inline": True},
                     {"name": "Pays", "value": threat.get("country", "?"), "inline": True},
                 ],
-                "footer": {"text": "NetGuard Pro v3.0"},
+                "footer": {"text": "NetGuard AI v3.0"},
                 "timestamp": threat.get("timestamp", datetime.now().isoformat()),
             }]
         }).encode()
-        req = urllib.request.Request(CFG.discord_webhook_url, data=payload,
+        req = urllib.request.Request(discord_url, data=payload,
             headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=5)
         STATE.webhook_log.appendleft({
@@ -2164,7 +2982,8 @@ def _send_discord_alert(threat: dict):
 
 def _send_telegram_alert(threat: dict):
     """Envoie une alerte Telegram via Bot API (thread)"""
-    if not CFG.telegram_enabled or not CFG.telegram_bot_token or not CFG.telegram_chat_id:
+    tg_token = get_secret("netguard.telegram.bot_token", "telegram_bot_token")
+    if not CFG.telegram_enabled or not tg_token or not CFG.telegram_chat_id:
         return
     key = f"telegram:{threat.get('src_ip', '')}"
     now = time.time()
@@ -2174,18 +2993,19 @@ def _send_telegram_alert(threat: dict):
     try:
         sev_emoji = {"critical": "🔴", "high": "🟠", "med": "🟡", "low": "🔵"}
         emoji = sev_emoji.get(threat.get("severity", ""), "⚪")
+        _e = lambda v: _html.escape(str(v if v is not None else "?"))   # parse_mode=HTML
         text = (f"{emoji} <b>NetGuard Alert</b>\n"
-                f"<b>Type:</b> {threat.get('type', '?')}\n"
-                f"<b>IP:</b> <code>{threat.get('src_ip', '?')}</code>\n"
-                f"<b>Sévérité:</b> {threat.get('severity', '?').upper()}\n"
-                f"<b>Pays:</b> {threat.get('country', '?')}\n"
-                f"<b>Détail:</b> {threat.get('description', '')}")
+                f"<b>Type:</b> {_e(threat.get('type', '?'))}\n"
+                f"<b>IP:</b> <code>{_e(threat.get('src_ip', '?'))}</code>\n"
+                f"<b>Sévérité:</b> {_e(str(threat.get('severity', '?')).upper())}\n"
+                f"<b>Pays:</b> {_e(threat.get('country', '?'))}\n"
+                f"<b>Détail:</b> {_e(threat.get('description', ''))}")
         payload = json.dumps({
             "chat_id": CFG.telegram_chat_id,
             "text": text,
             "parse_mode": "HTML",
         }).encode()
-        url = f"https://api.telegram.org/bot{CFG.telegram_bot_token}/sendMessage"
+        url = f"https://api.telegram.org/bot{tg_token}/sendMessage"
         req = urllib.request.Request(url, data=payload,
             headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=5)
@@ -2288,12 +3108,25 @@ def unquarantine_ip(ip: str):
     except Exception as e:
         log.error(f"[QUARANTINE] Erreur libération: {e}")
 
+def _cleanup_old_forensic_reports():
+    """Keep at most _FORENSIC_MAX_FILES forensic_*.json in reports/ (oldest removed)."""
+    try:
+        rdir = str(REPORTS_DIR)
+        files = sorted(
+            [f for f in os.listdir(rdir) if f.startswith("forensic_") and f.endswith(".json")],
+            key=lambda f: os.path.getmtime(os.path.join(rdir, f))
+        )
+        while len(files) > _FORENSIC_MAX_FILES:
+            os.remove(os.path.join(rdir, files.pop(0)))
+    except Exception as e:
+        log.debug(f"[FORENSIC] cleanup: {e}")
+
 def generate_forensic_report(ip: str, trigger: str) -> str:
     """Génère un rapport forensique détaillé pour une IP"""
     try:
-        os.makedirs("reports", exist_ok=True)
+        os.makedirs(str(REPORTS_DIR), exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"reports/forensic_{ip.replace('.','_')}_{ts}.json"
+        filename = str(REPORTS_DIR / f"forensic_{ip.replace('.', '_').replace(':', '-')}_{ts}.json")
         report = {
             "generated_at": datetime.now().isoformat(),
             "target_ip": ip,
@@ -2314,381 +3147,38 @@ def generate_forensic_report(ip: str, trigger: str) -> str:
         entry = {"ts": datetime.now().strftime("%H:%M:%S"), "ip": ip, "trigger": trigger, "path": filename}
         STATE.forensic_reports.appendleft(entry)
         log.info(f"[FORENSIC] Rapport généré: {filename}")
+        _cleanup_old_forensic_reports()
         return filename
     except Exception as e:
         log.error(f"[FORENSIC] Erreur: {e}")
         return ""
 
 # ═══════════════════════════════════════════════════════════════════════════
-# v3.0 — WIREGUARD VPN SERVER
+# v3.0 — WIREGUARD CLIENT CONFIG (display only — server lifecycle removed)
 # ═══════════════════════════════════════════════════════════════════════════
+# Trim 2026-04-30: WireGuard server lifecycle removed (start/stop/peer mgmt,
+# config generation, peer key generation, on-disk peer roster).
+# A standalone WireGuard install (wireguard.com) remains the recommended way
+# to actually run the tunnel; NetGuard only displays a manually-provisioned
+# client config from the wg_* settings keys.
 
-def _wg_find_binary(name: str) -> str:
-    """Trouve le chemin complet d'un binaire WireGuard (wg, wireguard)"""
-    import shutil
-    # Check PATH first
-    found = shutil.which(name)
-    if found:
-        return found
-    # Windows: check standard install locations
-    if IS_WINDOWS:
-        candidates = [
-            os.path.join(r"C:\Program Files\WireGuard", name),
-            os.path.join(r"C:\Program Files\WireGuard", name + ".exe"),
-            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "WireGuard", name),
-            os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "WireGuard", name + ".exe"),
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
-    return name  # Return as-is, let subprocess handle FileNotFoundError
-
-_WG_BIN = None
-_WIREGUARD_BIN = None
-
-def _wg_cmd() -> str:
-    """Retourne le chemin vers wg(.exe)"""
-    global _WG_BIN
-    if _WG_BIN is None:
-        _WG_BIN = _wg_find_binary("wg")
-    return _WG_BIN
-
-def _wireguard_cmd() -> str:
-    """Retourne le chemin vers wireguard(.exe)"""
-    global _WIREGUARD_BIN
-    if _WIREGUARD_BIN is None:
-        _WIREGUARD_BIN = _wg_find_binary("wireguard")
-    return _WIREGUARD_BIN
-
-def _wg_genkey_python() -> tuple:
-    """Génère une paire de clés WireGuard en pur Python via X25519 (fallback sans wg CLI)"""
-    try:
-        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
-        privkey_obj = X25519PrivateKey.generate()
-        priv_b64 = base64.b64encode(privkey_obj.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())).decode()
-        pub_b64 = base64.b64encode(privkey_obj.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)).decode()
-        log.info("[WG] Clés générées via Python cryptography (fallback)")
-        return priv_b64, pub_b64
-    except ImportError:
-        log.error("[WG] Ni wg CLI ni Python cryptography disponible. Installe: pip install cryptography")
-        return "", ""
-    except Exception as e:
-        log.error(f"[WG] Erreur génération clés Python: {e}")
-        return "", ""
-
-def _wg_genpsk_python() -> str:
-    """Génère un preshared key en pur Python (fallback sans wg CLI)"""
-    return base64.b64encode(os.urandom(32)).decode()
-
-def _wg_genkey() -> tuple:
-    """Génère une paire de clés WireGuard (privkey, pubkey) — essaie wg CLI puis fallback Python"""
-    try:
-        result = _subprocess.run([_wg_cmd(), "genkey"], capture_output=True, text=True, timeout=5)
-        privkey = result.stdout.strip()
-        if not privkey:
-            raise ValueError("wg genkey returned empty")
-        result2 = _subprocess.run([_wg_cmd(), "pubkey"], input=privkey, capture_output=True, text=True, timeout=5)
-        pubkey = result2.stdout.strip()
-        if not pubkey:
-            raise ValueError("wg pubkey returned empty")
-        return privkey, pubkey
-    except (FileNotFoundError, ValueError):
-        log.warning("[WG] wg CLI non trouvé, utilisation du fallback Python cryptography")
-        return _wg_genkey_python()
-    except Exception as e:
-        log.warning(f"[WG] Erreur wg CLI ({e}), tentative fallback Python")
-        return _wg_genkey_python()
-
-def _wg_init_server():
-    """Initialise les clés serveur WireGuard si nécessaire"""
-    global WG_SERVER_PRIVKEY, WG_SERVER_PUBKEY
-    os.makedirs(CFG.wg_config_dir, exist_ok=True)
-    keyfile = os.path.join(CFG.wg_config_dir, "server_keys.json")
-    if os.path.exists(keyfile):
-        try:
-            with open(keyfile, "r") as f:
-                keys = json.load(f)
-            WG_SERVER_PRIVKEY = keys.get("privkey", "")
-            WG_SERVER_PUBKEY = keys.get("pubkey", "")
-            if WG_SERVER_PRIVKEY and WG_SERVER_PUBKEY:
-                log.info(f"[WG] Clés serveur chargées. PubKey: {WG_SERVER_PUBKEY[:20]}...")
-                return
-        except Exception:
-            pass
-    # Generate new keys
-    WG_SERVER_PRIVKEY, WG_SERVER_PUBKEY = _wg_genkey()
-    if WG_SERVER_PRIVKEY:
-        try:
-            with open(keyfile, "w") as f:
-                json.dump({"privkey": WG_SERVER_PRIVKEY, "pubkey": WG_SERVER_PUBKEY}, f)
-            log.info(f"[WG] Nouvelles clés serveur générées. PubKey: {WG_SERVER_PUBKEY[:20]}...")
-        except Exception as e:
-            log.error(f"[WG] Erreur sauvegarde clés: {e}")
-
-def _wg_generate_server_config() -> str:
-    """Génère le fichier de config serveur WireGuard"""
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    lines = [
-        "[Interface]",
-        f"PrivateKey = {WG_SERVER_PRIVKEY}",
-        f"Address = {CFG.wg_address}",
-        f"ListenPort = {CFG.wg_listen_port}",
-        f"DNS = {CFG.wg_dns}",
-    ]
-    if CFG.wg_post_up:
-        lines.append(f"PostUp = {CFG.wg_post_up}")
-    if CFG.wg_post_down:
-        lines.append(f"PostDown = {CFG.wg_post_down}")
-    # Add peers
-    for peer in WG_PEERS:
-        lines.append("")
-        lines.append("[Peer]")
-        lines.append(f"PublicKey = {peer['pubkey']}")
-        lines.append(f"AllowedIPs = {peer['address']}/32")
-        if peer.get("preshared_key"):
-            lines.append(f"PresharedKey = {peer['preshared_key']}")
-    config = "\n".join(lines) + "\n"
-    config_path = os.path.join(CFG.wg_config_dir, f"{CFG.wg_interface}.conf")
-    with open(config_path, "w") as f:
-        f.write(config)
-    log.info(f"[WG] Config serveur écrite: {config_path}")
-    return config_path
-
-def _wg_generate_peer_config(peer: dict) -> str:
-    """Génère la config client pour un peer"""
+def _wg_generate_peer_config(name: str = "client") -> str:
+    """Generate a *display-only* sample client config based on stored wg_* settings.
+    No server keys, no real peer keys — caller is expected to fill those in."""
     endpoint = CFG.wg_endpoint or "YOUR_SERVER_IP:51820"
-    # Extract network prefix from server address (e.g., 10.66.66 from 10.66.66.1/24)
-    server_net = CFG.wg_address.split("/")[0]
-    config = f"""[Interface]
-PrivateKey = {peer['privkey']}
-Address = {peer['address']}/32
-DNS = {CFG.wg_dns}
-
-[Peer]
-PublicKey = {WG_SERVER_PUBKEY}
-Endpoint = {endpoint}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-"""
-    return config
-
-def wg_add_peer(name: str) -> dict:
-    """Ajoute un nouveau peer VPN"""
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    privkey, pubkey = _wg_genkey()
-    if not privkey:
-        return {"error": "Impossible de générer les clés. WireGuard est-il installé?"}
-    # Calculate next available IP
-    base_parts = CFG.wg_address.split("/")[0].split(".")
-    used_ips = {p["address"] for p in WG_PEERS}
-    next_ip = ""
-    for i in range(2, 254):
-        candidate = f"{base_parts[0]}.{base_parts[1]}.{base_parts[2]}.{i}"
-        if candidate not in used_ips and candidate != CFG.wg_address.split("/")[0]:
-            next_ip = candidate
-            break
-    if not next_ip:
-        return {"error": "Plus d'adresses IP disponibles"}
-    # Generate preshared key (wg CLI or Python fallback)
-    try:
-        psk_result = _subprocess.run([_wg_cmd(), "genpsk"], capture_output=True, text=True, timeout=5)
-        psk = psk_result.stdout.strip()
-        if not psk:
-            psk = _wg_genpsk_python()
-    except Exception:
-        psk = _wg_genpsk_python()
-    peer = {
-        "name":          name,
-        "pubkey":        pubkey,
-        "privkey":       privkey,
-        "preshared_key": psk,
-        "address":       next_ip,
-        "allowed_ips":   f"{next_ip}/32",
-        "created":       datetime.now().isoformat(),
-        "last_handshake": "",
-        "transfer_rx":   0,
-        "transfer_tx":   0,
-    }
-    WG_PEERS.append(peer)
-    # Save peer config file
-    os.makedirs(CFG.wg_config_dir, exist_ok=True)
-    peer_conf = _wg_generate_peer_config(peer)
-    peer_file = os.path.join(CFG.wg_config_dir, f"peer_{name}.conf")
-    with open(peer_file, "w") as f:
-        f.write(peer_conf)
-    # Regenerate server config
-    _wg_generate_server_config()
-    # Save peers list
-    _wg_save_peers()
-    log.info(f"[WG] Peer ajouté: {name} ({next_ip})")
-    return {"ok": True, "peer": {k: v for k, v in peer.items() if k != "privkey"}, "config": peer_conf, "config_file": peer_file}
-
-def wg_remove_peer(name: str) -> dict:
-    """Supprime un peer VPN"""
-    global WG_PEERS
-    peer = next((p for p in WG_PEERS if p["name"] == name), None)
-    if not peer:
-        return {"error": f"Peer '{name}' non trouvé"}
-    WG_PEERS = [p for p in WG_PEERS if p["name"] != name]
-    # Remove peer config file
-    peer_file = os.path.join(CFG.wg_config_dir, f"peer_{name}.conf")
-    if os.path.exists(peer_file):
-        os.remove(peer_file)
-    # Regenerate server config
-    _wg_generate_server_config()
-    _wg_save_peers()
-    # If WG is running, remove peer live
-    if WG_STATUS.get("running"):
-        try:
-            _subprocess.run([_wg_cmd(), "set", CFG.wg_interface, "peer", peer["pubkey"], "remove"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
-    log.info(f"[WG] Peer supprimé: {name}")
-    return {"ok": True}
-
-def wg_start() -> dict:
-    """Démarre le tunnel WireGuard"""
-    global WG_STATUS
-    if not WG_SERVER_PRIVKEY:
-        _wg_init_server()
-    config_path = _wg_generate_server_config()
-    abs_config = os.path.abspath(config_path)
-    try:
-        if IS_LINUX:
-            result = _subprocess.run(["wg-quick", "up", abs_config],
-                                    capture_output=True, text=True, timeout=15)
-        elif IS_WINDOWS:
-            # Windows: wireguard.exe /installtunnelservice needs admin rights
-            result = _subprocess.run([_wireguard_cmd(), "/installtunnelservice", abs_config],
-                                    capture_output=True, text=True, timeout=15)
-        else:
-            return {"error": "OS non supporté pour WireGuard"}
-
-        if result.returncode != 0:
-            stderr = result.stderr.strip() or result.stdout.strip()
-            if "access" in stderr.lower() or "denied" in stderr.lower() or "privilege" in stderr.lower():
-                msg = "Droits administrateur requis. Lance NetGuard en tant qu'Administrateur pour démarrer le VPN."
-            else:
-                msg = f"Erreur WireGuard (code {result.returncode}): {stderr}"
-            log.error(f"[WG] {msg}")
-            return {"error": msg}
-
-        # Verify tunnel is actually up (give it a moment)
-        import time
-        time.sleep(1)
-        verify = _subprocess.run([_wg_cmd(), "show", CFG.wg_interface],
-                                capture_output=True, text=True, timeout=5)
-        if verify.returncode == 0:
-            WG_STATUS["running"] = True
-            WG_STATUS["interface"] = CFG.wg_interface
-            WG_STATUS["not_installed"] = False
-            log.info(f"[WG] Tunnel {CFG.wg_interface} démarré et vérifié")
-            return {"ok": True, "status": "started"}
-        else:
-            # Command ran but tunnel not active — likely needs admin
-            WG_STATUS["running"] = False
-            msg = "Le tunnel n'a pas démarré. Lance NetGuard en tant qu'Administrateur (clic droit → Exécuter en admin)."
-            log.warning(f"[WG] {msg}")
-            return {"error": msg}
-
-    except FileNotFoundError:
-        msg = "WireGuard non installé. "
-        if IS_WINDOWS:
-            msg += "Lance install_wireguard.bat en admin ou installe depuis https://wireguard.com/install/"
-        else:
-            msg += "Installe avec: sudo apt install wireguard"
-        log.error(f"[WG] {msg}")
-        return {"error": msg}
-    except Exception as e:
-        log.error(f"[WG] Erreur démarrage tunnel: {e}")
-        return {"error": str(e)}
-
-def wg_stop() -> dict:
-    """Arrête le tunnel WireGuard"""
-    global WG_STATUS
-    config_path = os.path.join(CFG.wg_config_dir, f"{CFG.wg_interface}.conf")
-    try:
-        if IS_LINUX:
-            _subprocess.run(["wg-quick", "down", config_path], capture_output=True, text=True, timeout=15)
-        elif IS_WINDOWS:
-            _subprocess.run([_wireguard_cmd(), "/uninstalltunnelservice", CFG.wg_interface],
-                          capture_output=True, text=True, timeout=15)
-        WG_STATUS["running"] = False
-        WG_STATUS["peers_connected"] = 0
-        log.info(f"[WG] Tunnel {CFG.wg_interface} arrêté")
-        return {"ok": True, "status": "stopped"}
-    except FileNotFoundError:
-        msg = "WireGuard non installé. "
-        if IS_WINDOWS:
-            msg += "Lance install_wireguard.bat en admin"
-        else:
-            msg += "Installe avec: sudo apt install wireguard"
-        return {"error": msg}
-    except Exception as e:
-        return {"error": str(e)}
-
-def wg_get_status() -> dict:
-    """Récupère le statut du tunnel WireGuard"""
-    global WG_STATUS
-    try:
-        result = _subprocess.run([_wg_cmd(), "show", CFG.wg_interface], capture_output=True, text=True, timeout=5)
-        if result.returncode != 0:
-            WG_STATUS["running"] = False
-            return WG_STATUS
-        WG_STATUS["running"] = True
-        WG_STATUS["interface"] = CFG.wg_interface
-        # Parse output for peer info
-        connected = 0
-        lines = result.stdout.splitlines()
-        current_peer_pub = ""
-        for line in lines:
-            line = line.strip()
-            if line.startswith("peer:"):
-                current_peer_pub = line.split(":", 1)[1].strip()
-            elif line.startswith("latest handshake:") and current_peer_pub:
-                hs = line.split(":", 1)[1].strip()
-                for p in WG_PEERS:
-                    if p["pubkey"] == current_peer_pub:
-                        p["last_handshake"] = hs
-                connected += 1
-            elif line.startswith("transfer:") and current_peer_pub:
-                parts = line.split(":", 1)[1].strip()
-                for p in WG_PEERS:
-                    if p["pubkey"] == current_peer_pub:
-                        p["transfer_info"] = parts
-        WG_STATUS["peers_connected"] = connected
-    except FileNotFoundError:
-        WG_STATUS["running"] = False
-        WG_STATUS["not_installed"] = True
-    except Exception:
-        WG_STATUS["running"] = False
-    return WG_STATUS
-
-def _wg_save_peers():
-    """Sauvegarde la liste des peers"""
-    try:
-        peers_file = os.path.join(CFG.wg_config_dir, "peers.json")
-        safe_peers = [{k: v for k, v in p.items()} for p in WG_PEERS]
-        with open(peers_file, "w", encoding="utf-8") as f:
-            json.dump(safe_peers, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        log.error(f"[WG] Erreur sauvegarde peers: {e}")
-
-def _wg_load_peers():
-    """Charge la liste des peers"""
-    global WG_PEERS
-    peers_file = os.path.join(CFG.wg_config_dir, "peers.json")
-    if os.path.exists(peers_file):
-        try:
-            with open(peers_file, "r", encoding="utf-8") as f:
-                WG_PEERS = json.load(f)
-            log.info(f"[WG] {len(WG_PEERS)} peers chargés")
-        except Exception as e:
-            log.error(f"[WG] Erreur chargement peers: {e}")
+    address = CFG.wg_address.split("/")[0] if "/" in CFG.wg_address else CFG.wg_address
+    return (
+        "[Interface]\n"
+        "PrivateKey = <REPLACE_WITH_CLIENT_PRIVKEY>\n"
+        f"Address = {address}/32\n"
+        f"DNS = {CFG.wg_dns}\n"
+        "\n"
+        "[Peer]\n"
+        "PublicKey = <REPLACE_WITH_SERVER_PUBKEY>\n"
+        f"Endpoint = {endpoint}\n"
+        "AllowedIPs = 0.0.0.0/0, ::/0\n"
+        "PersistentKeepalive = 25\n"
+    )
 
 def analyze_packet(pkt):
     if not HAS_SCAPY:
@@ -2711,11 +3201,13 @@ def analyze_packet(pkt):
     flags    = ""
     is_syn   = False
 
-    # v3.0 — Accumulate anomaly data
-    if src_ip not in _anomaly_accum:
-        _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
-    _anomaly_accum[src_ip]["pkts"] += 1
-    _anomaly_accum[src_ip]["bytes"] += pkt_len
+    # v3.0 — Accumulate anomaly data (under _ANOMALY_LOCK: anomaly_flush swaps the dict)
+    with _ANOMALY_LOCK:
+        acc = _anomaly_accum.get(src_ip)
+        if acc is None:
+            acc = _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
+        acc["pkts"] += 1
+        acc["bytes"] += pkt_len
 
     if pkt.haslayer(TCP):
         dst_port = pkt[TCP].dport
@@ -2728,17 +3220,27 @@ def analyze_packet(pkt):
 
     # v3.0 — Behavioral profiling
     if not is_private(src_ip):
-        if src_ip not in IP_BEHAVIOR_PROFILES:
-            IP_BEHAVIOR_PROFILES[src_ip] = BehaviorProfile()
-        IP_BEHAVIOR_PROFILES[src_ip].update(dst_port, proto, pkt_len)
-        _anomaly_accum[src_ip]["ports"].add(dst_port)
-        _anomaly_accum[src_ip]["protos"][proto] += 1
+        with _ANOMALY_LOCK:
+            prof = IP_BEHAVIOR_PROFILES.get(src_ip)
+            if prof is None:
+                prof = IP_BEHAVIOR_PROFILES[src_ip] = BehaviorProfile()
+            prof.update(dst_port, proto, pkt_len)
+            acc = _anomaly_accum.get(src_ip)
+            if acc is not None and len(acc["ports"]) < 1024:
+                acc["ports"].add(dst_port)
+            if acc is not None:
+                acc["protos"][proto] += 1
 
     if STATE.record_active:
         try:
             record_write_packet(bytes(pkt))
-        except Exception:
-            pass
+        except Exception as e:
+            # Disk full / file vanished: stop cleanly instead of pretending to record
+            log.error(f"[RECORD] écriture impossible, arrêt de l'enregistrement: {e}")
+            try:
+                record_stop()
+            except Exception:
+                pass
 
     decision = "allow"
     reason   = ""
@@ -2751,6 +3253,16 @@ def analyze_packet(pkt):
             STATE.bytes_in += pkt_len
         else:
             STATE.bytes_out += pkt_len
+
+        # Flow table (anti-spoofing): remember conversations WE initiate.
+        _now_flow = time.time()
+        if is_private(src_ip) and not is_private(dst_ip):
+            STATE.outbound_seen[dst_ip] = _now_flow
+            if dst_port or src_port:
+                STATE.flows[(dst_ip, dst_port, src_port)] = _now_flow
+            established = False
+        else:
+            established = _flow_established(src_ip, src_port, dst_port)
 
         if src_ip in BLOCKED_IPS:
             decision = "block"
@@ -2771,18 +3283,18 @@ def analyze_packet(pkt):
             decision = "block"
             add_threat(src_ip, "OTX IOC", f"IP trouvée dans AlienVault OTX", "high")
 
-        # v3.0 — Threat intel (async, first-time only)
+        # v3.0 — Threat intel (async, first-time only, single worker + bounded queue)
         if not is_private(src_ip) and src_ip not in _CHECKED_IPS:
             _CHECKED_IPS.add(src_ip)
             if CFG.virustotal_enabled:
-                threading.Thread(target=_vt_check_ip, args=(src_ip,), daemon=True).start()
+                _schedule_intel_lookup(src_ip)
 
         # ── DNS Blackhole ───────────────────────────────────────────────
         if RULES.get("detect_malicious_dns", {}).get("enabled", True) and pkt.haslayer("DNS"):
             try:
                 from scapy.layers.dns import DNS, DNSQR
                 if pkt[DNS].qr == 0 and pkt.haslayer(DNSQR):
-                    queried = pkt[DNSQR].qname.decode(errors="replace").rstrip(".")
+                    queried = _safe_str(pkt[DNSQR].qname.decode(errors="replace").rstrip("."), 253)
                     if dns_blackhole_check(queried):
                         decision = "block"
                         reason   = f"DNS Blackhole: {queried}"
@@ -2808,7 +3320,9 @@ def analyze_packet(pkt):
             RULES["block_p2p"]["hits"] += 1
         else:
             if not is_private(src_ip):
-                scan_reason = detect_port_scan(src_ip, dst_port)
+                # Only SYN packets count as scan probes: server replies to our own
+                # ephemeral ports (any page load = 15+ ports in 10 s) are not a scan.
+                scan_reason = detect_port_scan(src_ip, dst_port) if is_syn else None
                 if scan_reason:
                     decision = "block"
                     reason   = scan_reason
@@ -2854,7 +3368,7 @@ def analyze_packet(pkt):
                     STATE.dpi_alerts.appendleft(alert)
                     if hit["type"] == "attack":
                         add_threat(src_ip, f"DPI: {hit['detail']}", f"Payload suspect", "high")
-                        auto_block_check(src_ip)
+                        auto_block_check(src_ip, established)
 
         # ── Suricata IDS ───────────────────────────────────────────────
         if SURICATA_ENABLED and decision == "allow":
@@ -2873,7 +3387,7 @@ def analyze_packet(pkt):
                     STATE.suricata_alerts.appendleft(alert)
                     add_threat(src_ip, f"IDS: {hit['msg']}", f"Règle #{hit['sid']} déclenchée", hit["severity"])
                     if hit["severity"] in ("critical", "high"):
-                        auto_block_check(src_ip)
+                        auto_block_check(src_ip, established)
 
         # v3.0 — JA3 Fingerprinting
         if CFG.ja3_enabled and pkt.haslayer(Raw):
@@ -2890,36 +3404,39 @@ def analyze_packet(pkt):
         # v3.0 — DNS entropy
         if CFG.entropy_enabled and pkt.haslayer(DNS) and pkt[DNS].qr == 0:
             try:
-                qname = pkt[DNS].qd.qname.decode(errors="replace").rstrip(".")
+                qname = _safe_str(pkt[DNS].qd.qname.decode(errors="replace").rstrip("."), 253)
                 entropy_check_dns(src_ip, qname)
             except Exception:
                 pass
 
         if decision == "block" and not is_private(src_ip):
-            auto_block_check(src_ip)
+            auto_block_check(src_ip, established)
             # Track geo hits for attacker stats
             country = get_country(src_ip)
             if country:
                 STATE.geo_hits[country] += 1
-                # Fetch city async if not cached yet
-                if src_ip not in _geo_city_cache:
-                    threading.Thread(target=_fetch_city_async, args=(src_ip,), daemon=True).start()
-                # Fetch AbuseIPDB async if key configured
+                # Fetch AbuseIPDB async if key configured (placeholder written first
+                # so a failing lookup cannot respawn a thread on every packet)
                 if ABUSEIPDB_API_KEY and src_ip not in _ABUSEIPDB_CACHE:
+                    _ABUSEIPDB_CACHE[src_ip] = {"score": 0, "reports": 0, "_pending": True}
                     threading.Thread(target=_fetch_abuseipdb, args=(src_ip,), daemon=True).start()
 
-        # Fetch geo for ANY new external IP (not just blocked)
-        if not is_private(src_ip) and src_ip not in _geo_city_cache:
-            threading.Thread(target=_fetch_city_async, args=(src_ip,), daemon=True).start()
+        # Geo lookup for ANY new external IP: single worker + bounded queue
+        if not is_private(src_ip):
+            _schedule_geo_lookup(src_ip)
 
-        # Update risk score
-        _compute_risk_score(src_ip)
+        # Update risk score (only for external IPs — private ones never score)
+        if not is_private(src_ip):
+            _compute_risk_score(src_ip)
 
         if decision == "block":
             STATE.packets_blocked += 1
         else:
             STATE.packets_allowed += 1
-            STATE.active_conns[src_ip].add(dst_port)
+            if len(STATE.active_conns[src_ip]) < 1024:   # a port-scanner cannot fill 65k ports
+                STATE.active_conns[src_ip].add(dst_port)
+        STATE.ip_last_seen[src_ip] = _now_s = time.time()
+        STATE.ip_last_seen[dst_ip] = _now_s
 
         # Get geo info for packet entry (with guaranteed coords via fallback)
         geo = _geo_city_cache.get(src_ip, {})
@@ -2927,29 +3444,63 @@ def analyze_packet(pkt):
         city = geo.get("city", "")
         lat, lon = _get_ip_coords(src_ip, country_code)
         location = f"{city}, {GEO_COUNTRY_NAMES.get(country_code, country_code)}" if city else GEO_COUNTRY_NAMES.get(country_code, country_code)
+        # Fallback for non-routable IPs (LAN, multicast, link-local, loopback) so the UI shows
+        # a readable origin instead of an empty string. Only applied when GeoIP returned nothing.
+        if not location:
+            special = _label_special_ip(src_ip)
+            if special:
+                location = special
+                if not country_code:
+                    country_code = special
 
-        STATE.recent_packets.appendleft({
+        _now_ms = int(time.time() * 1000)
+        # Bandwidth tracker — bytes per IP per second (rolling window)
+        STATE.bytes_per_ip[src_ip] += pkt_len
+        STATE.bytes_per_ip[dst_ip] += pkt_len
+        STATE.bytes_per_ip_per_sec[src_ip].append((_now_ms, pkt_len))
+        # App identification — which local process owns this connection
+        process_label = process_for_packet(src_ip, src_port, dst_ip, dst_port)
+        if process_label:
+            # Remember which process talks to this remote IP (most useful for non-private IPs)
+            non_private = src_ip if not is_private(src_ip) else (dst_ip if not is_private(dst_ip) else "")
+            if non_private:
+                STATE.process_per_ip[non_private] = process_label
+        _pkt_entry = {
             "t":        datetime.now().strftime("%H:%M:%S"),
+            "ts_ms":    _now_ms,  # numeric sort key (replaces fragile HH:MM:SS sort)
             "src":      src_ip, "dst": dst_ip,
             "sport":    src_port, "dport": dst_port,
             "proto":    proto, "size": f"{pkt_len}B",
-            "status":   decision, "reason": reason, "flags": flags,
+            "status":   decision, "reason": _safe_str(reason), "flags": flags,
             "country":  country_code,
-            "city":     city,
-            "location": location,
+            "city":     _safe_str(city, 80),
+            "location": _safe_str(location, 120),
             "lat":      lat,
             "lon":      lon,
-        })
+            "process":  _safe_str(process_label, 120),  # "chrome.exe (1234)" or "" if unknown
+        }
+        STATE.recent_packets.appendleft(_pkt_entry)
+        # Per-IP ring buffer: each IP keeps its own 4 newest packets. Chatty IPs
+        # cannot evict quiet/new IPs from the state broadcast.
+        STATE.ip_recent_packets[src_ip].appendleft(_pkt_entry)
+        if src_ip not in STATE.ip_first_seen_ts:
+            STATE.ip_first_seen_ts[src_ip] = _now_ms
 
 import csv
 import pathlib
 
-REPORTS_DIR = pathlib.Path("reports")
+REPORTS_DIR = pathlib.Path(data_path("reports"))
 
 def ensure_reports_dir():
     REPORTS_DIR.mkdir(exist_ok=True)
 
+_REPORT_TYPES = ("full", "packets", "threats")
+_REPORT_FORMATS = ("json", "csv")
+
 def _report_filename(report_type: str, fmt: str) -> pathlib.Path:
+    # Both values come from the WebSocket client and are embedded in a path.
+    if report_type not in _REPORT_TYPES or fmt not in _REPORT_FORMATS:
+        raise ValueError("report_type/format invalide")
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return REPORTS_DIR / f"netguard_{report_type}_{ts}.{fmt}"
 
@@ -2974,8 +3525,108 @@ def run_report(report_type: str, fmt: str, filter_status: str = "all") -> str:
 
 _last_pkt_total = 0
 
+_IP_TABLE_TTL_SEC      = 1800    # IP idle for 30 min → dropped from live tables
+_IP_CACHE_TTL_SEC      = 86400   # geo / VT / AbuseIPDB / VT-checked caches: 24 h
+_IP_TABLE_MAX          = 20000   # hard cap on tracked IPs (oldest dropped first)
+_PRUNE_INTERVAL_SEC    = 60
+_last_prune_ts         = 0.0
+
+
+def prune_ip_tables(now: float = None) -> int:
+    """Evict idle IPs from every per-IP table (audit mémoire 2026-09-30).
+
+    Before this function existed NO per-IP structure was ever evicted, so memory
+    grew monotonically with every distinct IP seen (spoofed SYN sources included).
+    Driven by STATE.ip_last_seen (updated per packet for src and dst).
+    Returns the number of IPs dropped from the live tables.
+    """
+    now = now or time.time()
+    live_cutoff  = now - _IP_TABLE_TTL_SEC
+    cache_cutoff = now - _IP_CACHE_TTL_SEC
+    with STATE.lock:
+        idle = [ip for ip, ts in STATE.ip_last_seen.items() if ts < live_cutoff]
+        # Hard cap on LIVE entries (bytes_per_ip is the largest live table)
+        live_count = len(STATE.bytes_per_ip)
+        if live_count > _IP_TABLE_MAX:
+            excess = live_count - _IP_TABLE_MAX
+            oldest = sorted(
+                ((STATE.ip_last_seen.get(ip, 0), ip) for ip in STATE.bytes_per_ip)
+            )[:excess]
+            idle.extend(ip for _, ip in oldest)
+            idle = list(dict.fromkeys(idle))
+        # ip_last_seen itself is kept for _IP_CACHE_TTL_SEC (it drives the 24 h
+        # cache eviction below); the live tables are dropped after _IP_TABLE_TTL_SEC.
+        for ip in [ip for ip, ts in STATE.ip_last_seen.items() if ts < cache_cutoff]:
+            STATE.ip_last_seen.pop(ip, None)
+        if len(STATE.ip_last_seen) > 50000:
+            for ip in list(STATE.ip_last_seen)[: len(STATE.ip_last_seen) - 50000]:
+                STATE.ip_last_seen.pop(ip, None)
+        # Anti-spoofing flow table: short-lived by design
+        flow_cutoff = now - 300
+        for key in [k for k, ts in STATE.flows.items() if ts < flow_cutoff]:
+            del STATE.flows[key]
+        if len(STATE.flows) > 50000:
+            for key in list(STATE.flows)[: len(STATE.flows) - 50000]:
+                del STATE.flows[key]
+        for ip in [ip for ip, ts in STATE.outbound_seen.items() if ts < now - 600]:
+            del STATE.outbound_seen[ip]
+        for ip in idle:
+            STATE.bytes_per_ip.pop(ip, None)
+            STATE.bytes_per_ip_per_sec.pop(ip, None)
+            STATE.process_per_ip.pop(ip, None)
+            STATE.active_conns.pop(ip, None)
+            STATE._port_scan_tracker.pop(ip, None)
+            STATE._brute_force_tracker.pop(ip, None)
+            STATE._syn_flood_tracker.pop(ip, None)
+            STATE._dns_tracker.pop(ip, None)
+            STATE.ip_risk_scores.pop(ip, None)
+            STATE.ip_recent_packets.pop(ip, None)
+            STATE.ip_first_seen_ts.pop(ip, None)
+            ATTACK_CHAINS.pop(ip, None)
+            JA3_CACHE.pop(ip, None)
+            _FORENSIC_LAST.pop(ip, None)
+            # ip_hit_counter / ip_intel are kept while the IP is blocked (risk score inputs)
+            if ip not in BLOCKED_IPS:
+                STATE.ip_hit_counter.pop(ip, None)
+                STATE.ip_intel.pop(ip, None)
+        # Also drop empty tracker keys (window pruning empties the list but kept the key)
+        for tracker in (STATE._port_scan_tracker, STATE._brute_force_tracker,
+                        STATE._syn_flood_tracker, STATE._dns_tracker):
+            for ip in [k for k, v in tracker.items() if not v]:
+                del tracker[ip]
+        for ip in [k for k, v in ATTACK_CHAINS.items() if not v]:
+            del ATTACK_CHAINS[ip]
+    with _ANOMALY_LOCK:
+        for ip in [k for k, p in IP_BEHAVIOR_PROFILES.items() if p.last_seen < live_cutoff]:
+            del IP_BEHAVIOR_PROFILES[ip]
+        for ip in [k for k in IP_BASELINES if k not in IP_BEHAVIOR_PROFILES
+                   and STATE.ip_last_seen.get(k, 0) < live_cutoff]:
+            del IP_BASELINES[ip]
+    # Long-TTL caches: keyed by IP, keep while the IP was seen in the last 24 h.
+    # Entries without a last_seen (traceroute hops, dst-only IPs) fall under the size cap.
+    def _prune_cache(d: dict, cap: int = 50000):
+        # list() snapshot: the geo/intel workers insert concurrently
+        stale = [ip for ip in list(d.keys()) if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]
+        for ip in stale:
+            d.pop(ip, None)
+        if len(d) > cap:  # dicts are insertion-ordered: drop the oldest
+            for ip in list(d)[: len(d) - cap]:
+                d.pop(ip, None)
+    for cache in (_geo_cache, _geo_city_cache, VT_CACHE, _ABUSEIPDB_CACHE):
+        _prune_cache(cache)
+    # _CHECKED_IPS: allow a fresh VT/OTX check after 24 h
+    for ip in [ip for ip in _CHECKED_IPS if STATE.ip_last_seen.get(ip, 0) < cache_cutoff]:
+        _CHECKED_IPS.discard(ip)
+    # Webhook cooldowns: key is "channel:ip"
+    for key in [k for k, ts in ALERT_COOLDOWNS.items() if ts < now - WEBHOOK_COOLDOWN * 2]:
+        ALERT_COOLDOWNS.pop(key, None)
+    if idle:
+        log.debug(f"[PRUNE] {len(idle)} IP inactives retirées des tables")
+    return len(idle)
+
+
 def snapshot_traffic():
-    global _last_pkt_total
+    global _last_pkt_total, _last_prune_ts
     with STATE.lock:
         pps = STATE.packets_total - _last_pkt_total
         _last_pkt_total = STATE.packets_total
@@ -2988,6 +3639,14 @@ def snapshot_traffic():
         STATE.bytes_out = 0
     # v3.0 — Anomaly detection flush
     anomaly_flush()
+    # Periodic eviction of idle IPs from every per-IP table
+    _now = time.time()
+    if _now - _last_prune_ts >= _PRUNE_INTERVAL_SEC:
+        _last_prune_ts = _now
+        try:
+            prune_ip_tables(_now)
+        except Exception as e:
+            log.error(f"[PRUNE] {e}")
 
 CLIENTS: set = set()
 
@@ -3004,6 +3663,42 @@ def _build_top_ip_entry(ip: str, hits: int) -> dict:
         "org": geo.get("org", ""),
     }
 
+def _packets_for_state_msg(_unused_deque, total_limit: int = 400, stale_seconds: int = 600):
+    """Build state-broadcast packet payload from the per-IP ring buffer (STATE.ip_recent_packets).
+    Every IP that's been active gets up to 4 packets in the broadcast — chatty IPs cannot
+    evict quiet or just-discovered IPs. Stale entries (IPs not seen in 10 min) are dropped."""
+    cutoff_ms = int(time.time() * 1000) - stale_seconds * 1000
+    out = []
+    stale_ips = []
+    for ip, q in list(STATE.ip_recent_packets.items()):
+        if not q:
+            stale_ips.append(ip)
+            continue
+        # If the newest packet for this IP is older than cutoff, drop the IP
+        newest_ts = q[0].get("ts_ms", 0) if q else 0
+        if newest_ts < cutoff_ms:
+            stale_ips.append(ip)
+            continue
+        out.extend(q)
+    # Cleanup stale entries to bound memory
+    for ip in stale_ips:
+        STATE.ip_recent_packets.pop(ip, None)
+        STATE.ip_first_seen_ts.pop(ip, None)
+    # Sort newest-first by ts_ms — guarantees recent packets near the top
+    out.sort(key=lambda p: p.get("ts_ms", 0), reverse=True)
+    return out[:total_limit]
+
+
+def _group_ips_by_process(ip_to_proc: dict) -> dict:
+    """Inverse map: process_label -> [ip, ip, ...]"""
+    out: dict = {}
+    for ip, proc in ip_to_proc.items():
+        if not proc:
+            continue
+        out.setdefault(proc, []).append(ip)
+    return out
+
+
 def build_state_message() -> dict:
     with STATE.lock:
         conns_count = sum(len(v) for v in STATE.active_conns.values())
@@ -3018,7 +3713,7 @@ def build_state_message() -> dict:
             "blocked_rate":       round(STATE.packets_blocked * 100 / total, 1),
             "active_conns":       conns_count,
             "threats_count":      len(STATE.threats),
-            "recent_packets":     list(STATE.recent_packets)[:30],
+            "recent_packets":     _packets_for_state_msg(STATE.recent_packets),
             "threats":            list(STATE.threats)[:10],
             "traffic_history":    list(STATE.traffic_history),
             "proto_stats": [
@@ -3036,7 +3731,13 @@ def build_state_message() -> dict:
             "auto_block_hits":    CFG.auto_block_hits,
             "record_active":      STATE.record_active,
             "record_file":        STATE.record_file_path,
-            "record_packets":     len(STATE.record_packets),
+            "record_packets":     STATE.record_count,
+            # Health (superaudit): the UI must say when nothing is captured/blocked
+            "capture_error":      STATE.capture_error,
+            "is_admin":           STATE.is_admin,
+            "geo_online_enabled": CFG.geo_online_enabled,   # pages must honour the same privacy knob
+            "block_failures":     STATE.block_failures,
+            "data_dir":           DATA_DIR,
             "top_ips":            [_build_top_ip_entry(ip, h) for ip, h in top_ips],
             "dpi_alerts":         list(STATE.dpi_alerts)[:20],
             "suricata_enabled":   SURICATA_ENABLED,
@@ -3052,9 +3753,28 @@ def build_state_message() -> dict:
                 for k, v in sorted(STATE.geo_hits.items(), key=lambda x: -x[1])
                 if k in _COUNTRY_COORDS
             ],
+            # ── App-id + bandwidth (audit 2026-04-28 missing-features fix) ──
+            # Top 15 IPs by total bytes seen this session, decorated with their owning process.
+            "top_bandwidth_ips": [
+                {
+                    "ip":      ip,
+                    "bytes":   bytes_count,
+                    "process": STATE.process_per_ip.get(ip, ""),
+                    "country": _geo_city_cache.get(ip, {}).get("country") or get_country(ip) or "",
+                }
+                for ip, bytes_count in sorted(STATE.bytes_per_ip.items(), key=lambda x: -x[1])[:15]
+                if not is_private(ip)
+            ],
+            # Process → list of remote IPs it talks to (for the "what is using my net" panel)
+            "process_summary": (lambda: (
+                lambda by_proc: [
+                    {"process": p, "ips": ips[:10], "ip_count": len(ips)}
+                    for p, ips in sorted(by_proc.items(), key=lambda kv: -len(kv[1]))[:20]
+                ]
+            )(_group_ips_by_process(STATE.process_per_ip)))(),
             # v1.9.0
             "ip_risk_scores": dict(list(sorted(STATE.ip_risk_scores.items(), key=lambda x: -x[1]))[:20]),
-            "ip_intel": {ip: STATE.ip_intel[ip] for ip in list(STATE.ip_intel.keys())[:50]},
+            "ip_intel": {ip: v for ip, v in list(STATE.ip_intel.items())[:50]},
             "attack_by_country": {
                 country: dict(types)
                 for country, types in sorted(STATE.attack_by_country.items(),
@@ -3093,13 +3813,15 @@ def build_state_message() -> dict:
             "isolated_devices":     list(ISOLATED_DEVICES),
             "webhook_log":          list(STATE.webhook_log)[:20],
             "forensic_reports":     list(STATE.forensic_reports)[:10],
-            # v3.0 — WireGuard VPN
+            # v3.0 — WireGuard VPN (display-only post-trim)
             "wg_enabled":         CFG.wg_enabled,
             "wg_status":          WG_STATUS,
-            "wg_peers":           [{k: v for k, v in p.items() if k not in ("privkey", "preshared_key")} for p in WG_PEERS],
-            "wg_server_pubkey":   WG_SERVER_PUBKEY,
+            "wg_peers":           [],
+            "wg_server_pubkey":   "",
             "wg_listen_port":     CFG.wg_listen_port,
             "wg_address":         CFG.wg_address,
+            # Task B 2026-04-30 — Npcap consumer detector snapshot
+            "npcap_consumers":    npcap_get_consumers(),
             # License
             "license_tier":       LICENSE.get("tier", "free"),
             "license_trial":      LICENSE.get("trial", False),
@@ -3199,7 +3921,7 @@ def scan_lan() -> list:
                 for sent, received in result:
                     hostname = ""
                     try:
-                        hostname = socket.gethostbyaddr(received.psrc)[0]
+                        hostname = _safe_str(socket.gethostbyaddr(received.psrc)[0], 253)
                     except Exception:
                         pass
                     devices.append({
@@ -3236,7 +3958,7 @@ def scan_lan() -> list:
                     if result.returncode == 0:
                         hostname = ""
                         try:
-                            hostname = socket.gethostbyaddr(ip)[0]
+                            hostname = _safe_str(socket.gethostbyaddr(ip)[0], 253)
                         except Exception:
                             pass
                         return {"ip": ip, "mac": "—", "hostname": hostname, "vendor": "—", "status": "up", "open_ports": []}
@@ -3296,7 +4018,7 @@ class HoneypotServer:
         # Log l'intrusion
         hit = {
             "ts":      datetime.now().strftime("%H:%M:%S"),
-            "ip":      ip,
+            "ip":      _safe_str(ip, 45),
             "port":    self.port,
             "service": self.service_name,
             "country": get_country(ip) or "?",
@@ -3327,7 +4049,7 @@ class HoneypotServer:
 
     async def start(self):
         try:
-            self.server = await asyncio.start_server(self.handle_client, "0.0.0.0", self.port)
+            self.server = await asyncio.start_server(self.handle_client, CFG.honeypot_bind or "0.0.0.0", self.port)
             self.running = True
             log.info(f"[HONEYPOT] {self.service_name} sur port {self.port}")
             async with self.server:
@@ -3352,8 +4074,47 @@ async def start_honeypots():
         asyncio.create_task(hp.start())
     log.info(f"[HONEYPOT] {len(HONEYPOT_SERVERS)} services honeypot démarrés")
 
+# Scalar tuning knobs the dashboard may change via update_param. Paths, secrets,
+# the whitelist and can_block are deliberately NOT in this list.
+_UPDATABLE_PARAMS = frozenset({
+    "port_scan_threshold", "port_scan_window", "brute_force_threshold", "brute_force_window",
+    "syn_flood_threshold", "syn_flood_window", "dns_tunnel_threshold", "auto_block_hits",
+    "record_rotate_min", "record_max_files", "anomaly_zscore", "anomaly_baseline_min",
+    "correlation_window", "discord_min_severity", "telegram_min_severity",
+})
+
+_MAIN_LOOP = None   # asyncio loop serving the WebSocket clients (set in ws_handler)
+
+# One-shot background jobs triggered from the UI (LAN sweep with 50 threads,
+# ruleset download, feed refresh): at most one instance at a time + cooldown.
+_JOBS: dict = {}          # name -> {"running": bool, "last": ts}
+_JOBS_LOCK = threading.Lock()
+
+def _job_start(name: str, cooldown: float = 0.0) -> bool:
+    now = time.time()
+    with _JOBS_LOCK:
+        j = _JOBS.setdefault(name, {"running": False, "last": 0.0})
+        if j["running"] or now - j["last"] < cooldown:
+            return False
+        j["running"] = True
+        j["last"] = now
+        return True
+
+def _job_done(name: str):
+    with _JOBS_LOCK:
+        if name in _JOBS:
+            _JOBS[name]["running"] = False
+
+def _ws_loop():
+    """Loop to hand to run_coroutine_threadsafe from worker threads.
+    asyncio.get_event_loop() inside a plain thread raises on Python 3.10+."""
+    return _MAIN_LOOP or asyncio.get_event_loop()
+
 async def handle_ws_command(ws, msg: dict):
-    global CLIENTS
+    global CLIENTS, _VAULT_LOCKED_WARNED
+    if not isinstance(msg, dict):
+        await ws.send(json.dumps({"type": "error", "error": "message invalide"}))
+        return
     cmd = msg.get("cmd")
 
     if cmd == "get_state":
@@ -3365,18 +4126,32 @@ async def handle_ws_command(ws, msg: dict):
             await ws.send(json.dumps({"type": "rule_updated", "rule": key, "enabled": RULES[key]["enabled"]}))
     elif cmd == "block_ip":
         ip = msg.get("ip", "")
-        reason = msg.get("reason", "Blocage manuel")
-        if ip:
-            block_ip_os(ip, reason)
+        reason = _safe_str(msg.get("reason", "Blocage manuel"))
+        if _validate_ip(ip):
+            block_ip_os(ip, reason, manual=True)
             add_threat(ip, "Blocage manuel", reason, "med")
             await ws.send(json.dumps({"type": "ip_blocked", "ip": ip}))
+        else:
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "IP invalide"}))
     elif cmd == "unblock_ip":
         ip = msg.get("ip", "")
-        if ip:
+        if _validate_ip(ip):
             unblock_ip_os(ip)
             await ws.send(json.dumps({"type": "ip_unblocked", "ip": ip}))
     elif cmd == "get_blocked_ips":
         await ws.send(json.dumps({"type": "blocked_ips", "ips": list(BLOCKED_IPS)}))
+    elif cmd == "traceroute":
+        ip = (msg.get("ip") or "").strip() if isinstance(msg.get("ip"), str) else ""
+        max_hops = _as_int(msg.get("max_hops", 30), 30, 1, 64)
+        # Notify start so the UI can show a spinner
+        try:
+            await ws.send(json.dumps({"type": "traceroute_started", "target": ip, "max_hops": max_hops}))
+        except Exception:
+            pass
+        # Run blocking scapy.sr() in executor — total ~3-6 seconds wall time
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, _traceroute, ip, max_hops)
+        await ws.send(json.dumps({"type": "traceroute_result", **result}))
     elif cmd == "clear_threats":
         STATE.threats.clear()
         await ws.send(json.dumps({"type": "threats_cleared"}))
@@ -3407,8 +4182,7 @@ async def handle_ws_command(ws, msg: dict):
     elif cmd == "get_dpi_alerts":
         await ws.send(json.dumps({"type": "dpi_alerts", "alerts": list(STATE.dpi_alerts)[:50]}))
     elif cmd == "set_auto_block_hits":
-        val = int(msg.get("value", 10))
-        CFG.auto_block_hits = max(1, min(50, val))
+        CFG.auto_block_hits = _as_int(msg.get("value", 10), 10, 1, 50)
         await ws.send(json.dumps({"type": "auto_block_updated", "hits": CFG.auto_block_hits}))
     elif cmd == "toggle_auto_block":
         CFG.auto_block_enabled = not CFG.auto_block_enabled
@@ -3416,12 +4190,17 @@ async def handle_ws_command(ws, msg: dict):
     elif cmd == "update_param":
         key = msg.get("key", "")
         val = msg.get("value")
-        if hasattr(CFG, key) and val is not None:
+        # Before: any attribute of CFG was settable, including "__dict__" (wiped
+        # the config), record_dir (pcap written anywhere), whitelist, can_block.
+        if (isinstance(key, str) and key in _UPDATABLE_PARAMS and val is not None
+                and isinstance(val, (int, float, str, bool))):
             try:
                 setattr(CFG, key, type(getattr(CFG, key))(val))
                 await ws.send(json.dumps({"type": "param_updated", "key": key}))
             except Exception as e:
                 await ws.send(json.dumps({"type": "param_error", "error": str(e)}))
+        else:
+            await ws.send(json.dumps({"type": "param_error", "error": "paramètre non modifiable"}))
 
     # ── v1.6.0 — Suricata IDS ─────────────────────────────────────────
     elif cmd == "toggle_suricata":
@@ -3485,11 +4264,17 @@ async def handle_ws_command(ws, msg: dict):
 
     elif cmd == "load_et_rules":
         ruleset = msg.get("ruleset", "et_scan")
+        if not _job_start("load_et_rules"):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "chargement déjà en cours"}))
+            return
         def _load():
-            result = load_et_rules_online(ruleset)
+            try:
+                result = load_et_rules_online(ruleset)
+            finally:
+                _job_done("load_et_rules")
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "et_rules_loaded", "ruleset": ruleset, **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_load, daemon=True).start()
         await ws.send(json.dumps({"type": "et_rules_loading", "ruleset": ruleset}))
@@ -3519,21 +4304,36 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Scan LAN ───────────────────────────────────────────────────────────
     elif cmd == "scan_lan":
+        if not _job_start("scan_lan"):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "scan déjà en cours"}))
+            return
         await ws.send(json.dumps({"type":"lan_scan_started","subnet":_get_local_subnet()}))
         def _do_scan():
-            devices = scan_lan()
+            try:
+                devices = scan_lan()
+            finally:
+                _job_done("scan_lan")
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type":"lan_scan_result","devices":devices,"count":len(devices)})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_do_scan, daemon=True).start()
 
     # ── Honeypot ───────────────────────────────────────────────────────────
     elif cmd == "toggle_honeypot":
-        global HONEYPOT_ENABLED
+        global HONEYPOT_ENABLED, HONEYPOT_SERVERS
         HONEYPOT_ENABLED = not HONEYPOT_ENABLED
         if HONEYPOT_ENABLED and not HONEYPOT_SERVERS:
             asyncio.create_task(start_honeypots())
+        elif not HONEYPOT_ENABLED:
+            # Before: toggling off left 21/22/23/3389/8080 listening forever.
+            for hp in HONEYPOT_SERVERS:
+                try:
+                    if hp.server:
+                        hp.server.close()
+                except Exception:
+                    pass
+            HONEYPOT_SERVERS = []
         await ws.send(json.dumps({"type":"honeypot_toggled","enabled":HONEYPOT_ENABLED,"ports":[p for p,_,_ in HONEYPOT_CONFIGS]}))
 
     elif cmd == "get_honeypot_hits":
@@ -3571,17 +4371,52 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Threat Intelligence ───────────────────────────────────────────────
     elif cmd == "set_api_keys":
+        # Write to vault when available + unlocked; otherwise fall back to CFG.
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
         if "vt_key" in msg:
-            CFG.virustotal_api_key = msg["vt_key"]
-            CFG.virustotal_enabled = bool(msg["vt_key"])
+            val = msg["vt_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.virustotal.api_key", val)
+                    CFG.virustotal_api_key = ""  # never keep a duplicate plaintext
+                except Exception as e:
+                    log.warning("[VAULT] set vt_key failed: %s", e)
+                    CFG.virustotal_api_key = val
+            else:
+                CFG.virustotal_api_key = val
+            CFG.virustotal_enabled = bool(val)
         if "otx_key" in msg:
-            CFG.otx_api_key = msg["otx_key"]
-            CFG.otx_enabled = bool(msg["otx_key"])
+            val = msg["otx_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.otx.api_key", val)
+                    CFG.otx_api_key = ""
+                except Exception as e:
+                    log.warning("[VAULT] set otx_key failed: %s", e)
+                    CFG.otx_api_key = val
+            else:
+                CFG.otx_api_key = val
+            CFG.otx_enabled = bool(val)
         if "abuseipdb_key" in msg:
-            CFG.abuseipdb_api_key = msg["abuseipdb_key"]
-            CFG.abuseipdb_enabled = bool(msg["abuseipdb_key"])
+            val = msg["abuseipdb_key"]
+            if vault_writable and val:
+                try:
+                    v.set("netguard.abuseipdb.api_key", val)
+                    CFG.abuseipdb_api_key = ""
+                except Exception as e:
+                    log.warning("[VAULT] set abuseipdb_key failed: %s", e)
+                    CFG.abuseipdb_api_key = val
+            else:
+                CFG.abuseipdb_api_key = val
+            CFG.abuseipdb_enabled = bool(val)
+            global ABUSEIPDB_API_KEY
+            ABUSEIPDB_API_KEY = val or ""
         save_settings()
-        await ws.send(json.dumps({"type": "api_keys_saved", "vt": CFG.virustotal_enabled, "otx": CFG.otx_enabled, "abuseipdb": CFG.abuseipdb_enabled}))
+        await ws.send(json.dumps({"type": "api_keys_saved", "vt": CFG.virustotal_enabled, "otx": CFG.otx_enabled, "abuseipdb": CFG.abuseipdb_enabled, "vault_used": vault_writable}))
     elif cmd == "toggle_virustotal":
         CFG.virustotal_enabled = not CFG.virustotal_enabled
         await ws.send(json.dumps({"type": "vt_toggled", "enabled": CFG.virustotal_enabled}))
@@ -3594,7 +4429,15 @@ async def handle_ws_command(ws, msg: dict):
         CFG.threat_feeds_enabled = not CFG.threat_feeds_enabled
         await ws.send(json.dumps({"type": "feeds_toggled", "enabled": CFG.threat_feeds_enabled}))
     elif cmd == "refresh_threat_feeds":
-        threading.Thread(target=_fetch_threat_feeds, daemon=True).start()
+        if not _job_start("refresh_threat_feeds", cooldown=30):
+            await ws.send(json.dumps({"type": "error", "cmd": cmd, "error": "rafraîchissement déjà en cours ou trop fréquent"}))
+            return
+        def _refresh():
+            try:
+                _fetch_threat_feeds()
+            finally:
+                _job_done("refresh_threat_feeds")
+        threading.Thread(target=_refresh, daemon=True).start()
         await ws.send(json.dumps({"type": "feeds_refreshing"}))
     elif cmd == "get_threat_intel":
         await ws.send(json.dumps({
@@ -3612,28 +4455,241 @@ async def handle_ws_command(ws, msg: dict):
 
     # ── Active Response ───────────────────────────────────────────────────
     elif cmd == "set_discord_webhook":
-        CFG.discord_webhook_url = msg.get("url", "")
-        CFG.discord_enabled = bool(CFG.discord_webhook_url)
+        url = msg.get("url", "")
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
+        if vault_writable and url:
+            try:
+                v.set("netguard.discord.webhook_url", url)
+                CFG.discord_webhook_url = ""
+            except Exception as e:
+                log.warning("[VAULT] set discord webhook failed: %s", e)
+                CFG.discord_webhook_url = url
+        else:
+            CFG.discord_webhook_url = url
+        CFG.discord_enabled = bool(url)
         if "min_severity" in msg:
             CFG.discord_min_severity = msg["min_severity"]
         save_settings()
-        await ws.send(json.dumps({"type": "discord_saved", "enabled": CFG.discord_enabled}))
+        await ws.send(json.dumps({"type": "discord_saved", "enabled": CFG.discord_enabled, "vault_used": vault_writable}))
     elif cmd == "test_discord":
-        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
+        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard AI", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_discord_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "discord_test_sent"}))
     elif cmd == "set_telegram":
-        CFG.telegram_bot_token = msg.get("token", "")
-        CFG.telegram_chat_id = msg.get("chat_id", "")
-        CFG.telegram_enabled = bool(CFG.telegram_bot_token and CFG.telegram_chat_id)
+        token = msg.get("token", "")
+        chat_id = msg.get("chat_id", "")
+        v = _get_vault()
+        vault_writable = bool(v and v.exists() and v.is_unlocked())
+        if v and v.exists() and not vault_writable:
+            await ws.send(json.dumps({"type": "vault_locked", "cmd": cmd, "error": "Coffre verrouillé : déverrouille-le avant d'enregistrer un secret (jamais en clair)"}))
+            return
+        if vault_writable and token:
+            try:
+                v.set("netguard.telegram.bot_token", token)
+                CFG.telegram_bot_token = ""
+            except Exception as e:
+                log.warning("[VAULT] set telegram token failed: %s", e)
+                CFG.telegram_bot_token = token
+        else:
+            CFG.telegram_bot_token = token
+        CFG.telegram_chat_id = chat_id
+        CFG.telegram_enabled = bool(token and chat_id)
         if "min_severity" in msg:
             CFG.telegram_min_severity = msg["min_severity"]
         save_settings()
-        await ws.send(json.dumps({"type": "telegram_saved", "enabled": CFG.telegram_enabled}))
+        await ws.send(json.dumps({"type": "telegram_saved", "enabled": CFG.telegram_enabled, "vault_used": vault_writable}))
     elif cmd == "test_telegram":
-        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard Pro", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
+        test_threat = {"src_ip": "TEST", "type": "Test Alert", "description": "Ceci est un test NetGuard AI", "severity": "high", "country": "TEST", "timestamp": datetime.now().isoformat()}
         threading.Thread(target=_send_telegram_alert, args=(test_threat,), daemon=True).start()
         await ws.send(json.dumps({"type": "telegram_test_sent"}))
+
+    # ── Secret Vault ──────────────────────────────────────────────────────
+    elif cmd == "vault_status":
+        v = _get_vault()
+        # ``deps_missing`` is informational — surface to UI so users get an
+        # actionable hint to install pywin32/keyring/argon2-cffi. The vault
+        # is "available" iff we have a usable object (it's the construction
+        # path that catches missing deps and degrades to the False sentinel).
+        deps_missing = _vault_deps_missing() if v is None else []
+        available = bool(v)
+        initialized = bool(v and v.exists())
+        unlocked = bool(v and initialized and v.is_unlocked())
+        # Surface which CFG keys still hold plaintext secrets so the UI can
+        # offer to migrate them.
+        plaintext_keys = []
+        for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+            if getattr(CFG, cfg_key, ""):
+                plaintext_keys.append(cfg_key)
+        # Names already in vault (without ever exposing values).
+        vault_names = []
+        if unlocked:
+            try:
+                vault_names = [e.get("name") for e in v.list()]
+            except Exception:
+                vault_names = []
+        await ws.send(json.dumps({
+            "type": "vault_status",
+            "available": available,
+            "initialized": initialized,
+            "unlocked": unlocked,
+            "deps_missing": deps_missing,
+            "plaintext_keys": plaintext_keys,
+            "secret_names": vault_names,
+        }))
+    elif cmd == "vault_init":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "vault unavailable"}))
+        elif v.exists():
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "already initialized"}))
+        elif not master or len(master) < 8:
+            await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": "master must be at least 8 characters"}))
+        else:
+            try:
+                v.init(master)
+                _VAULT_LOCKED_WARNED = False
+                await ws.send(json.dumps({"type": "vault_init_result", "ok": True}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "vault_init_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_unlock":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "vault unavailable"}))
+        elif not v.exists():
+            await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "not initialized"}))
+        else:
+            allowed, reason = _vault_unlock_throttle_check()
+            if not allowed:
+                await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": "throttled", "detail": reason}))
+            else:
+                try:
+                    v.unlock(master)
+                    _vault_unlock_record_success()
+                    _VAULT_LOCKED_WARNED = False
+                    await ws.send(json.dumps({"type": "vault_unlock_result", "ok": True}))
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_unlock_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_lock":
+        v = _get_vault()
+        if v and v.exists():
+            try:
+                v.lock()
+            except Exception as e:
+                log.debug("[VAULT] lock error: %s", e)
+        await ws.send(json.dumps({"type": "vault_lock_result", "ok": True}))
+    elif cmd == "vault_set_secret":
+        name = msg.get("name", "")
+        value = msg.get("value", "")
+        v = _get_vault()
+        if not v or not v.exists():
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "vault not initialized"}))
+        elif not v.is_unlocked():
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "vault locked"}))
+        elif not name or not value:
+            await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": "name and value required"}))
+        else:
+            try:
+                v.set(name, value)
+                # If this is a known secret, also strip the matching CFG plaintext
+                # so save_settings() doesn't write it back to disk.
+                for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+                    if vault_name == name:
+                        setattr(CFG, cfg_key, "")
+                save_settings()
+                await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": True, "name": name}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "vault_set_secret_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_change_master":
+        old = msg.get("old", "")
+        new = msg.get("new", "")
+        v = _get_vault()
+        if not v or not v.exists():
+            await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "vault not initialized"}))
+        elif not new or len(new) < 8:
+            await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "new master must be at least 8 characters"}))
+        else:
+            allowed, reason = _vault_unlock_throttle_check()
+            if not allowed:
+                await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": "throttled", "detail": reason}))
+            else:
+                try:
+                    v.change_master(old, new)
+                    _vault_unlock_record_success()
+                    await ws.send(json.dumps({"type": "vault_change_master_result", "ok": True}))
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_change_master_result", "ok": False, "error": str(type(e).__name__)}))
+    elif cmd == "vault_migrate":
+        master = msg.get("master", "")
+        v = _get_vault()
+        if not v:
+            await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "vault unavailable"}))
+        else:
+            # Ensure unlocked (or initialise on first run).
+            if not v.exists():
+                if not master or len(master) < 8:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "master required for first init (>=8 chars)"}))
+                    return
+                try:
+                    v.init(master)
+                except Exception as e:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": str(type(e).__name__)}))
+                    return
+            elif not v.is_unlocked():
+                allowed, reason = _vault_unlock_throttle_check()
+                if not allowed:
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": "throttled", "detail": reason}))
+                    return
+                try:
+                    v.unlock(master)
+                    _vault_unlock_record_success()
+                except Exception as e:
+                    _vault_unlock_record_failure()
+                    await ws.send(json.dumps({"type": "vault_migrate_result", "ok": False, "error": str(type(e).__name__)}))
+                    return
+
+            # Move every plaintext secret found in CFG into the vault.
+            migrated = []
+            for cfg_key, vault_name in VAULT_SECRET_NAMES.items():
+                val = getattr(CFG, cfg_key, "")
+                if not val:
+                    continue
+                try:
+                    v.set(vault_name, val)
+                    setattr(CFG, cfg_key, "")
+                    migrated.append(cfg_key)
+                except Exception as e:
+                    log.warning("[VAULT] migrate %s failed: %s", cfg_key, e)
+            if migrated:
+                try:
+                    save_settings()
+                except Exception as e:
+                    log.warning("[VAULT] save_settings after migrate failed: %s", e)
+
+            # ── Sister modules ──────────────────────────────────────────
+            # The vault is now unlocked. Walk Sentinel + MailShield (and
+            # any other suite modules that registered a migrate hook) and
+            # let each move their own plaintext secrets in. Each module
+            # exposes a top-level ``migrate_to_vault()`` returning
+            # ``(migrated_keys: list, count: int)`` — failures are logged
+            # and never fail the netguard side of the migration.
+            module_migrations = _run_sister_module_migrations()
+
+            await ws.send(json.dumps({
+                "type": "vault_migrate_result",
+                "ok": True,
+                "migrated": migrated,
+                "count": len(migrated),
+                "modules": module_migrations,
+            }))
+
     elif cmd == "isolate_device":
         ip = msg.get("ip", "")
         if ip:
@@ -3658,50 +4714,26 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "forensic_reports", "reports": list(STATE.forensic_reports)}))
     elif cmd == "generate_forensic":
         ip = msg.get("ip", "")
-        if ip:
+        if _validate_ip(ip):          # the IP is embedded in the report filename
             def _gen():
                 path = generate_forensic_report(ip, "Manuel")
                 asyncio.run_coroutine_threadsafe(
                     ws.send(json.dumps({"type": "forensic_generated", "ip": ip, "path": path})),
-                    asyncio.get_event_loop()
+                    _ws_loop()
                 )
             threading.Thread(target=_gen, daemon=True).start()
             await ws.send(json.dumps({"type": "forensic_generating", "ip": ip}))
 
-    # ── WireGuard VPN ─────────────────────────────────────────────────────
-    elif cmd == "wg_start":
-        result = wg_start()
-        await ws.send(json.dumps({"type": "wg_started", **result}))
-    elif cmd == "wg_stop":
-        result = wg_stop()
-        await ws.send(json.dumps({"type": "wg_stopped", **result}))
-    elif cmd == "wg_status":
-        status = wg_get_status()
-        await ws.send(json.dumps({"type": "wg_status", **status}))
-    elif cmd == "wg_add_peer":
-        name = msg.get("name", "")
-        if name:
-            result = wg_add_peer(name)
-            await ws.send(json.dumps({"type": "wg_peer_added", **result}, default=str))
-    elif cmd == "wg_remove_peer":
-        name = msg.get("name", "")
-        if name:
-            result = wg_remove_peer(name)
-            await ws.send(json.dumps({"type": "wg_peer_removed", **result}))
-    elif cmd == "wg_get_peers":
-        safe_peers = [{k: v for k, v in p.items() if k not in ("privkey", "preshared_key")} for p in WG_PEERS]
-        await ws.send(json.dumps({"type": "wg_peers", "peers": safe_peers}))
+    # ── WireGuard VPN — client config display only ────────────────────────
     elif cmd == "wg_get_config":
-        name = msg.get("name", "")
-        peer = next((p for p in WG_PEERS if p["name"] == name), None)
-        if peer:
-            config = _wg_generate_peer_config(peer)
-            await ws.send(json.dumps({"type": "wg_peer_config", "name": name, "config": config}))
+        name = msg.get("name", "client")
+        config = _wg_generate_peer_config(name)
+        await ws.send(json.dumps({"type": "wg_peer_config", "name": name, "config": config}))
     elif cmd == "wg_set_config":
         if "endpoint" in msg:
             CFG.wg_endpoint = msg["endpoint"]
         if "listen_port" in msg:
-            CFG.wg_listen_port = int(msg["listen_port"])
+            CFG.wg_listen_port = _as_int(msg["listen_port"], CFG.wg_listen_port, 1, 65535)
         if "address" in msg:
             CFG.wg_address = msg["address"]
         if "dns" in msg:
@@ -3710,46 +4742,8 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "wg_config_saved"}))
 
     # ══════════════════════════════════════════════════════════════════════
-    # v4.0 — New Modules: Vulnerability / Backup / Incidents / Training / NAC / IAM
+    # v4.0 — Backup & Recovery (only remaining v4.0 module post-trim)
     # ══════════════════════════════════════════════════════════════════════
-
-    # ── Vulnerability Scanner ──────────────────────────────────────────
-    elif cmd == "vuln_port_scan":
-        target = msg.get("target", "127.0.0.1")
-        port_range = msg.get("ports", "1-1024")
-        def _scan():
-            results = vuln_scan_ports(target, port_range)
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_scan_result", "target": target, **results})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_scan, daemon=True).start()
-        await ws.send(json.dumps({"type": "vuln_scan_started", "target": target}))
-
-    elif cmd == "vuln_cve_lookup":
-        cve_id = msg.get("cve", "")
-        def _lookup():
-            result = vuln_cve_lookup(cve_id)
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_cve_result", "cve": cve_id, **result})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_lookup, daemon=True).start()
-
-    elif cmd == "vuln_system_check":
-        def _check():
-            result = vuln_system_check()
-            asyncio.run_coroutine_threadsafe(
-                ws.send(json.dumps({"type": "vuln_system_result", **result})),
-                asyncio.get_event_loop()
-            )
-        threading.Thread(target=_check, daemon=True).start()
-        await ws.send(json.dumps({"type": "vuln_system_checking"}))
-
-    elif cmd == "vuln_get_history":
-        await ws.send(json.dumps({"type": "vuln_history", "scans": list(VULN_SCAN_HISTORY)}))
-
-    # ── Backup & Recovery ──────────────────────────────────────────────
     elif cmd == "backup_create":
         name = msg.get("name", "")
         include = msg.get("include", ["settings", "rules", "blocked"])
@@ -3757,7 +4751,7 @@ async def handle_ws_command(ws, msg: dict):
             result = backup_create(name, include)
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "backup_created", **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_backup, daemon=True).start()
         await ws.send(json.dumps({"type": "backup_creating"}))
@@ -3768,7 +4762,7 @@ async def handle_ws_command(ws, msg: dict):
             result = backup_restore(filename)
             asyncio.run_coroutine_threadsafe(
                 ws.send(json.dumps({"type": "backup_restored", **result})),
-                asyncio.get_event_loop()
+                _ws_loop()
             )
         threading.Thread(target=_restore, daemon=True).start()
         await ws.send(json.dumps({"type": "backup_restoring"}))
@@ -3782,108 +4776,65 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "backup_deleted", **result}))
 
     elif cmd == "backup_schedule":
-        BACKUP_SCHEDULE["enabled"] = msg.get("enabled", False)
-        BACKUP_SCHEDULE["interval_hours"] = msg.get("interval", 24)
+        BACKUP_SCHEDULE["enabled"] = bool(msg.get("enabled", False))
+        BACKUP_SCHEDULE["interval_hours"] = _as_int(msg.get("interval", 24), 24, 1, 24 * 30)
         save_settings()
         await ws.send(json.dumps({"type": "backup_schedule_set", **BACKUP_SCHEDULE}))
 
-    # ── Incident Response / Ticketing ──────────────────────────────────
-    elif cmd == "incident_create":
-        ticket = incident_create(
-            msg.get("title", ""),
-            msg.get("description", ""),
-            msg.get("severity", "medium"),
-            msg.get("assigned_to", ""),
-            msg.get("related_ip", ""),
-        )
-        await ws.send(json.dumps({"type": "incident_created", "ticket": ticket}))
+    # ── Rogue Npcap consumer detector (Task B 2026-04-30) ──────────────
+    elif cmd == "npcap_consumers":
+        consumers = npcap_get_consumers()
+        await ws.send(json.dumps({"type": "npcap_consumers", "consumers": consumers}))
 
-    elif cmd == "incident_update":
-        ticket_id = msg.get("id", "")
-        updates = {k: v for k, v in msg.items() if k in ("status", "notes", "assigned_to", "severity")}
-        result = incident_update(ticket_id, updates)
-        await ws.send(json.dumps({"type": "incident_updated", **result}))
-
-    elif cmd == "incident_list":
-        status_filter = msg.get("status", "")
-        tickets = incident_list(status_filter)
-        await ws.send(json.dumps({"type": "incident_list", "tickets": tickets}))
-
-    elif cmd == "incident_get":
-        ticket = incident_get(msg.get("id", ""))
-        await ws.send(json.dumps({"type": "incident_detail", "ticket": ticket}))
-
-    elif cmd == "incident_delete":
-        result = incident_delete(msg.get("id", ""))
-        await ws.send(json.dumps({"type": "incident_deleted", **result}))
-
-    # ── Training & Awareness ──────────────────────────────────────────
-    elif cmd == "training_get_modules":
-        await ws.send(json.dumps({"type": "training_modules", "modules": TRAINING_MODULES}))
-
-    elif cmd == "training_submit_quiz":
-        module_id = msg.get("module_id", "")
-        answers = msg.get("answers", {})
-        result = training_submit_quiz(module_id, answers)
-        await ws.send(json.dumps({"type": "training_quiz_result", **result}))
-
-    elif cmd == "training_get_scores":
-        await ws.send(json.dumps({"type": "training_scores", "scores": TRAINING_SCORES}))
-
-    elif cmd == "training_phishing_sim":
-        result = training_phishing_sim(msg.get("target_email", ""))
-        await ws.send(json.dumps({"type": "training_phishing_started", **result}))
-
-    # ── NAC Enhanced ──────────────────────────────────────────────────
-    elif cmd == "nac_approve_device":
-        ip = msg.get("ip", "")
-        mac = msg.get("mac", "")
-        name = msg.get("name", "")
-        nac_approve_device(ip, mac, name)
-        await ws.send(json.dumps({"type": "nac_device_approved", "ip": ip, "mac": mac}))
-
-    elif cmd == "nac_deny_device":
-        ip = msg.get("ip", "")
-        mac = msg.get("mac", "")
-        nac_deny_device(ip, mac)
-        await ws.send(json.dumps({"type": "nac_device_denied", "ip": ip, "mac": mac}))
-
-    elif cmd == "nac_get_devices":
-        await ws.send(json.dumps({"type": "nac_devices", "approved": NAC_APPROVED, "denied": NAC_DENIED, "pending": NAC_PENDING}))
-
-    elif cmd == "nac_set_policy":
-        NAC_POLICY.update({k: v for k, v in msg.items() if k in ("default_action", "require_approval", "mac_filter")})
-        save_settings()
-        await ws.send(json.dumps({"type": "nac_policy_set", "policy": NAC_POLICY}))
-
-    # ── IAM Enhanced ──────────────────────────────────────────────────
-    elif cmd == "iam_create_user":
-        result = iam_create_user(
-            msg.get("username", ""),
-            msg.get("password", ""),
-            msg.get("role", "viewer"),
-            msg.get("email", ""),
-        )
-        await ws.send(json.dumps({"type": "iam_user_created", **result}))
-
-    elif cmd == "iam_delete_user":
-        result = iam_delete_user(msg.get("username", ""))
-        await ws.send(json.dumps({"type": "iam_user_deleted", **result}))
-
-    elif cmd == "iam_list_users":
-        users = iam_list_users()
-        await ws.send(json.dumps({"type": "iam_users", "users": users}))
-
-    elif cmd == "iam_update_role":
-        result = iam_update_role(msg.get("username", ""), msg.get("role", "viewer"))
-        await ws.send(json.dumps({"type": "iam_role_updated", **result}))
-
-    elif cmd == "iam_toggle_mfa":
-        result = iam_toggle_mfa(msg.get("username", ""))
-        await ws.send(json.dumps({"type": "iam_mfa_toggled", **result}))
-
-    elif cmd == "iam_get_sessions":
-        await ws.send(json.dumps({"type": "iam_sessions", "sessions": list(IAM_SESSIONS.values())}))
+    # ── Multi-PC license management (2026-04-30) ──────────────────────
+    elif cmd == "license_status":
+        try:
+            if LicenseManager is None:
+                payload = {"type": "license_status", "available": False,
+                           "error": "license_manager unavailable"}
+            else:
+                s = LicenseManager().status()
+                payload = {
+                    "type": "license_status",
+                    "available": True,
+                    "plan": s.get("plan"),
+                    "tier": s.get("tier"),
+                    "seats_used": s.get("seats_used", 0),
+                    "max_seats": s.get("max_seats", 0),
+                    "expires_at": s.get("expires_at"),
+                    "license_id": s.get("license_id", ""),
+                    "trial": s.get("trial", False),
+                    "trial_days_left": s.get("trial_days_left", 0),
+                    "expired": s.get("expired", False),
+                    "fingerprint_short": s.get("fingerprint_short", ""),
+                    "devices": s.get("devices", []),
+                    "seat_exhausted": LICENSE_SEAT_EXHAUSTED,
+                    "seat_error": LICENSE_SEAT_ERROR,
+                }
+            await ws.send(json.dumps(payload))
+        except Exception as e:
+            await ws.send(json.dumps({"type": "license_status", "available": False,
+                                      "error": str(e)}))
+    elif cmd == "license_deactivate_device":
+        # TODO(real-server): when the activation server exists, also POST to
+        # /api/v1/license/deactivate so the seat is freed across machines.
+        # For now this is a *local* deactivation only.
+        fingerprint = msg.get("fingerprint", "")
+        if not fingerprint:
+            await ws.send(json.dumps({"type": "license_device_deactivated",
+                                      "ok": False,
+                                      "error": "fingerprint requis"}))
+        else:
+            try:
+                ok = bool(LicenseManager and
+                          LicenseManager().deactivate_device(fingerprint))
+                await ws.send(json.dumps({"type": "license_device_deactivated",
+                                          "ok": ok,
+                                          "fingerprint": fingerprint}))
+            except Exception as e:
+                await ws.send(json.dumps({"type": "license_device_deactivated",
+                                          "ok": False,
+                                          "error": str(e)}))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3939,13 +4890,13 @@ class NetGuardAPI:
     def get_startup_state(self):
         if not HAS_STARTUP_UTILS:
             return {"enabled": False, "available": False}
-        return {"enabled": is_startup_enabled("NetGuard Pro"), "available": True}
+        return {"enabled": is_startup_enabled("NetGuard AI"), "available": True}
 
     def toggle_startup_boot(self):
         if not HAS_STARTUP_UTILS:
             return {"enabled": False, "available": False}
-        bat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "LANCER_NETGUARD.bat")
-        new_state = toggle_startup_reg("NetGuard Pro", bat_path)
+        bat_path = resource_path("LANCER_NETGUARD.bat")
+        new_state = toggle_startup_reg("NetGuard AI", bat_path)
         return {"enabled": new_state, "available": True}
 
     def minimize_to_tray(self):
@@ -3954,13 +4905,84 @@ class NetGuardAPI:
         def _on_quit():
             if self._window:
                 self._window.destroy()
-        minimize_to_tray(self._window, "NetGuard Pro", on_quit=_on_quit)
+        minimize_to_tray(self._window, "NetGuard AI", on_quit=_on_quit)
         return {"success": True}
 
     def get_all_startup_states(self):
         if not HAS_STARTUP_UTILS:
             return {}
         return get_all_startup_states()
+
+    def _ensure_ai_server(self) -> dict:
+        """Boot netguard_ai_server.py on port 8770 if not already running. Idempotent."""
+        import socket as _socket
+        import subprocess as _sp
+        import time as _time
+
+        port = 8770
+        here = os.path.dirname(os.path.abspath(__file__))
+
+        def _is_up() -> bool:
+            s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                return s.connect_ex(("127.0.0.1", port)) == 0
+            finally:
+                s.close()
+
+        if _is_up():
+            # Make sure it is OUR server and not a foreign process on 8770:
+            # ours answers /api/health without a token with a 401 JSON body.
+            try:
+                import urllib.request as _ur
+                import urllib.error as _ue
+                try:
+                    _ur.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1.5)
+                    foreign = True            # 200 without token → not our (hardened) server
+                except _ue.HTTPError as he:
+                    foreign = he.code != 401
+                except Exception:
+                    foreign = True
+            except Exception:
+                foreign = False
+            if foreign:
+                return {"success": False, "error": f"port_{port}_busy_foreign_process"}
+            return {"success": True, "already_running": True, "port": port}
+
+        flags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
+        if is_frozen():
+            # Packaged build: relaunch ourselves in AI-server mode (there is no .py to run)
+            cmd = [sys.executable, "--ai-server", "--no-browser"]
+        else:
+            script = os.path.join(here, "netguard_ai_server.py")
+            if not os.path.isfile(script):
+                return {"success": False, "error": "ai_server_missing"}
+            cmd = [sys.executable, script, "--no-browser"]
+        try:
+            _sp.Popen(cmd, cwd=here, creationflags=flags)
+        except Exception as e:
+            return {"success": False, "error": f"spawn_failed: {e}"}
+        for _ in range(25):
+            if _is_up():
+                return {"success": True, "spawned": True, "port": port}
+            _time.sleep(0.2)
+        return {"success": False, "error": "server_not_responding"}
+
+    def start_ai_server(self):
+        """Spawn the AI server quietly (no browser). Used by the inline dashboard chat drawer."""
+        return self._ensure_ai_server()
+
+    def open_ai_window(self, lang="fr"):
+        """Boot the AI server and open the standalone window in the default browser."""
+        import webbrowser as _wb
+        boot = self._ensure_ai_server()
+        if not boot.get("success"):
+            return boot
+        if lang not in ("fr", "en", "es"):
+            lang = "fr"
+        port = boot.get("port", 8770)
+        _wb.open(f"http://127.0.0.1:{port}/?lang={lang}")
+        return {"success": True, "url": f"http://127.0.0.1:{port}/?lang={lang}"}
 
 
 def _pywebview_state_broadcast(api):
@@ -3987,13 +5009,22 @@ async def broadcast_state():
     save_counter = 0
     while True:
         await asyncio.sleep(1)
-        snapshot_traffic()
+        # Never let a snapshot error kill the broadcast loop (and with it the
+        # WebSocket server / asyncio loop / the whole process in headless mode).
+        try:
+            snapshot_traffic()
+        except Exception as e:
+            log.error(f"[STATE] snapshot_traffic: {e}")
         save_counter += 1
         if save_counter >= 30:
             save_settings()
             save_counter = 0
         if CLIENTS:
-            msg = json.dumps(build_state_message())
+            try:
+                msg = json.dumps(build_state_message())
+            except Exception as e:
+                log.error(f"[STATE] build_state_message: {e}")
+                continue
             dead = set()
             for ws in list(CLIENTS):  # Copy to avoid RuntimeError: Set changed size
                 try:
@@ -4002,16 +5033,118 @@ async def broadcast_state():
                     dead.add(ws)
             CLIENTS -= dead
 
+# ── WebSocket authentication (Phase 1 hardening) ────────────────────────
+_TOKEN_FILE = data_path(".netguard_token")
+WS_TOKEN: str = ""
+
+def _load_or_create_token() -> str:
+    """Load WS auth token from disk, or generate a new 32-byte URL-safe token. File chmod 0600."""
+    global WS_TOKEN
+    try:
+        if os.path.exists(_TOKEN_FILE):
+            with open(_TOKEN_FILE, "r", encoding="utf-8") as f:
+                existing = f.read().strip()
+            if len(existing) >= 32:
+                WS_TOKEN = existing
+                return WS_TOKEN
+    except OSError as e:
+        log.warning(f"[AUTH] Cannot read token file: {e}")
+    WS_TOKEN = _ng_secrets.token_urlsafe(32)
+    try:
+        with open(_TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(WS_TOKEN)
+        try:
+            os.chmod(_TOKEN_FILE, 0o600)
+        except OSError:
+            pass
+        _restrict_file_acl(_TOKEN_FILE)
+        log.info(f"[AUTH] WS token generated -> {_TOKEN_FILE}")
+    except OSError as e:
+        log.error(f"[AUTH] Cannot write token file: {e}")
+    return WS_TOKEN
+
+# CSRF protection: only browsers with these origins (or no origin) may connect
+_ALLOWED_ORIGIN_PREFIXES = (
+    "http://localhost", "https://localhost",
+    "http://127.0.0.1", "https://127.0.0.1",
+    "http://[::1]", "https://[::1]",
+    "file://",
+)
+
+async def _check_origin(connection, request):
+    """websockets process_request callback: reject non-local Origin (CSRF defence)."""
+    try:
+        origin = request.headers.get("Origin")
+    except Exception:
+        origin = None
+    if origin is None or origin == "null":
+        return None  # file:// or pywebview — allow
+    for prefix in _ALLOWED_ORIGIN_PREFIXES:
+        if origin == prefix or origin.startswith(prefix + ":") or origin.startswith(prefix + "/"):
+            return None
+    log.warning(f"[AUTH] Rejected WS connection from origin: {origin}")
+    try:
+        from http import HTTPStatus
+        return connection.respond(HTTPStatus.FORBIDDEN, b"Origin not allowed\n")
+    except Exception:
+        return None
+
 async def ws_handler(websocket):
     global CLIENTS
+    log.info(f"[WS] Client connecting: {websocket.remote_address}")
+    # Auth gate — require {"cmd":"auth","token":WS_TOKEN} as the very first message
+    try:
+        first_raw = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+        try:
+            first_msg = json.loads(first_raw)
+        except json.JSONDecodeError:
+            first_msg = {}
+        if (not isinstance(first_msg, dict)
+                or first_msg.get("cmd") != "auth"
+                or not WS_TOKEN
+                or not _ng_secrets.compare_digest(str(first_msg.get("token", "")), WS_TOKEN)):
+            log.warning(f"[AUTH] WS auth failed from {websocket.remote_address}")
+            try:
+                await websocket.send(json.dumps({"type": "auth_failed"}))
+            except Exception:
+                pass
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+    except asyncio.TimeoutError:
+        try:
+            await websocket.close(code=4408, reason="Auth timeout")
+        except Exception:
+            pass
+        return
+    except Exception as e:
+        log.debug(f"[AUTH] WS handshake error: {e}")
+        return
+    # Authenticated
+    try:
+        await websocket.send(json.dumps({"type": "auth_ok"}))
+    except Exception:
+        return
     CLIENTS.add(websocket)
-    log.info(f"[WS] Client connecté: {websocket.remote_address}")
+    global _MAIN_LOOP
+    _MAIN_LOOP = asyncio.get_running_loop()
+    log.info(f"[WS] Client authenticated: {websocket.remote_address}")
     try:
         await websocket.send(json.dumps(build_state_message()))
         async for raw in websocket:
             try:
                 msg = json.loads(raw)
-                await handle_ws_command(websocket, msg)
+                if isinstance(msg, dict) and msg.get("cmd") == "auth":
+                    continue  # already authenticated; ignore late auth attempts
+                try:
+                    await handle_ws_command(websocket, msg)
+                except Exception as e:
+                    # A malformed command must not drop the session (and must not
+                    # leak a traceback to the client).
+                    log.warning(f"[WS] commande {msg.get('cmd') if isinstance(msg, dict) else '?'} en erreur: {type(e).__name__}: {e}")
+                    try:
+                        await websocket.send(json.dumps({"type": "error", "cmd": msg.get("cmd") if isinstance(msg, dict) else None, "error": "commande invalide"}))
+                    except Exception:
+                        pass
             except json.JSONDecodeError:
                 pass
     except Exception as e:
@@ -4064,13 +5197,34 @@ def auto_select_interface() -> str:
         for iface in ifaces:
             if pref.lower() in iface.lower():
                 return iface
-    return ifaces[0] if ifaces else "eth0"
+    return ifaces[0] if ifaces else None   # None → start_capture reports "no interface" (was a bogus "eth0")
+
+def _is_admin() -> bool:
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return os.geteuid() == 0
+    except Exception:
+        return False
+
+def _capture_failed(msg: str):
+    """sys.exit() inside the capture thread only killed that thread: the window
+    stayed open with 0 packets and no explanation. Surface the error instead."""
+    STATE.capture_error = msg
+    log.error(f"[CAPTURE] {msg}")
+    STATE.timeline_events.appendleft({
+        "ts": datetime.now().strftime("%H:%M:%S"), "type": "capture_error",
+        "ip": "", "country": "", "severity": "critical",
+    })
 
 def start_capture(interface: str):
     if not HAS_SCAPY:
-        log.error("scapy non disponible. Installe avec: pip install scapy")
-        log.error("Sur Windows, installe aussi Npcap: https://npcap.com/#download")
-        sys.exit(1)
+        _capture_failed("scapy non disponible (pip install scapy) ; sur Windows installe aussi Npcap : https://npcap.com/#download")
+        return
+    if not interface:
+        _capture_failed("Aucune interface réseau avec une adresse IPv4 détectée")
+        return
     log.info(f"[CAPTURE] Démarrage sur: {interface}")
 
     def safe_analyze(pkt):
@@ -4082,11 +5236,44 @@ def start_capture(interface: str):
     try:
         sniff(iface=interface, prn=safe_analyze, store=False)
     except PermissionError:
-        log.error("ERREUR: Permissions insuffisantes. Lance en tant qu'Administrateur.")
-        sys.exit(1)
+        _capture_failed("Permissions insuffisantes pour capturer : relance en tant qu'administrateur (Npcap)")
     except Exception as e:
-        log.error(f"Erreur capture: {e}")
-        sys.exit(1)
+        _capture_failed(f"Capture impossible sur {interface}: {e} — Npcap est-il installé ?")
+
+def _shutdown():
+    """atexit: flush the pcap writer and persist settings on every exit path
+    (window close, tray Quit, SIGTERM), not only on Ctrl+C."""
+    try:
+        if STATE.record_active:
+            record_stop()
+    except Exception:
+        pass
+    try:
+        save_settings()
+    except Exception:
+        pass
+
+def remove_all_firewall_rules() -> int:
+    """Delete every NetGuard_* rule from the OS firewall (uninstall / reset).
+    Before: auto-added netsh rules outlived the application forever."""
+    count = 0
+    try:
+        if IS_WINDOWS:
+            ps = ("$r = Get-NetFirewallRule -DisplayName 'NetGuard_*' -ErrorAction SilentlyContinue; "
+                  "$n = ($r | Measure-Object).Count; $r | Remove-NetFirewallRule -ErrorAction SilentlyContinue; $n")
+            r = _subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                                capture_output=True, text=True, timeout=60)
+            try:
+                count = int((r.stdout or "0").strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                count = 0
+        elif IS_LINUX:
+            for ip in list(BLOCKED_IPS):
+                if _apply_os_rule("unblock", ip):
+                    count += 1
+    except Exception as e:
+        log.error(f"[FIREWALL] suppression des règles: {e}")
+    return count
 
 async def main_async(interface: str):
     threading.Thread(target=start_capture, args=(interface,), daemon=True).start()
@@ -4095,10 +5282,9 @@ async def main_async(interface: str):
         _schedule_feed_refresh()
     if CFG.otx_enabled:
         threading.Thread(target=_otx_fetch_pulses, daemon=True).start()
-    # v3.0 — WireGuard
-    if CFG.wg_enabled:
-        _wg_init_server()
-        _wg_load_peers()
+    # v3.0 — WireGuard (server lifecycle removed in trim 2026-04-30)
+    # Task B 2026-04-30: Start rogue Npcap consumer detector
+    threading.Thread(target=_npcap_detector_loop, daemon=True).start()
     log.info(f"[WS] Serveur WebSocket sur ws://localhost:{CFG.ws_port}")
     if HAS_WS:
         try:
@@ -4108,20 +5294,27 @@ async def main_async(interface: str):
 
         if ver >= (14, 0):
             # websockets 14+ : serve() est un context manager async
-            async with websockets.serve(ws_handler, "localhost", CFG.ws_port):
+            async with websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                        process_request=_check_origin,
+                                        max_size=1_048_576):
                 log.info("[WS] Serveur démarré (websockets 14+)")
                 await broadcast_state()
         else:
             # websockets < 14 : serve() retourne un objet awaitable
-            server = await websockets.serve(ws_handler, "localhost", CFG.ws_port)
+            server = await websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                            process_request=_check_origin,
+                                            max_size=1_048_576)
             log.info("[WS] Serveur démarré (websockets legacy)")
             await broadcast_state()
     else:
         while True:
             await asyncio.sleep(1)
-            snapshot_traffic()
+            try:
+                snapshot_traffic()
+            except Exception as e:
+                log.error(f"[STATE] snapshot_traffic: {e}")
 
-SETTINGS_FILE = "netguard_settings.json"
+SETTINGS_FILE = data_path("netguard_settings.json")
 
 def save_settings():
     """Sauvegarde les settings dans un fichier JSON"""
@@ -4164,29 +5357,19 @@ def save_settings():
             "quarantine_enabled": CFG.quarantine_enabled,
             "auto_forensic_enabled": CFG.auto_forensic_enabled,
             "auto_forensic_severity": CFG.auto_forensic_severity,
-            # WireGuard
+            # WireGuard (display-only client config post-trim)
             "wg_enabled": CFG.wg_enabled,
             "wg_listen_port": CFG.wg_listen_port,
             "wg_address": CFG.wg_address,
             "wg_dns": CFG.wg_dns,
             "wg_endpoint": CFG.wg_endpoint,
             "wg_interface": CFG.wg_interface,
-            # v4.0 — New Modules
-            "nac_approved": NAC_APPROVED,
-            "nac_denied": NAC_DENIED,
-            "nac_policy": NAC_POLICY,
+            # v4.0 — Backup is the only kept v4.0 module post-trim 2026-04-30
             "backup_schedule": BACKUP_SCHEDULE,
-            "iam_users": {u: {k: v for k, v in d.items() if k != "password_hash"}
-                         for u, d in IAM_USERS.items()},
-            "incidents": INCIDENTS[:50],
-            "training_scores": TRAINING_SCORES,
-            "detection_params": {
-                k: DETECTION_PARAMS[k]["value"]
-                for k in DETECTION_PARAMS
-            } if 'DETECTION_PARAMS' in globals() else {},
+            # Npcap whitelist (Task B 2026-04-30)
+            "npcap_whitelist": list(NPCAP_WHITELIST),
         }
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2, ensure_ascii=False)
+        _secure_json_write(SETTINGS_FILE, settings)
         log.info(f"[SETTINGS] Sauvegardé → {SETTINGS_FILE}")
     except Exception as e:
         log.error(f"[SETTINGS] Erreur sauvegarde: {e}")
@@ -4198,12 +5381,29 @@ def load_settings():
         log.info("[SETTINGS] Aucun fichier de settings trouvé — paramètres par défaut")
         return
     try:
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            s = json.load(f)
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                s = json.load(f)
+            if not isinstance(s, dict):
+                raise ValueError("settings: objet JSON attendu")
+        except (ValueError, UnicodeDecodeError) as e:
+            # Corrupt file: keep a copy for the user, run on defaults, say so in the UI
+            corrupt = SETTINGS_FILE + ".corrupt"
+            try:
+                os.replace(SETTINGS_FILE, corrupt)
+            except OSError:
+                pass
+            log.error(f"[SETTINGS] fichier corrompu ({e}) — sauvegardé sous {corrupt}, paramètres par défaut")
+            STATE.timeline_events.appendleft({
+                "ts": datetime.now().strftime("%H:%M:%S"), "type": "settings_corrupt",
+                "ip": "", "country": "", "severity": "high",
+            })
+            return
 
         # Règles
-        for k, enabled in s.get("rules", {}).items():
-            if k in RULES:
+        rules_in = s.get("rules")
+        for k, enabled in (rules_in.items() if isinstance(rules_in, dict) else []):
+            if k in RULES and isinstance(enabled, bool):
                 RULES[k]["enabled"] = enabled
 
         # IPs bloquées
@@ -4273,15 +5473,18 @@ def load_settings():
         CFG.wg_endpoint     = s.get("wg_endpoint", "")
         CFG.wg_interface    = s.get("wg_interface", "wg0")
 
-        # v4.0 — New Modules
-        global NAC_APPROVED, NAC_DENIED, NAC_POLICY, BACKUP_SCHEDULE, INCIDENTS, INCIDENT_COUNTER, TRAINING_SCORES
-        NAC_APPROVED = s.get("nac_approved", [])
-        NAC_DENIED = s.get("nac_denied", [])
-        NAC_POLICY.update(s.get("nac_policy", {}))
-        BACKUP_SCHEDULE.update(s.get("backup_schedule", {}))
-        INCIDENTS = s.get("incidents", [])
-        INCIDENT_COUNTER = len(INCIDENTS)
-        TRAINING_SCORES = s.get("training_scores", {})
+        # v4.0 — Backup only (rest trimmed 2026-04-30)
+        global BACKUP_SCHEDULE, NPCAP_WHITELIST, ABUSEIPDB_API_KEY
+        if isinstance(s.get("backup_schedule"), dict):
+            BACKUP_SCHEDULE.update(s["backup_schedule"])
+        # Task B 2026-04-30: Npcap consumer whitelist
+        NPCAP_WHITELIST = set(x for x in s.get("npcap_whitelist", []) if isinstance(x, str))
+        # Privacy / Store knobs
+        CFG.geo_online_enabled = bool(s.get("geo_online_enabled", CFG.geo_online_enabled))
+        CFG.npcap_kill_rogue   = bool(s.get("npcap_kill_rogue", False))
+        CFG.honeypot_bind      = s.get("honeypot_bind", "0.0.0.0") if _validate_ip(s.get("honeypot_bind", "0.0.0.0")) else "0.0.0.0"
+        # AbuseIPDB key was never resolved before (the lookup path was dead code)
+        ABUSEIPDB_API_KEY = (get_secret("netguard.abuseipdb.api_key", "abuseipdb_api_key") or "") if CFG.abuseipdb_enabled else ""
 
         log.info(f"[SETTINGS] Chargé — {len(BLOCKED_IPS)} IPs bloquées, {len(GEO_BLOCKED_COUNTRIES)} pays géobloqués")
     except Exception as e:
@@ -4289,11 +5492,28 @@ def load_settings():
 
 def _common_init():
     """Common setup for both pywebview and WebSocket modes"""
-    parser = argparse.ArgumentParser(description="NetGuard Pro — Surveillance réseau")
+    parser = argparse.ArgumentParser(description="NetGuard AI — Surveillance réseau")
     parser.add_argument("--interface", default="auto")
     parser.add_argument("--port",      type=int, default=8765)
     parser.add_argument("--no-block",  action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--demo",      action="store_true", help="Mode démonstration (raccourcis installeur)")
+    parser.add_argument("--ai-server", action="store_true", help="Lance uniquement le serveur de la fenêtre IA")
+    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--remove-firewall-rules", action="store_true",
+                        help="Supprime toutes les règles pare-feu NetGuard_* puis quitte (désinstallation)")
+    # parse_known_args: an unknown flag from a launcher/shortcut must not abort startup
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        log.warning(f"[ARGS] options ignorées: {unknown}")
+
+    if args.remove_firewall_rules:
+        n = remove_all_firewall_rules()
+        print(f"[NetGuard] {n} règle(s) pare-feu NetGuard supprimée(s)")
+        sys.exit(0)
+    if args.ai_server:
+        import netguard_ai_server
+        netguard_ai_server.run(open_browser=not args.no_browser)
+        sys.exit(0)
 
     CFG.ws_port   = args.port
     CFG.can_block = not args.no_block
@@ -4303,12 +5523,107 @@ def _common_init():
         interface = auto_select_interface()
         log.info(f"[AUTO] Interface sélectionnée: {interface}")
 
+    ensure_data_dirs()
     os.makedirs(CFG.record_dir, exist_ok=True)
-    os.makedirs("reports", exist_ok=True)
+    os.makedirs(str(REPORTS_DIR), exist_ok=True)
     load_settings()
+    _load_or_create_token()
+    log.info(f"[PATHS] données: {DATA_DIR} — ressources: {RESOURCE_DIR}")
 
+    # Privilege check: packet capture and firewall rules need admin on Windows.
+    STATE.is_admin = _is_admin()
+    if IS_WINDOWS and not STATE.is_admin:
+        log.warning("[ADMIN] Non administrateur : pas de règles pare-feu (surveillance seulement). "
+                    "Relance en tant qu'administrateur pour activer le blocage.")
+        CFG.can_block = False
+
+    atexit.register(_shutdown)
+    threading.Thread(target=_backup_scheduler_loop, name="backup-scheduler", daemon=True).start()
     return interface, args
 
+
+def _backup_scheduler_loop():
+    """BACKUP_SCHEDULE existed in settings/UI but nothing ever ran it."""
+    while True:
+        time.sleep(60)
+        try:
+            if not BACKUP_SCHEDULE.get("enabled"):
+                continue
+            hours = _as_int(BACKUP_SCHEDULE.get("interval_hours", 24), 24, 1, 24 * 30)
+            last = BACKUP_SCHEDULE.get("last_backup") or ""
+            due = True
+            if last:
+                try:
+                    due = (datetime.now() - datetime.fromisoformat(last)).total_seconds() >= hours * 3600
+                except ValueError:
+                    due = True
+            if due:
+                res = backup_create()
+                log.info(f"[BACKUP] planifié: {res}")
+                save_settings()
+        except Exception as e:
+            log.error(f"[BACKUP] planificateur: {e}")
+
+
+def _webview2_installed() -> bool:
+    """Evergreen WebView2 runtime presence (pywebview falls back to MSHTML/IE11
+    otherwise and the dashboard JS fails)."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        import winreg
+        guid = r"{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+        for root, sub in ((winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\\" + guid),
+                          (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\\" + guid),
+                          (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients\\" + guid)):
+            try:
+                with winreg.OpenKey(root, sub) as k:
+                    ver, _ = winreg.QueryValueEx(k, "pv")
+                    if ver and ver != "0.0.0.0":
+                        return True
+            except OSError:
+                continue
+    except Exception:
+        return True
+    return False
+
+def _npcap_installed() -> bool:
+    if not IS_WINDOWS:
+        return True
+    try:
+        import ctypes
+        ctypes.WinDLL("wpcap.dll")
+        return True
+    except OSError:
+        return os.path.exists(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "Npcap", "wpcap.dll"))
+
+def _first_run_checks_gui():
+    """Windows GUI prerequisites with an explicit dialog instead of a dead app.
+    Npcap cannot be bundled (its licence + Store policy): the user installs it."""
+    if not IS_WINDOWS:
+        return
+    try:
+        import ctypes, webbrowser as _wb
+        MB_YESNO, MB_ICONWARNING, IDYES = 0x4, 0x30, 6
+        if not _npcap_installed():
+            r = ctypes.windll.user32.MessageBoxW(
+                None,
+                "Npcap n'est pas installé : NetGuard AI ne pourra pas capturer le trafic.\n\n"
+                "Npcap est un pilote gratuit (npcap.com) à installer séparément.\n"
+                "Ouvrir la page de téléchargement maintenant ?",
+                "NetGuard AI — Npcap requis", MB_YESNO | MB_ICONWARNING)
+            if r == IDYES:
+                _wb.open("https://npcap.com/#download")
+        if not _webview2_installed():
+            r = ctypes.windll.user32.MessageBoxW(
+                None,
+                "Le runtime Microsoft Edge WebView2 est absent : l'interface ne s'affichera pas correctement.\n\n"
+                "Ouvrir la page de téléchargement de WebView2 ?",
+                "NetGuard AI — WebView2 requis", MB_YESNO | MB_ICONWARNING)
+            if r == IDYES:
+                _wb.open("https://developer.microsoft.com/microsoft-edge/webview2/")
+    except Exception as e:
+        log.debug(f"[FIRST-RUN] {e}")
 
 def main_webview():
     """Launch with pywebview — native window, direct API calls"""
@@ -4317,7 +5632,7 @@ def main_webview():
     try:
         print("""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.0.0 -- Fenetre native (pywebview)      |
+|       NetGuard AI v4.1.0 -- Fenetre native (pywebview)      |
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -4326,7 +5641,7 @@ def main_webview():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.0.0] Demarrage (pywebview)...")
+        print("[NetGuard AI v4.1.0] Demarrage (pywebview)...")
 
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
 
@@ -4338,9 +5653,8 @@ def main_webview():
         _schedule_feed_refresh()
     if CFG.otx_enabled:
         threading.Thread(target=_otx_fetch_pulses, daemon=True).start()
-    if CFG.wg_enabled:
-        _wg_init_server()
-        _wg_load_peers()
+    # Task B 2026-04-30: Start rogue Npcap consumer detector
+    threading.Thread(target=_npcap_detector_loop, daemon=True).start()
 
     # Start async event loop in background thread for async command handling + WS server
     loop = asyncio.new_event_loop()
@@ -4355,11 +5669,15 @@ def main_webview():
                     ver = (0, 0)
                 try:
                     if ver >= (14, 0):
-                        async with websockets.serve(ws_handler, "localhost", CFG.ws_port):
+                        async with websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                                    process_request=_check_origin,
+                                                    max_size=1_048_576):
                             log.info(f"[WS] Serveur WebSocket demarre sur ws://localhost:{CFG.ws_port} (pywebview+WS)")
                             await broadcast_state()
                     else:
-                        server = await websockets.serve(ws_handler, "localhost", CFG.ws_port)
+                        server = await websockets.serve(ws_handler, "localhost", CFG.ws_port,
+                                                        process_request=_check_origin,
+                                                        max_size=1_048_576)
                         log.info(f"[WS] Serveur WebSocket demarre sur ws://localhost:{CFG.ws_port} (pywebview+WS)")
                         await broadcast_state()
                 except OSError as e:
@@ -4375,10 +5693,11 @@ def main_webview():
     api = NetGuardAPI()
     api._loop = loop
 
-    dashboard_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "netguard_dashboard.html")
+    _first_run_checks_gui()
+    dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(
-        "NetGuard Pro v4.0.0",
+        "NetGuard AI v4.1.0",
         dashboard_path,
         js_api=api,
         width=1360,
@@ -4401,7 +5720,7 @@ def main_webview():
         api._stop_broadcast = True
         loop.call_soon_threadsafe(loop.stop)
         save_settings()
-        print("[*] NetGuard Pro ferme.")
+        print("[*] NetGuard AI ferme.")
 
 
 def main():
@@ -4421,7 +5740,7 @@ def main():
     try:
         print(f"""
 +--------------------------------------------------------------+
-|       NetGuard Pro v4.0.0 -- Mode {mode_label:<24}|
+|       NetGuard AI v4.1.0 -- Mode {mode_label:<24}|
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -4430,13 +5749,18 @@ def main():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard Pro v4.0.0] Demarrage...")
+        print("[NetGuard AI v4.1.0] Demarrage...")
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
     try:
         asyncio.run(main_async(interface))
     except KeyboardInterrupt:
-        log.info("Arrêt de NetGuard Pro — sauvegarde des settings...")
+        log.info("Arrêt de NetGuard — sauvegarde des settings...")
         save_settings()
+    except OSError as e:
+        # Typically: port 8765 already in use (another instance)
+        log.error(f"[WS] Impossible de démarrer le serveur sur le port {CFG.ws_port}: {e}")
+        save_settings()
+        sys.exit(2)
 
 if __name__ == "__main__":
     main()

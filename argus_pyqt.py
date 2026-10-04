@@ -1,0 +1,6357 @@
+# Copyright (C) 2026 NetGuard AI Suite contributors
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file in the
+# repository root for the full GPL v3 text, or
+# <https://www.gnu.org/licenses/gpl-3.0.html>.
+"""
+Argus 2.0 — Real PyQt6 + QtWebEngine cybersecurity browser.
+
+Layout:
+  Top   : transparent live network feed (2 lines, color-coded, animated)
+  Tabs  : bookmark-style strip just under feed (multi-tab, click to switch, × to close)
+  Mid   : QStackedWidget with one QWebEngineView per tab (real Chromium, sandboxed)
+          + optional right-side AI side panel (Ctrl+J)
+  Bot   : 3-row dock — HTTPS / Engine+Search+Star / Settings+Favs+F12+NewTab
+  Float : mode badge top-center (Normal / Privé / Coffre)
+  F12   : Chromium DevTools panel slide-up, resizable
+
+Persistence:
+  Sessions (cookies, localStorage) survive restarts via persistent profile path
+  → log into Google/Microsoft once, stays signed in next launch.
+  Favorites stored in argus_data/favorites.json.
+  AI conversation history in argus_data/ai_history.json (gitignored, last 50 msgs).
+
+Run:  python argus_pyqt.py   (or LANCER_ARGUS_2.bat)
+"""
+import json
+import os
+import platform
+import subprocess
+import sys
+import threading
+import urllib.error
+import urllib.request
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote, urlparse
+from weakref import WeakValueDictionary
+
+# Module-level Argus version constant (used by About dialog + version banner +
+# Help > About menu). Bump this when shipping a new release.
+ARGUS_VERSION = "3.0.0"
+
+from PyQt6.QtCore import (
+    Qt, QUrl, QSize, QBuffer, QIODevice, pyqtSignal, QObject, QTimer,
+    QPropertyAnimation, QEasingCurve, QMimeData, QPoint, QPointF,
+)
+from PyQt6.QtGui import (
+    QShortcut, QKeySequence, QIcon, QPixmap, QTextCursor,
+    QDrag, QCursor, QColor, QPainter,
+)
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLineEdit, QComboBox, QPushButton, QLabel, QStackedWidget, QFrame,
+    QSizePolicy, QScrollArea, QMenu, QDialog, QCheckBox, QFormLayout,
+    QDialogButtonBox, QGroupBox, QTextBrowser, QTextEdit, QTabWidget,
+    QFileDialog, QMessageBox, QSplashScreen, QListWidget, QListWidgetItem,
+    QPlainTextEdit, QHeaderView, QTableWidget, QTableWidgetItem, QMenuBar,
+    QInputDialog,
+)
+# QtWebEngine must see AA_ShareOpenGLContexts before a QCoreApplication exists.
+# When a test session (pytest-qt, another test module) already created the
+# QApplication, importing this module raised ImportError; set the attribute
+# explicitly so the import works in both orders.
+try:
+    from PyQt6.QtCore import QCoreApplication as _QCA, Qt as _Qt
+    _QCA.setAttribute(_Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+except Exception:
+    pass
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWebEngineCore import (
+    QWebEnginePage, QWebEngineProfile, QWebEngineUrlRequestInterceptor,
+    QWebEngineSettings, QWebEngineScript,
+)
+from PyQt6.QtPrintSupport import QPrintDialog, QPrinter
+
+# ── Wave 2 module imports — graceful degradation if missing ──────────────
+# Each import is wrapped so a missing module disables only that feature.
+# Flags are inspected at runtime by the UI to skip wiring + show toasts.
+
+try:
+    from argus_sandbox import (
+        make_normal_profile, make_private_profile, make_vault_profile,
+        install_anti_skimmer_script, randomize_user_agent,
+    )
+    HAVE_SANDBOX = True
+except ImportError:
+    HAVE_SANDBOX = False
+    make_normal_profile = make_private_profile = make_vault_profile = None
+    install_anti_skimmer_script = randomize_user_agent = None
+
+try:
+    from argus_surveillance import (
+        surveil_init, surveil_log_event, surveil_query, surveil_stats,
+    )
+    HAVE_SURVEILLANCE = True
+except ImportError:
+    HAVE_SURVEILLANCE = False
+    def surveil_init(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def surveil_log_event(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def surveil_query(*_a, **_kw):  # type: ignore[no-redef]
+        return []
+    def surveil_stats(*_a, **_kw):  # type: ignore[no-redef]
+        return {}
+
+try:
+    from argus_arbiter import (
+        arbiter_init, arbiter_decide, arbiter_decide_async, Decision, ActionType,
+    )
+    HAVE_ARBITER = True
+except ImportError:
+    HAVE_ARBITER = False
+    Decision = None  # type: ignore[assignment,misc]
+    ActionType = str  # type: ignore[assignment,misc]
+    def arbiter_init(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def arbiter_decide(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def arbiter_decide_async(*_a, **_kw):  # type: ignore[no-redef]
+        # Synchronously invoke the callback with a None-ish allow so the UI
+        # doesn't hang when arbiter is missing.
+        cb = _kw.get("callback")
+        if cb is None and len(_a) >= 3:
+            cb = _a[2]
+        if callable(cb):
+            try:
+                cb(None)
+            except Exception:
+                pass
+
+try:
+    from argus_vault_domains import is_vault_domain, VaultMatch
+    HAVE_VAULT_DOMAINS = True
+except ImportError:
+    HAVE_VAULT_DOMAINS = False
+    VaultMatch = None  # type: ignore[assignment,misc]
+    def is_vault_domain(_url):  # type: ignore[no-redef]
+        return None
+
+try:
+    from argus_2fa import (
+        two_fa_is_setup, two_fa_setup_wizard, two_fa_challenge,
+        two_fa_required_for,
+    )
+    HAVE_2FA = True
+except ImportError:
+    HAVE_2FA = False
+    def two_fa_is_setup(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_setup_wizard(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_challenge(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def two_fa_required_for(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+
+try:
+    from argus_onboarding import (
+        is_first_run, mark_first_run_complete, show_first_run_dialog,
+    )
+    HAVE_ONBOARDING = True
+except ImportError:
+    HAVE_ONBOARDING = False
+    def is_first_run(*_a, **_kw):  # type: ignore[no-redef]
+        return False
+    def mark_first_run_complete(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+    def show_first_run_dialog(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+
+try:
+    from config import (
+        get_secret, get_required_secret, store_secret, list_known_secrets,
+        CANONICAL_SECRETS,
+    )
+    HAVE_CONFIG = True
+except ImportError:
+    HAVE_CONFIG = False
+    CANONICAL_SECRETS = {}  # type: ignore[assignment]
+    def get_secret(_n, fallback=None):  # type: ignore[no-redef]
+        return os.environ.get(_n, fallback)
+    def get_required_secret(_n, hint=""):  # type: ignore[no-redef]
+        v = os.environ.get(_n)
+        if not v:
+            raise RuntimeError(f"Required secret {_n!r} not set")
+        return v
+    def store_secret(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("config module not available; cannot store secrets")
+    def list_known_secrets():  # type: ignore[no-redef]
+        return []
+
+# Vault management — used by Settings > Vault tab to list secrets metadata,
+# rotate masterkey, etc. Module shipped in argus_vault.py; graceful fallback.
+try:
+    from argus_vault import (
+        vault_list, vault_get, vault_delete, vault_rotate_masterkey,
+        vault_exists,
+    )
+    HAVE_VAULT = True
+except ImportError:
+    HAVE_VAULT = False
+    def vault_list():  # type: ignore[no-redef]
+        return []
+    def vault_get(_k, passphrase=None):  # type: ignore[no-redef]
+        return None
+    def vault_delete(_k):  # type: ignore[no-redef]
+        return False
+    def vault_rotate_masterkey(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("argus_vault module not available")
+    def vault_exists():  # type: ignore[no-redef]
+        return False
+
+# Manifest layer — trust-on-register entitlements for the Vault tab.
+try:
+    from argus_vault_manifests import (
+        manifest_set, manifest_get, manifest_list, manifest_delete,
+        programs_entitled_to,
+    )
+    HAVE_VAULT_MANIFESTS = True
+except ImportError:
+    HAVE_VAULT_MANIFESTS = False
+    def manifest_set(*_a, **_kw):  # type: ignore[no-redef]
+        raise RuntimeError("argus_vault_manifests not available")
+    def manifest_get(_h):  # type: ignore[no-redef]
+        return None
+    def manifest_list():  # type: ignore[no-redef]
+        return []
+    def manifest_delete(_h):  # type: ignore[no-redef]
+        return False
+    def programs_entitled_to(_n):  # type: ignore[no-redef]
+        return []
+
+# Audit chain verification (vault gateway) — Vault tab "Verify chain" button.
+try:
+    from argus_vault_gateway import gateway_audit_chain_verify
+    HAVE_VAULT_GATEWAY = True
+except ImportError:
+    HAVE_VAULT_GATEWAY = False
+    def gateway_audit_chain_verify():  # type: ignore[no-redef]
+        return False
+
+# Mythos bus presence flag (used in About dialog diagnostics).
+try:
+    import argus_mythos_bus  # noqa: F401
+    HAVE_MYTHOS = True
+except ImportError:
+    HAVE_MYTHOS = False
+
+# Sandbox download routing helper presence flag (About dialog diagnostics).
+try:
+    import argus_sandbox  # noqa: F401
+    HAVE_SANDBOX_MOD = True
+except ImportError:
+    HAVE_SANDBOX_MOD = False
+
+# Update checker — wired by another agent. Wrap in try/except so this file
+# stays runnable even if the module hasn't landed yet.
+try:
+    from argus_updater import check_for_update as _argus_check_for_update
+    HAVE_UPDATER = True
+except ImportError:
+    HAVE_UPDATER = False
+    def _argus_check_for_update(*_a, **_kw):  # type: ignore[no-redef]
+        return None
+
+# Direct-BYOK AI providers (Claude / OpenAI / Gemini). Sibling file so the
+# AI panel can call provider APIs in-process without netguard_ai_server.py.
+# When this import fails we fall back to legacy server mode silently.
+try:
+    import argus_ai_providers as _ai_providers
+    HAVE_AI_PROVIDERS = True
+except ImportError:
+    HAVE_AI_PROVIDERS = False
+    _ai_providers = None  # type: ignore[assignment]
+
+ROOT = Path(__file__).resolve().parent
+DATA_DIR = ROOT / "argus_data"
+CACHE_DIR = ROOT / "argus_cache"
+FAVS_FILE = DATA_DIR / "favorites.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+AI_HISTORY_FILE = DATA_DIR / "ai_history.json"
+VAULT_AUTO_SWITCH_FILE = DATA_DIR / "vault_auto_switch.json"
+DOWNLOADS_SANDBOX_DIR = DATA_DIR / "downloads_sandbox"
+
+# Help URLs for "Open URL" button next to API-Keys settings entries.
+SECRET_HELP_URLS: dict[str, str] = {
+    "ANTHROPIC_API_KEY":   "https://console.anthropic.com/settings/keys",
+    "OPENAI_API_KEY":      "https://platform.openai.com/api-keys",
+    "GOOGLE_API_KEY":      "https://aistudio.google.com/app/apikey",
+    "OLLAMA_BASE_URL":     "https://ollama.com/download",
+    "VIRUSTOTAL_API_KEY":  "https://www.virustotal.com/gui/my-apikey",
+    "ABUSEIPDB_API_KEY":   "https://www.abuseipdb.com/account/api",
+    "MAXMIND_LICENSE_KEY": "https://www.maxmind.com/en/accounts/current/license-key",
+    "MAXMIND_ACCOUNT_ID":  "https://www.maxmind.com/en/account",
+    "DISCORD_WEBHOOK_URL": "https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks",
+    "TELEGRAM_BOT_TOKEN":  "https://core.telegram.org/bots#botfather",
+    "TELEGRAM_CHAT_ID":    "https://core.telegram.org/bots/api#getupdates",
+}
+
+# Local AI backend (netguard_ai_server.py — DEFAULT_PORT = 8770)
+AI_SERVER_HOST = "127.0.0.1"
+AI_SERVER_PORT = 8770
+AI_SERVER_BASE = f"http://{AI_SERVER_HOST}:{AI_SERVER_PORT}"
+AI_HISTORY_MAX = 50          # cap conversation lines persisted
+AI_PAGE_TEXT_MAX = 4096      # chars of page.toPlainText() included as context
+AI_PAGE_TEXT_TIMEOUT_MS = 2000  # 2s, then send without page text
+
+# Direct-BYOK settings file. Distinct from the legacy
+# ``netguard_ai_settings.json`` so users can opt into in-process providers
+# without disturbing an existing netguard_ai_server.py setup.
+AI_SETTINGS_FILE = DATA_DIR / "ai_settings.json"
+# Hard cap on screenshot data URI we stuff into a /screenshot turn — Qt's
+# QPixmap.toBase64 result balloons fast and most providers reject >5MB.
+AI_SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024
+
+# Default home URL — loaded when a new tab is created. Points to the local
+# NetGuard dashboard HTML; the dashboard JS handles the "NetGuard backend
+# offline" state gracefully (retry-loop on WebSocket connect). User can
+# override via DEFAULT_SETTINGS["home_url"] persisted in argus_data/settings.json.
+def _default_home_url() -> str:
+    dash = Path(__file__).resolve().parent / "netguard_dashboard.html"
+    if dash.exists():
+        # Use file:/// triple-slash so QtWebEngine treats it as a local file
+        # (otherwise the WS connection back to localhost gets blocked by CORS).
+        return dash.as_uri()
+    return "https://duckduckgo.com"
+
+HOME_URL = _default_home_url()
+
+DEFAULT_SETTINGS = {
+    "show_live_feed":   True,
+    "show_favs":        True,
+    "show_url_top":     True,
+    "show_url_bottom":  True,
+    "show_search_row":  True,
+    "theme":            "Cyber Dark",
+    "ai_panel_open":    False,
+    "home_url":         HOME_URL,
+}
+
+# Quick-action prefills for the AI side panel.
+AI_QUICK_ACTIONS = [
+    ("Résume",       "Résume cette page"),
+    ("Failles",      "Trouve les failles de sécurité de cette page"),
+    ("Explique",     "Explique ce code / JS"),
+    ("Architecture", "Génère une architecture pour cette page"),
+]
+
+# Provider display labels (fallback if /api/providers is unreachable).
+# The backend (netguard_ai_server.py) ships with anthropic / openai / google.
+# UI labels follow the user-facing brief: Claude / GPT / Gemini.
+AI_PROVIDER_FALLBACK = [
+    ("anthropic", "Claude"),
+    ("openai",    "GPT"),
+    ("google",    "Gemini"),
+]
+
+SEARCH_ENGINES = [
+    ("DuckDuckGo",  "https://duckduckgo.com/?q={q}"),
+    ("Google",      "https://www.google.com/search?q={q}"),
+    ("Brave",       "https://search.brave.com/search?q={q}"),
+    ("Startpage",   "https://www.startpage.com/do/search?query={q}"),
+    ("Bing",        "https://www.bing.com/search?q={q}"),
+    ("Yahoo",       "https://search.yahoo.com/search?p={q}"),
+    ("Kagi",        "https://kagi.com/search?q={q}"),
+    ("Phind (dev)", "https://www.phind.com/search?q={q}"),
+    ("Perplexity",  "https://www.perplexity.ai/?q={q}"),
+]
+
+DEFAULT_FAVORITES = [
+    {"url": "https://gmail.com",                     "title": "Gmail",   "label": "G"},
+    {"url": "https://github.com",                    "title": "GitHub",  "label": "⌘"},
+    {"url": "https://outlook.live.com",              "title": "Outlook", "label": "📧"},
+    {"url": "https://reddit.com",                    "title": "Reddit",  "label": "R"},
+    {"url": "https://youtube.com",                   "title": "YouTube", "label": "▶"},
+    {"url": "https://x.com",                         "title": "X",       "label": "𝕏"},
+    {"url": "https://chatgpt.com",                   "title": "ChatGPT", "label": "🤖"},
+    {"url": "https://developer.mozilla.org",         "title": "MDN",     "label": "M"},
+]
+
+MODES = [
+    {"id": "normal",  "icon": "⚪", "text": "NORMAL",  "color": "#9aa0ad"},
+    {"id": "private", "icon": "🟦", "text": "PRIVÉ",   "color": "#4d9fff"},
+    {"id": "vault",   "icon": "🟡", "text": "COFFRE",  "color": "#d4af37"},
+]
+
+# ── Tab drag-and-drop constants ──────────────────────────────────────────
+# Custom MIME type used by the inter-window tab DnD payload. Keeping it in
+# the application/x-* namespace avoids accidental drag matches from other
+# apps (e.g. text/plain bookmarklets dragged from another browser).
+ARGUS_TAB_MIME = "application/x-argus-tab"
+# Pixel threshold before a left-mouse press inside the tab bar promotes to
+# a QDrag. Matches Qt's default startDragDistance() ballpark while staying
+# stable across themes/DPI scales.
+ARGUS_TAB_DRAG_THRESHOLD = 8
+
+
+def _can_accept_drop(source_mode: str, target_mode: str) -> bool:
+    """Strict same-mode drop policy.
+
+    A tab from a Normal window must never land in a Vault window (and
+    vice-versa) — modes mean different cookie jars / sandboxing levels and
+    silently merging them would leak credentials. Pure-logic helper so we
+    can unit-test the rule without QApplication.
+    """
+    return bool(source_mode) and source_mode == target_mode
+
+
+# ── Theme palette → QSS (full app stylesheets, applied via app.setStyleSheet) ──
+def _build_theme(bg: str, surface: str, fg: str, accent: str,
+                 border: str = "rgba(255,255,255,0.10)",
+                 muted: str = "#9aa0ad",
+                 font_family: str = "'Outfit','Segoe UI',sans-serif") -> str:
+    """Compose a full app-wide QSS using a 4-color palette.
+
+    Used for every theme so widgets that don't have an explicit Argus rule
+    (QTabBar, QScrollBar, QDockWidget, generic QLineEdit/QPushButton) still
+    inherit a coherent look.
+    """
+    return f"""
+* {{ font-family: {font_family}; }}
+QMainWindow, QWidget#root {{ background: {bg}; color: {fg}; }}
+QWidget {{ color: {fg}; }}
+
+/* Live feed (top transparent bar) */
+QWidget#liveFeed {{
+    background: {surface};
+    border-bottom: 1px solid {border};
+}}
+QLabel.feedRow {{
+    color: {fg};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 11px;
+    background: transparent;
+}}
+QLabel.feedRow[kind="ok"]   {{ color: #3dffb4; }}
+QLabel.feedRow[kind="warn"] {{ color: #ffb347; }}
+QLabel.feedRow[kind="bad"]  {{ color: #ff4d6a; }}
+QLabel.feedRow[kind="info"] {{ color: {accent}; }}
+
+/* Tab bar */
+QFrame#tabBar {{ background: {surface}; border-bottom: 1px solid {border}; }}
+QPushButton.tab {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    padding: 4px 8px 4px 10px;
+    margin: 4px 1px 0 1px;
+    font-size: 11px;
+    text-align: left;
+    min-width: 100px; max-width: 220px;
+}}
+QPushButton.tab:hover {{ background: {surface}; color: {fg}; }}
+QPushButton.tab[active="true"] {{
+    background: {surface};
+    color: {accent};
+    border-bottom-color: {accent};
+}}
+QPushButton.tabClose {{
+    background: transparent;
+    color: {muted};
+    border: none;
+    padding: 0;
+    min-width: 16px; max-width: 16px;
+    min-height: 16px; max-height: 16px;
+    font-size: 14px;
+    border-radius: 8px;
+    margin-left: 4px;
+}}
+QPushButton.tabClose:hover {{ background: #ff4d6a; color: white; }}
+QPushButton#newTabBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px dashed {border};
+    border-radius: 5px;
+    margin: 4px 4px 0 4px;
+    min-width: 28px; max-width: 28px;
+    font-size: 14px;
+    padding: 4px;
+}}
+QPushButton#newTabBtn:hover {{ color: {accent}; border-color: {accent}; border-style: solid; }}
+
+/* Generic QTabBar (for any future QTabWidget) */
+QTabBar::tab {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    padding: 6px 12px;
+}}
+QTabBar::tab:selected {{ background: {surface}; color: {accent}; }}
+QTabBar::tab:hover {{ color: {fg}; }}
+
+/* Mode toggle button */
+QPushButton#modeBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: {muted};
+    font-family: 'Geist Mono','Consolas',monospace;
+}}
+QPushButton#modeBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#modeBtn[mode="private"] {{ color: {accent}; border-color: {accent}; }}
+QPushButton#modeBtn[mode="vault"]   {{ color: #d4af37; border-color: #d4af37; }}
+
+/* NetGuard status button */
+QPushButton#ngBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: {muted};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-weight: 600;
+}}
+QPushButton#ngBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#ngBtn[status="up"]   {{ color: #3dffb4; border-color: rgba(61,255,180,0.5); }}
+QPushButton#ngBtn[status="down"] {{ color: #ff4d6a; border-color: rgba(255,77,106,0.5); }}
+QPushButton#ngBtn[status="warn"] {{ color: #ffb347; border-color: rgba(255,179,71,0.5); }}
+
+/* AI toggle button */
+QPushButton#aiBtn {{
+    background: transparent;
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: {muted};
+}}
+QPushButton#aiBtn:hover {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+QPushButton#aiBtn[open="true"] {{ color: {accent}; border-color: {accent}; background: {surface}; }}
+
+/* Bottom dock */
+QFrame#dock {{ background: {surface}; border-top: 1px solid {border}; }}
+QFrame.dockRow {{ background: transparent; border-top: 1px solid {border}; }}
+QFrame.dockRow[first="true"] {{ border-top: none; }}
+
+QLabel.lock {{ font-size: 13px; color: #3dffb4; }}
+QLabel.lock[level="warn"] {{ color: #ffb347; }}
+QLabel.lock[level="bad"]  {{ color: #ff4d6a; }}
+QLabel#urlDisplay {{
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 12px;
+    color: {fg};
+    padding: 4px 8px;
+    background: transparent;
+}}
+QLabel#urlDisplay:hover {{ background: {surface}; border-radius: 4px; }}
+
+QComboBox#engineSelect {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    min-width: 130px;
+}}
+QComboBox#engineSelect:focus {{ border-color: {accent}; }}
+QComboBox#engineSelect QAbstractItemView {{
+    background: {surface};
+    color: {fg};
+    selection-background-color: {bg};
+    border: 1px solid {border};
+}}
+
+/* Generic QComboBox (theme combo, AI provider combo) */
+QComboBox {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 5px 10px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QComboBox:focus {{ border-color: {accent}; }}
+QComboBox QAbstractItemView {{
+    background: {surface};
+    color: {fg};
+    selection-background-color: {bg};
+    border: 1px solid {border};
+}}
+
+QLineEdit#searchBar {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'Geist Mono','Consolas',monospace;
+}}
+QLineEdit#searchBar:focus {{ border-color: {accent}; background: {bg}; }}
+
+/* Generic QLineEdit / QTextEdit */
+QLineEdit, QTextEdit {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 5px 8px;
+    border-radius: 5px;
+    selection-background-color: {accent};
+    selection-color: {bg};
+}}
+QLineEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
+
+QPushButton.dockBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 14px;
+    min-width: 32px;
+}}
+QPushButton.dockBtn:hover {{
+    color: {accent};
+    background: {surface};
+    border-color: {accent};
+}}
+QPushButton.dockBtn:pressed {{
+    background: {accent};
+    color: {bg};
+    border-color: {accent};
+}}
+QPushButton#ngBtn:hover, QPushButton#aiBtn:hover, QPushButton#modeBtn:hover,
+QPushButton#starBtn:hover {{
+    border-color: {accent};
+    color: {accent};
+}}
+QPushButton#ngBtn:pressed, QPushButton#aiBtn:pressed, QPushButton#modeBtn:pressed {{
+    background: {accent};
+    color: {bg};
+}}
+QPushButton.dockBtn[primary="true"] {{ color: {accent}; }}
+QPushButton#starBtn {{ font-size: 16px; color: #ffb347; }}
+QPushButton#starBtn[saved="true"] {{ color: #ffd700; }}
+
+/* Generic QPushButton (covers buttons not pinned to a class) */
+QPushButton {{
+    background: {surface};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QPushButton:hover  {{ border-color: {accent}; color: {accent}; }}
+QPushButton:disabled {{ color: {muted}; border-color: {border}; }}
+
+QFrame#favsBar {{
+    background: {surface};
+    border: 1px solid {border};
+    border-radius: 8px;
+    padding: 2px 4px;
+}}
+QPushButton.fav {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid transparent;
+    border-radius: 5px;
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
+    font-size: 11px;
+    margin: 0 1px;
+}}
+QPushButton.fav:hover {{ color: {accent}; border-color: {accent}; }}
+QPushButton.fav[broken="true"] {{ color: #ff4d6a; border: 1px dashed #ff4d6a; }}
+
+QWidget#root[mode="vault"]   {{ border: 2px solid #d4af37; }}
+QWidget#root[mode="private"] {{ border: 1px solid {accent}; }}
+
+/* Top URL strip */
+QFrame#topUrlStrip {{
+    background: {surface};
+    border-bottom: 1px solid {border};
+}}
+QLabel#topUrlText {{
+    color: {fg};
+    font-family: 'Geist Mono','Consolas',monospace;
+    font-size: 11px;
+    background: transparent;
+    padding: 2px 8px;
+}}
+
+/* Spinner */
+QLabel#spinner, QLabel#topSpinner {{
+    color: {accent};
+    font-size: 14px;
+    background: transparent;
+    padding: 0 4px;
+    min-width: 16px;
+}}
+
+/* AI side panel */
+QFrame#aiPanel {{
+    background: {surface};
+    border-left: 1px solid {border};
+}}
+QFrame#aiPanelHeader {{
+    background: {bg};
+    border-bottom: 1px solid {border};
+}}
+QLabel#aiPanelTitle {{
+    color: {fg};
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 4px;
+}}
+QTextBrowser#aiHistory {{
+    background: {bg};
+    border: none;
+    color: {fg};
+    padding: 6px;
+    font-size: 12px;
+    selection-background-color: {accent};
+    selection-color: {bg};
+}}
+QTextEdit#aiInput {{
+    background: {bg};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 8px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QTextEdit#aiInput:focus {{ border-color: {accent}; }}
+QPushButton#aiSendBtn {{
+    background: {accent};
+    color: {bg};
+    border: 1px solid {accent};
+    border-radius: 5px;
+    padding: 6px 14px;
+    font-weight: 600;
+}}
+QPushButton#aiSendBtn:hover {{ opacity: 0.9; }}
+QPushButton#aiSendBtn:disabled {{ background: {muted}; border-color: {muted}; }}
+QPushButton.aiQuick {{
+    background: {bg};
+    color: {muted};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+}}
+QPushButton.aiQuick:hover {{ color: {accent}; border-color: {accent}; }}
+QPushButton#aiClearBtn {{
+    background: transparent;
+    color: {muted};
+    border: 1px solid {border};
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+}}
+QPushButton#aiClearBtn:hover {{ color: #ff4d6a; border-color: #ff4d6a; }}
+
+/* Settings dialog */
+QDialog#settingsDialog {{
+    background: {surface};
+    color: {fg};
+}}
+QDialog#settingsDialog QGroupBox {{
+    border: 1px solid {border};
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 10px 6px 6px 6px;
+    color: {accent};
+    font-weight: 600;
+    font-size: 12px;
+}}
+QDialog#settingsDialog QGroupBox::title {{
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    background: {surface};
+}}
+QDialog#settingsDialog QCheckBox {{
+    color: {fg};
+    font-size: 12px;
+    padding: 4px 6px;
+    spacing: 8px;
+}}
+QDialog#settingsDialog QCheckBox::indicator {{
+    width: 14px; height: 14px;
+    border: 1px solid {accent};
+    border-radius: 3px;
+    background: {bg};
+}}
+QDialog#settingsDialog QCheckBox::indicator:checked {{
+    background: {accent};
+    border-color: {accent};
+}}
+QDialog#settingsDialog QPushButton {{
+    background: {bg};
+    border: 1px solid {border};
+    color: {fg};
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}}
+QDialog#settingsDialog QPushButton:hover {{ border-color: {accent}; color: {accent}; }}
+QDialog#settingsDialog QPushButton:default {{ background: {accent}; color: {bg}; border-color: {accent}; }}
+QDialog#settingsDialog QLabel {{ color: {fg}; }}
+
+/* QScrollBar */
+QScrollBar:vertical {{
+    background: {bg};
+    width: 10px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {border};
+    border-radius: 5px;
+    min-height: 24px;
+}}
+QScrollBar::handle:vertical:hover {{ background: {accent}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar:horizontal {{ background: {bg}; height: 10px; margin: 0; }}
+QScrollBar::handle:horizontal {{ background: {border}; border-radius: 5px; min-width: 24px; }}
+QScrollBar::handle:horizontal:hover {{ background: {accent}; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+
+/* QDockWidget (defensive — Argus uses custom dock, but cover the standard one) */
+QDockWidget {{ color: {fg}; titlebar-close-icon: none; titlebar-normal-icon: none; }}
+QDockWidget::title {{ background: {surface}; padding: 4px 8px; }}
+
+QMenu {{ background: {surface}; color: {fg}; border: 1px solid {border}; }}
+QMenu::item:selected {{ background: {accent}; color: {bg}; }}
+QToolTip {{ background: {bg}; color: {fg}; border: 1px solid {border}; padding: 4px 6px; }}
+"""
+
+
+THEMES: dict[str, str] = {
+    "Cyber Dark":  _build_theme(bg="#0a0e14", surface="#141821", fg="#e6edf3",
+                                accent="#4d9fff"),
+    "Pro Dark":    _build_theme(bg="#1a1a1f", surface="#25252d", fg="#d4d4dc",
+                                accent="#8b8b9d"),
+    "Light Pro":   _build_theme(bg="#fafafa", surface="#ffffff", fg="#1a1a1f",
+                                accent="#2563eb",
+                                border="#e5e7eb", muted="#6b7280"),
+    "Hacker Green":_build_theme(bg="#000800", surface="#001a05", fg="#00ff41",
+                                accent="#00ff41",
+                                border="#003311", muted="#008822",
+                                font_family="'Consolas',monospace"),
+    "Bank Vault":  _build_theme(bg="#1a1410", surface="#2a2018", fg="#d4af37",
+                                accent="#b8860b",
+                                border="#3a2e22", muted="#8a7050"),
+    "Pastel":      _build_theme(bg="#f5f0e8", surface="#faf6f0", fg="#2d3033",
+                                accent="#c9a96e",
+                                border="#e0d5c4", muted="#857a6a"),
+    # ── 6 new themes (community-favorite palettes) ──
+    "Tokyo Night":     _build_theme(bg="#1a1b26", surface="#24283b", fg="#a9b1d6",
+                                    accent="#7aa2f7"),
+    "Catppuccin Mocha":_build_theme(bg="#1e1e2e", surface="#313244", fg="#cdd6f4",
+                                    accent="#cba6f7"),
+    "Dracula":         _build_theme(bg="#282a36", surface="#44475a", fg="#f8f8f2",
+                                    accent="#bd93f9"),
+    "Solarized Dark":  _build_theme(bg="#002b36", surface="#073642", fg="#839496",
+                                    accent="#268bd2"),
+    "Gruvbox Dark":    _build_theme(bg="#282828", surface="#3c3836", fg="#ebdbb2",
+                                    accent="#fabd2f"),
+    "Nord":            _build_theme(bg="#2e3440", surface="#3b4252", fg="#d8dee9",
+                                    accent="#88c0d0"),
+}
+
+DEFAULT_THEME = "Cyber Dark"
+
+
+THEME_QSS = r"""
+* { font-family: 'Outfit', 'Segoe UI', sans-serif; }
+QMainWindow, QWidget#root { background: #0a0e14; }
+
+/* ── Live feed (top, transparent) ── */
+QWidget#liveFeed {
+    background: rgba(15, 18, 22, 180);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+QLabel.feedRow {
+    color: #e8eaf0;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-size: 11px;
+    background: transparent;
+}
+QLabel.feedRow[kind="ok"]   { color: #3dffb4; }
+QLabel.feedRow[kind="warn"] { color: #ffb347; }
+QLabel.feedRow[kind="bad"]  { color: #ff4d6a; }
+QLabel.feedRow[kind="info"] { color: #4d9fff; }
+
+/* ── Tab bar (just below feed) ── */
+QFrame#tabBar {
+    background: #0e1219;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+QPushButton.tab {
+    background: #14181f;
+    color: #9aa0ad;
+    border: 1px solid rgba(255,255,255,0.04);
+    border-bottom: 2px solid transparent;
+    border-radius: 6px 6px 0 0;
+    padding: 4px 8px 4px 10px;
+    margin: 4px 1px 0 1px;
+    font-size: 11px;
+    text-align: left;
+    min-width: 100px; max-width: 220px;
+}
+QPushButton.tab:hover { background: #1a1f28; color: #e8eaf0; }
+QPushButton.tab[active="true"] {
+    background: #1a1f28;
+    color: #4d9fff;
+    border-bottom-color: #4d9fff;
+}
+QPushButton.tab[mode="private"][active="true"] { color: #4d9fff; border-bottom-color: #4d9fff; }
+QPushButton.tab[mode="vault"][active="true"]   { color: #d4af37; border-bottom-color: #d4af37; }
+QPushButton.tabClose {
+    background: transparent;
+    color: #5a5f6c;
+    border: none;
+    padding: 0;
+    min-width: 16px; max-width: 16px;
+    min-height: 16px; max-height: 16px;
+    font-size: 14px;
+    border-radius: 8px;
+    margin-left: 4px;
+}
+QPushButton.tabClose:hover { background: #ff4d6a; color: white; }
+QPushButton#newTabBtn {
+    background: transparent;
+    color: #5a5f6c;
+    border: 1px dashed rgba(255,255,255,0.1);
+    border-radius: 5px;
+    margin: 4px 4px 0 4px;
+    min-width: 28px; max-width: 28px;
+    font-size: 14px;
+    padding: 4px;
+}
+QPushButton#newTabBtn:hover { color: #4d9fff; border-color: #4d9fff; border-style: solid; }
+
+/* ── Mode toggle button (in dock row 3, before NetGuard) ── */
+QPushButton#modeBtn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #9aa0ad;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+}
+QPushButton#modeBtn:hover { color: #4d9fff; border-color: #4d9fff; background: #1a1f28; }
+QPushButton#modeBtn[mode="private"] { color: #4d9fff; border-color: #4d9fff; }
+QPushButton#modeBtn[mode="vault"]   { color: #d4af37; border-color: #d4af37;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 #2a1f08, stop:1 #1a1409); }
+
+/* ── NetGuard status button (in dock row 3, where F12 used to be) ── */
+QPushButton#ngBtn {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #9aa0ad;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-weight: 600;
+}
+QPushButton#ngBtn:hover { color: #4d9fff; border-color: #4d9fff; background: #1a1f28; }
+QPushButton#ngBtn[status="up"]   { color: #3dffb4; border-color: rgba(61,255,180,0.5); }
+QPushButton#ngBtn[status="down"] { color: #ff4d6a; border-color: rgba(255,77,106,0.5); }
+QPushButton#ngBtn[status="warn"] { color: #ffb347; border-color: rgba(255,179,71,0.5); }
+
+/* ── Bottom dock ── */
+QFrame#dock { background: #14181f; border-top: 1px solid rgba(255,255,255,0.06); }
+QFrame.dockRow { background: transparent; border-top: 1px solid rgba(255,255,255,0.04); }
+QFrame.dockRow[first="true"] { border-top: none; }
+
+QLabel.lock { font-size: 13px; color: #3dffb4; }
+QLabel.lock[level="warn"] { color: #ffb347; }
+QLabel.lock[level="bad"]  { color: #ff4d6a; }
+QLabel#urlDisplay {
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-size: 12px;
+    color: #e8eaf0;
+    padding: 4px 8px;
+    background: transparent;
+}
+QLabel#urlDisplay:hover { background: #1a1f28; border-radius: 4px; }
+
+QComboBox#engineSelect {
+    background: #1a1f28;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #e8eaf0;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    min-width: 130px;
+}
+QComboBox#engineSelect:focus { border-color: #4d9fff; }
+QComboBox#engineSelect QAbstractItemView {
+    background: #1a1f28;
+    color: #e8eaf0;
+    selection-background-color: #232934;
+    border: 1px solid rgba(255,255,255,0.12);
+}
+
+QLineEdit#searchBar {
+    background: #1a1f28;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #e8eaf0;
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+}
+QLineEdit#searchBar:focus { border-color: #4d9fff; background: #14181f; }
+
+QPushButton.dockBtn {
+    background: transparent;
+    color: #9aa0ad;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    min-width: 32px;
+}
+QPushButton.dockBtn:hover { color: #4d9fff; background: #1a1f28; border-color: rgba(255,255,255,0.12); }
+QPushButton.dockBtn[primary="true"] { color: #4d9fff; }
+QPushButton#starBtn { font-size: 16px; color: #ffb347; }
+QPushButton#starBtn[saved="true"] { color: #ffd700; }
+QPushButton#f12Btn {
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 6px 12px;
+}
+
+QFrame#favsBar {
+    background: #1a1f28;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 2px 4px;
+}
+QPushButton.fav {
+    background: #232934;
+    color: #9aa0ad;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    min-width: 26px; max-width: 26px;
+    min-height: 26px; max-height: 26px;
+    font-size: 11px;
+    margin: 0 1px;
+}
+QPushButton.fav:hover { color: #4d9fff; border-color: #4d9fff; }
+QPushButton.fav[broken="true"] { color: #ff4d6a; border: 1px dashed #ff4d6a; opacity: 0.6; }
+
+QWidget#root[mode="vault"]   { border: 2px solid #d4af37; }
+QWidget#root[mode="private"] { border: 1px solid #4d9fff; }
+
+/* ── Top URL strip (just above tab bar, optional) ── */
+QFrame#topUrlStrip {
+    background: rgba(15, 18, 22, 200);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+QLabel#topUrlText {
+    color: #c8ccd6;
+    font-family: 'Geist Mono', 'Consolas', monospace;
+    font-size: 11px;
+    background: transparent;
+    padding: 2px 8px;
+}
+
+/* ── Spinner (loading indicator, right of URL bars) ── */
+QLabel#spinner, QLabel#topSpinner {
+    color: #4d9fff;
+    font-size: 14px;
+    background: transparent;
+    padding: 0 4px;
+    min-width: 16px;
+}
+
+/* ── Settings dialog ── */
+QDialog#settingsDialog {
+    background: #14181f;
+    color: #e8eaf0;
+}
+QDialog#settingsDialog QGroupBox {
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 6px;
+    margin-top: 14px;
+    padding: 10px 6px 6px 6px;
+    color: #4d9fff;
+    font-weight: 600;
+    font-size: 12px;
+}
+QDialog#settingsDialog QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+    background: #14181f;
+}
+QDialog#settingsDialog QCheckBox {
+    color: #c8ccd6;
+    font-size: 12px;
+    padding: 4px 6px;
+    spacing: 8px;
+}
+QDialog#settingsDialog QCheckBox::indicator {
+    width: 14px; height: 14px;
+    border: 1px solid #4d9fff;
+    border-radius: 3px;
+    background: #1a1f28;
+}
+QDialog#settingsDialog QCheckBox::indicator:checked {
+    background: #4d9fff;
+    border-color: #4d9fff;
+}
+QDialog#settingsDialog QPushButton {
+    background: #1a1f28;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: #e8eaf0;
+    padding: 6px 14px;
+    border-radius: 5px;
+    font-size: 12px;
+}
+QDialog#settingsDialog QPushButton:hover { border-color: #4d9fff; color: #4d9fff; }
+QDialog#settingsDialog QPushButton:default { background: #4d9fff; color: white; border-color: #4d9fff; }
+
+"""
+
+
+# ── Theme application ────────────────────────────────────────────────────
+def apply_theme(name: str) -> str:
+    """Apply a named theme stylesheet to the active QApplication.
+
+    Returns the resolved theme name (falls back to the default if `name` is
+    unknown). Safe to call before windows are constructed.
+    """
+    if name not in THEMES:
+        name = DEFAULT_THEME
+    app = QApplication.instance()
+    if app is not None:
+        app.setStyleSheet(THEMES[name])
+    return name
+
+
+# ── AI conversation history ──────────────────────────────────────────────
+class AIHistoryManager:
+    """Persisted AI chat history (last AI_HISTORY_MAX messages)."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.messages: list[dict] = []
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                # Tolerate corrupt entries silently — keep only well-shaped ones.
+                self.messages = [
+                    m for m in data
+                    if isinstance(m, dict) and m.get("role") in ("user", "assistant", "error")
+                    and isinstance(m.get("content"), str)
+                ]
+        except (OSError, json.JSONDecodeError):
+            self.messages = []
+
+    def _save(self):
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(
+                json.dumps(self.messages[-AI_HISTORY_MAX:], indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def append(self, role: str, content: str):
+        if role not in ("user", "assistant", "error"):
+            return
+        self.messages.append({"role": role, "content": content,
+                              "ts": datetime.now().isoformat()})
+        # Cap to the last AI_HISTORY_MAX entries (in-memory + on disk).
+        if len(self.messages) > AI_HISTORY_MAX:
+            self.messages = self.messages[-AI_HISTORY_MAX:]
+        self._save()
+
+    def clear(self):
+        self.messages = []
+        self._save()
+
+    def for_api(self) -> list[dict]:
+        """Return the conversation in the shape /api/chat expects."""
+        return [
+            {"role": m["role"], "content": m["content"]}
+            for m in self.messages
+            if m["role"] in ("user", "assistant")
+        ]
+
+
+# ── AI HTTP worker (background thread) ───────────────────────────────────
+class AIChatWorker(QObject):
+    """Posts a chat message on a background thread.
+
+    Two modes, picked automatically:
+
+    * **direct** (preferred when ``ai_settings.json`` or env vars expose
+      an API key): calls Claude / OpenAI / Gemini directly via
+      ``argus_ai_providers``. Supports SSE streaming for Claude + GPT.
+    * **server** (fallback): POSTs to ``netguard_ai_server.py`` at
+      ``AI_SERVER_BASE/api/chat``. No streaming.
+
+    Signals
+    -------
+    chunk(str) — emitted only when streaming. The text is a *delta*, not
+        a cumulative string. UI accumulates it onto the in-progress bubble.
+    done(reply, raw) — final reply and raw provider response dict.
+    failed(error) — non-recoverable error.
+    """
+    chunk = pyqtSignal(str)        # streaming delta (direct mode only)
+    done = pyqtSignal(str, dict)   # (reply_text, raw_result_dict)
+    failed = pyqtSignal(str)       # error string
+
+    def __init__(self, messages: list[dict], lang: str = "fr",
+                 timeout: float = 60.0, parent=None,
+                 force_mode: str | None = None,
+                 system_prompt: str | None = None,
+                 stream: bool | None = None):
+        super().__init__(parent)
+        self.messages = messages
+        self.lang = lang
+        self.timeout = timeout
+        self.force_mode = force_mode  # "direct" | "server" | None
+        self.system_prompt = system_prompt or ""
+        self._thread: threading.Thread | None = None
+        # Streaming opt-in defaults to "yes if direct + provider supports it".
+        self._stream_pref = stream
+
+    # ── Public API ───────────────────────────────────────────────────
+    def start(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    # ── Mode selection ───────────────────────────────────────────────
+    def _pick_mode(self) -> str:
+        """Decide between direct-BYOK and the legacy HTTP backend.
+
+        Priority:
+          1. caller override (``force_mode``)
+          2. providers module unavailable → server
+          3. any API key configured (env or settings.json) → direct
+          4. fallback → server
+        """
+        if self.force_mode in ("direct", "server"):
+            return self.force_mode
+        if not HAVE_AI_PROVIDERS:
+            return "server"
+        try:
+            if _ai_providers and _ai_providers.has_any_api_key():
+                return "direct"
+        except Exception:
+            return "server"
+        return "server"
+
+    def _run(self):
+        mode = self._pick_mode()
+        if mode == "direct":
+            self._run_direct()
+        else:
+            self._run_server()
+
+    # ── Direct-BYOK path ─────────────────────────────────────────────
+    def _run_direct(self):
+        """Resolve the active provider, stream when supported, fall back
+        to a blocking call otherwise. Errors are translated to ``failed``
+        with a French message that matches the existing UI tone."""
+        try:
+            settings = _ai_providers.load_settings()
+            provider = _ai_providers.active_provider(settings)
+            api_key = provider.get_api_key(settings)
+            if not api_key:
+                self.failed.emit(
+                    f"Clé API manquante pour {provider.label}. "
+                    "Configure-la via le ⚙ du panneau IA "
+                    "(ou la variable d'env appropriée)."
+                )
+                return
+            model = provider.get_model(settings)
+            stream = self._stream_pref
+            if stream is None:
+                stream = bool(provider.supports_streaming)
+            if stream and provider.supports_streaming:
+                def on_chunk(delta: str):
+                    if delta:
+                        self.chunk.emit(delta)
+                result = provider.call_stream(
+                    self.messages, self.system_prompt, model, api_key,
+                    on_chunk=on_chunk, timeout=int(self.timeout),
+                )
+            else:
+                result = provider.call(
+                    self.messages, self.system_prompt, model, api_key,
+                    timeout=int(self.timeout),
+                )
+        except Exception as e:  # belt-and-suspenders — providers shouldn't raise
+            self.failed.emit(f"Erreur provider {type(e).__name__}: {e}")
+            return
+        if not result.get("ok", False):
+            err = result.get("error", "unknown")
+            reply = result.get("reply", "")
+            snippet = reply[:200] if isinstance(reply, str) else ""
+            self.failed.emit(f"{provider.label} error: {err} — {snippet}")
+            return
+        self.done.emit(result.get("reply", ""), result)
+
+    # ── Legacy HTTP backend path ─────────────────────────────────────
+    def _run_server(self):
+        body = json.dumps({
+            "messages": self.messages,
+            "lang": self.lang,
+            "agent_mode": False,
+        }).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        try:  # netguard_ai_server requires the NetGuard token on every /api call
+            from netguard_paths import data_path as _ng_data_path
+            tok = Path(_ng_data_path(".netguard_token")).read_text(encoding="utf-8").strip()
+            if tok:
+                headers["X-NetGuard-Token"] = tok
+        except OSError:
+            pass
+        req = urllib.request.Request(
+            f"{AI_SERVER_BASE}/api/chat",
+            data=body, method="POST",
+            headers=headers,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.URLError as e:
+            self.failed.emit(f"Backend unreachable — démarre netguard_ai_server.py ({e.reason})")
+            return
+        except (TimeoutError, OSError) as e:
+            self.failed.emit(f"Backend unreachable — démarre netguard_ai_server.py ({e})")
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            self.failed.emit("Réponse invalide du backend (JSON parse error)")
+            return
+        if not data.get("ok", False):
+            self.failed.emit(f"Backend error: {data.get('error', 'unknown')} — {data.get('reply', '')[:200]}")
+            return
+        self.done.emit(data.get("reply", ""), data)
+
+
+# ── Persistence ──────────────────────────────────────────────────────────
+class SettingsManager:
+    """Layout/UX preferences persisted between sessions."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.data = dict(DEFAULT_SETTINGS)
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            self._save()
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
+        except Exception:
+            pass
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def get(self, key: str, default=None):
+        return self.data.get(key, default if default is not None else DEFAULT_SETTINGS.get(key))
+
+    def set(self, key: str, value):
+        self.data[key] = value
+        self._save()
+
+
+class Spinner(QLabel):
+    """Tiny braille animation, started on page-load, stopped on finished."""
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    def __init__(self, name: str = "spinner"):
+        super().__init__()
+        self.setObjectName(name)
+        self.frame = 0
+        self.setText("")
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.setFixedWidth(20)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+    def _tick(self):
+        self.frame = (self.frame + 1) % len(self.FRAMES)
+        self.setText(self.FRAMES[self.frame])
+
+    def start(self):
+        if not self.timer.isActive():
+            self.timer.start(85)
+
+    def stop(self):
+        self.timer.stop()
+        self.setText("")
+
+
+class FavoritesManager:
+    def __init__(self, path: Path):
+        self.path = path
+        self.favorites: list[dict] = []
+        self._load()
+
+    def _load(self):
+        if not self.path.exists():
+            self.favorites = list(DEFAULT_FAVORITES)
+            self._save()
+            return
+        try:
+            self.favorites = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            self.favorites = list(DEFAULT_FAVORITES)
+
+    def _save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.favorites, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def add(self, url: str, title: str = "") -> bool:
+        if any(f["url"] == url for f in self.favorites):
+            return False
+        # Use first letter of title or domain as label
+        label = "★"
+        if title:
+            label = title[0].upper()
+        elif url:
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(url).netloc.lstrip("www.")
+                label = host[0].upper() if host else "★"
+            except Exception:
+                pass
+        self.favorites.append({
+            "url": url,
+            "title": title or url,
+            "label": label,
+            "added": datetime.now().isoformat(),
+            "broken": False,
+        })
+        self._save()
+        return True
+
+    def remove(self, url: str) -> bool:
+        before = len(self.favorites)
+        self.favorites = [f for f in self.favorites if f["url"] != url]
+        if len(self.favorites) < before:
+            self._save()
+            return True
+        return False
+
+    def has(self, url: str) -> bool:
+        return any(f["url"] == url for f in self.favorites)
+
+    def mark_broken(self, url: str, broken: bool = True):
+        for f in self.favorites:
+            if f["url"] == url:
+                f["broken"] = broken
+                self._save()
+                return
+
+
+# ── Settings dialog ──────────────────────────────────────────────────────
+class SettingsDialog(QDialog):
+    def __init__(self, settings_mgr: SettingsManager, parent=None):
+        super().__init__(parent)
+        self.settings_mgr = settings_mgr
+        self.setObjectName("settingsDialog")
+        self.setWindowTitle("Argus — Paramètres")
+        self.resize(560, 580)
+
+        # Capture original theme so Cancel can revert live-preview changes.
+        self._original_theme = settings_mgr.get("theme") or DEFAULT_THEME
+        if self._original_theme not in THEMES:
+            self._original_theme = DEFAULT_THEME
+
+        # Track API-keys edits so we know what to flush on Apply.
+        # Map name -> (line_edit, "Show" toggle widget). Filled by _build_keys_tab.
+        self._keys_widgets: dict[str, tuple] = {}
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+        v.setContentsMargins(10, 10, 10, 10)
+
+        # Tabbed layout — Display / API Keys / Vault
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_display_tab(), "Affichage")
+        self._tabs.addTab(self._build_keys_tab(),    "API Keys")
+        self._tabs.addTab(self._build_vault_tab(),   "Vault")
+        v.addWidget(self._tabs, 1)
+
+        # Buttons
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton("Annuler")
+        cancel.clicked.connect(self._cancel)
+        ok = QPushButton("Appliquer")
+        ok.setDefault(True)
+        ok.clicked.connect(self._apply)
+        btns.addWidget(cancel)
+        btns.addWidget(ok)
+        v.addLayout(btns)
+
+    # ── Display tab (existing section, just moved into a tab) ──────────
+    def _build_display_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setSpacing(10)
+
+        title = QLabel("Apparence et affichage")
+        title.setStyleSheet("font-size:15px; font-weight:600; margin-bottom:6px;")
+        v.addWidget(title)
+
+        # Group: Theme (NEW — always at top)
+        gb_theme = QGroupBox("Thème")
+        gl_theme = QVBoxLayout(gb_theme)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(QLabel("Style global :"))
+        self.theme_combo = QComboBox()
+        for name in sorted(THEMES.keys(), key=str.lower):
+            self.theme_combo.addItem(name)
+        # Restore current selection.
+        current_theme = self.settings_mgr.get("theme") or DEFAULT_THEME
+        if current_theme in THEMES:
+            self.theme_combo.setCurrentText(current_theme)
+        # Live preview — apply on selection change.
+        self.theme_combo.currentTextChanged.connect(self._on_theme_preview)
+        theme_row.addWidget(self.theme_combo, 1)
+        gl_theme.addLayout(theme_row)
+        hint = QLabel("Aperçu en direct. « Annuler » restaure le thème précédent.")
+        hint.setStyleSheet("font-size: 11px; color: #9aa0ad;")
+        gl_theme.addWidget(hint)
+        v.addWidget(gb_theme)
+
+        # Group: Top
+        gb_top = QGroupBox("Haut de la fenêtre")
+        gl_top = QVBoxLayout(gb_top)
+        self.cb_feed = QCheckBox("Live feed (lignes de code / requêtes réseau)")
+        self.cb_feed.setChecked(self.settings_mgr.get("show_live_feed"))
+        self.cb_url_top = QCheckBox("Barre URL en haut (juste au-dessus des onglets)")
+        self.cb_url_top.setChecked(self.settings_mgr.get("show_url_top"))
+        gl_top.addWidget(self.cb_feed)
+        gl_top.addWidget(self.cb_url_top)
+        v.addWidget(gb_top)
+
+        # Group: Bottom
+        gb_bot = QGroupBox("Bas de la fenêtre (dock)")
+        gl_bot = QVBoxLayout(gb_bot)
+        self.cb_url_bottom = QCheckBox("Barre URL + cadenas")
+        self.cb_url_bottom.setChecked(self.settings_mgr.get("show_url_bottom"))
+        self.cb_search = QCheckBox("Barre de recherche (moteur + champ)")
+        self.cb_search.setChecked(self.settings_mgr.get("show_search_row"))
+        self.cb_favs = QCheckBox("Favoris + boutons (mode, NetGuard, +tab)")
+        self.cb_favs.setChecked(self.settings_mgr.get("show_favs"))
+        gl_bot.addWidget(self.cb_url_bottom)
+        gl_bot.addWidget(self.cb_search)
+        gl_bot.addWidget(self.cb_favs)
+        v.addWidget(gb_bot)
+
+        v.addStretch(1)
+        return w
+
+    # ── API Keys tab ───────────────────────────────────────────────────
+    def _build_keys_tab(self) -> QWidget:
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        ov.setSpacing(8)
+        ov.setContentsMargins(2, 2, 2, 2)
+
+        if not HAVE_CONFIG:
+            warn = QLabel(
+                "Module ``config`` indisponible — les clés API ne peuvent pas "
+                "être stockées dans le coffre. Définis-les via .env ou "
+                "variables d'environnement OS, puis redémarre Argus."
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #ff9e7a; font-size: 12px; padding: 12px;")
+            ov.addWidget(warn)
+            ov.addStretch(1)
+            return outer
+
+        # Header — short hint + .env migration button
+        hdr = QHBoxLayout()
+        lbl = QLabel(
+            "Stocke les clés API et webhooks utilisés par Argus. Les valeurs "
+            "saisies vont dans le coffre chiffré (DPAPI sous Windows)."
+        )
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet("font-size: 12px; color: #9aa0ad;")
+        hdr.addWidget(lbl, 1)
+        ov.addLayout(hdr)
+
+        migrate_row = QHBoxLayout()
+        migrate_row.addStretch(1)
+        migrate_btn = QPushButton("Migrer depuis .env")
+        migrate_btn.setToolTip(
+            "Lit le fichier .env du repo, propose de copier ces secrets dans le coffre."
+        )
+        migrate_btn.clicked.connect(self._migrate_from_env)
+        migrate_row.addWidget(migrate_btn)
+        ov.addLayout(migrate_row)
+
+        # Scrollable list of canonical secrets
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        bv.setSpacing(8)
+        bv.setContentsMargins(2, 2, 2, 2)
+
+        for name, description in CANONICAL_SECRETS.items():
+            bv.addWidget(self._build_secret_row(name, description))
+
+        bv.addStretch(1)
+        scroll.setWidget(body)
+        ov.addWidget(scroll, 1)
+        return outer
+
+    def _build_secret_row(self, name: str, description: str) -> QFrame:
+        row = QFrame()
+        row.setStyleSheet(
+            "QFrame { border: 1px solid rgba(255,255,255,0.06); "
+            "border-radius: 6px; padding: 6px; }"
+        )
+        rv = QVBoxLayout(row)
+        rv.setSpacing(4)
+        rv.setContentsMargins(8, 6, 8, 6)
+
+        head = QHBoxLayout()
+        title = QLabel(f"<b>{name}</b>")
+        title.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace; font-size: 12px;")
+        head.addWidget(title, 1)
+        if name in SECRET_HELP_URLS:
+            link = QPushButton("Open URL")
+            link.setToolTip(SECRET_HELP_URLS[name])
+            link.clicked.connect(
+                lambda _=False, u=SECRET_HELP_URLS[name]: webbrowser.open(u)
+            )
+            head.addWidget(link)
+        rv.addLayout(head)
+
+        desc = QLabel(description)
+        desc.setStyleSheet("color: #9aa0ad; font-size: 11px;")
+        desc.setWordWrap(True)
+        rv.addWidget(desc)
+
+        # Resolve current value (mask if present).
+        try:
+            current_val = get_secret(name) or ""
+        except Exception:
+            current_val = ""
+        edit = QLineEdit()
+        edit.setEchoMode(QLineEdit.EchoMode.Password)
+        if current_val:
+            edit.setPlaceholderText("•" * 12)
+        else:
+            edit.setPlaceholderText("(not set)")
+
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+        controls.addWidget(edit, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setCheckable(True)
+        show_btn.setToolTip("Afficher la valeur en clair temporairement.")
+
+        def _on_show_toggled(checked: bool, le=edit, btn=show_btn, n=name):
+            if checked:
+                # Reveal: prefer the current input, fall back to the stored val.
+                if not le.text():
+                    try:
+                        v = get_secret(n) or ""
+                    except Exception:
+                        v = ""
+                    if v:
+                        le.setText(v)
+                le.setEchoMode(QLineEdit.EchoMode.Normal)
+                btn.setText("Hide")
+            else:
+                le.setEchoMode(QLineEdit.EchoMode.Password)
+                btn.setText("Show")
+
+        show_btn.toggled.connect(_on_show_toggled)
+        controls.addWidget(show_btn)
+
+        save_btn = QPushButton("Save")
+        save_btn.setDefault(False)
+        save_btn.clicked.connect(
+            lambda _=False, n=name, le=edit: self._save_one_secret(n, le)
+        )
+        controls.addWidget(save_btn)
+        rv.addLayout(controls)
+
+        self._keys_widgets[name] = (edit, show_btn)
+        return row
+
+    def _save_one_secret(self, name: str, line_edit: QLineEdit):
+        value = line_edit.text().strip()
+        if not value:
+            QMessageBox.information(
+                self, "Argus — clé vide",
+                f"Saisis une valeur pour {name} avant de sauvegarder.",
+            )
+            return
+
+        # Auto-routing intelligence: which already-registered programs
+        # WILL gain access if we save this secret? Surface them BEFORE
+        # the write so the operator can opt out specific programs.
+        opt_out_hashes: list[str] = []
+        if HAVE_VAULT_MANIFESTS:
+            try:
+                entitled_progs = programs_entitled_to(name) or []
+            except Exception:
+                entitled_progs = []
+            if entitled_progs:
+                opt_out_hashes = self._auto_routing_confirm(name, entitled_progs)
+                if opt_out_hashes is None:
+                    return  # cancelled
+
+        try:
+            store_secret(name, value, owner="user")
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Argus — coffre",
+                f"Impossible de stocker {name} :\n{e}",
+            )
+            return
+
+        # Apply opt-outs by removing the secret from those manifests.
+        if HAVE_VAULT_MANIFESTS and opt_out_hashes:
+            for h in opt_out_hashes:
+                rec = manifest_get(h)
+                if rec is None:
+                    continue
+                new_needs = [n for n in rec.get("needs", []) if n != name]
+                try:
+                    manifest_set(
+                        program_hash=h,
+                        name=rec.get("name", ""),
+                        needs=new_needs,
+                        approved_by="settings_ui_optout",
+                    )
+                except Exception:
+                    # A single opt-out failure must NOT propagate as a
+                    # save error — the secret IS already stored. Surface
+                    # silently as a warning instead of a critical.
+                    continue
+            # Reload the table so the count column reflects the change.
+            try:
+                self._reload_manifest_table()
+            except Exception:
+                pass
+
+        # Mask again on success.
+        line_edit.clear()
+        line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        line_edit.setPlaceholderText("•" * 12)
+        QMessageBox.information(
+            self, "Argus — coffre",
+            f"{name} a été stocké dans le coffre chiffré.",
+        )
+
+    def _auto_routing_confirm(self, secret_name: str,
+                              entitled_progs: list[dict]):
+        """Show the auto-routing modal.
+
+        Returns:
+            * a list of program_hashes the user OPTED OUT of (may be empty),
+            * or ``None`` if the user cancelled the save entirely.
+        """
+        names = ", ".join(p.get("name", "") for p in entitled_progs) or "—"
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Argus — auto-routing")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(QLabel(
+            f"Sauvegarder {secret_name} donnera l'accès aux programmes "
+            "suivants (selon leur manifeste) :"
+        ))
+        dl.addWidget(QLabel(f"<b>{names}</b>"))
+        dl.addWidget(QLabel(
+            "Décoche un programme pour l'opt-out (le secret sera retiré "
+            "de son manifeste après sauvegarde)."
+        ))
+        boxes: dict[str, QCheckBox] = {}
+        for p in entitled_progs:
+            h = p.get("program_hash", "")
+            cb = QCheckBox(p.get("name", h[:12]))
+            cb.setChecked(True)  # default: keep
+            boxes[h] = cb
+            dl.addWidget(cb)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        save_btn = btns.button(QDialogButtonBox.StandardButton.Save)
+        if save_btn is not None:
+            save_btn.setText("Sauvegarder")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        dl.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return [h for h, cb in boxes.items() if not cb.isChecked()]
+
+    def _migrate_from_env(self):
+        env_path = ROOT / ".env"
+        if not env_path.exists():
+            QMessageBox.information(
+                self, "Argus — .env",
+                f"Aucun fichier .env trouvé à {env_path}.",
+            )
+            return
+        # Parse .env (KEY=VALUE per line, ignore comments / blanks).
+        candidates: dict[str, str] = {}
+        try:
+            for raw in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k and v and k in CANONICAL_SECRETS:
+                    candidates[k] = v
+        except OSError as e:
+            QMessageBox.warning(
+                self, "Argus — .env",
+                f"Lecture de .env a échoué : {e}",
+            )
+            return
+        if not candidates:
+            QMessageBox.information(
+                self, "Argus — .env",
+                "Aucune clé canonique trouvée dans .env.",
+            )
+            return
+        names = "\n".join(f"  • {k}" for k in candidates)
+        ans = QMessageBox.question(
+            self, "Argus — migrer .env vers coffre",
+            f"Copier {len(candidates)} clé(s) de .env vers le coffre chiffré ?\n\n"
+            f"{names}\n\n"
+            "Le fichier .env n'est PAS modifié — tu pourras le supprimer manuellement après.",
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        ok_count = 0
+        errors: list[str] = []
+        for name, value in candidates.items():
+            try:
+                store_secret(name, value, owner="env-migration")
+                ok_count += 1
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+        msg = f"{ok_count} secret(s) migrés."
+        if errors:
+            msg += "\n\nErreurs :\n" + "\n".join(errors)
+        QMessageBox.information(self, "Argus — migration", msg)
+
+    # ── Vault tab ──────────────────────────────────────────────────────
+    def _build_vault_tab(self) -> QWidget:
+        outer = QWidget()
+        ov = QVBoxLayout(outer)
+        ov.setSpacing(8)
+
+        if not HAVE_VAULT:
+            warn = QLabel(
+                "Module ``argus_vault`` indisponible — gestion du coffre désactivée."
+            )
+            warn.setWordWrap(True)
+            warn.setStyleSheet("color: #ff9e7a; font-size: 12px; padding: 12px;")
+            ov.addWidget(warn)
+            ov.addStretch(1)
+            return outer
+
+        hdr = QLabel(
+            "Liste des secrets stockés dans le coffre chiffré. "
+            "Les valeurs ne sont jamais affichées, sauf bouton « View » "
+            "(confirmation requise)."
+        )
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet("font-size: 12px; color: #9aa0ad;")
+        ov.addWidget(hdr)
+
+        # ── Programs sub-section (trust-on-register manifests) ──────────
+        if HAVE_VAULT_MANIFESTS:
+            prog_group = QGroupBox("Programmes enregistrés (manifestes)")
+            pg = QVBoxLayout(prog_group)
+            pg_hint = QLabel(
+                "Chaque programme reçoit l'accès aux secrets que tu approuves "
+                "ici. Au runtime, aucune popup — le programme reçoit la "
+                "valeur ou rien (le code appelant gère le cas None)."
+            )
+            pg_hint.setWordWrap(True)
+            pg_hint.setStyleSheet("font-size: 11px; color: #9aa0ad;")
+            pg.addWidget(pg_hint)
+
+            self._manifest_table = QTableWidget()
+            self._manifest_table.setColumnCount(4)
+            self._manifest_table.setHorizontalHeaderLabels(
+                ["Programme", "Secrets entitled", "Approuvé le", "Actions"]
+            )
+            self._manifest_table.verticalHeader().setVisible(False)
+            self._manifest_table.setEditTriggers(
+                QTableWidget.EditTrigger.NoEditTriggers
+            )
+            self._manifest_table.setSelectionBehavior(
+                QTableWidget.SelectionBehavior.SelectRows
+            )
+            try:
+                mh = self._manifest_table.horizontalHeader()
+                mh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+                mh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            except Exception:
+                pass
+            pg.addWidget(self._manifest_table)
+            self._reload_manifest_table()
+
+            ov.addWidget(prog_group)
+
+        # Table: Name / Owner / Created / Actions
+        self._vault_table = QTableWidget()
+        self._vault_table.setColumnCount(4)
+        self._vault_table.setHorizontalHeaderLabels(
+            ["Nom", "Owner", "Créé", "Actions"]
+        )
+        self._vault_table.verticalHeader().setVisible(False)
+        self._vault_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._vault_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        try:
+            hh = self._vault_table.horizontalHeader()
+            hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        except Exception:
+            pass
+        ov.addWidget(self._vault_table, 1)
+        self._reload_vault_table()
+
+        # Bottom action row
+        actions = QHBoxLayout()
+        refresh_btn = QPushButton("Rafraîchir")
+        refresh_btn.clicked.connect(self._reload_vault_table)
+        rotate_btn = QPushButton("Rotate masterkey")
+        rotate_btn.setToolTip("Génère une nouvelle clé maître + ré-encrypte tous les secrets.")
+        rotate_btn.clicked.connect(self._rotate_masterkey)
+        verify_btn = QPushButton("Verify audit chain")
+        verify_btn.setToolTip("Vérifie la chaîne d'audit du Vault Gateway (HMAC).")
+        verify_btn.clicked.connect(self._verify_audit_chain)
+        actions.addWidget(refresh_btn)
+        actions.addStretch(1)
+        actions.addWidget(verify_btn)
+        actions.addWidget(rotate_btn)
+        ov.addLayout(actions)
+        return outer
+
+    def _reload_vault_table(self):
+        """Re-populate the vault table from vault_list() metadata."""
+        try:
+            entries = vault_list() or []
+        except Exception as e:
+            entries = []
+            QMessageBox.warning(self, "Argus — coffre",
+                                f"vault_list() a échoué : {e}")
+        self._vault_table.setRowCount(len(entries))
+        for r, entry in enumerate(entries):
+            name = entry.get("name", "")
+            owner = entry.get("owner", "") or "—"
+            created = entry.get("created_at", "") or "—"
+            self._vault_table.setItem(r, 0, QTableWidgetItem(name))
+            self._vault_table.setItem(r, 1, QTableWidgetItem(owner))
+            self._vault_table.setItem(r, 2, QTableWidgetItem(created))
+
+            # Actions cell — view / delete
+            cell = QWidget()
+            cl = QHBoxLayout(cell)
+            cl.setContentsMargins(2, 2, 2, 2)
+            cl.setSpacing(4)
+            view_btn = QPushButton("View")
+            view_btn.setToolTip("Affiche la valeur après confirmation.")
+            view_btn.clicked.connect(
+                lambda _=False, n=name: self._vault_view_value(n)
+            )
+            del_btn = QPushButton("Delete")
+            del_btn.clicked.connect(
+                lambda _=False, n=name: self._vault_delete_value(n)
+            )
+            cl.addWidget(view_btn)
+            cl.addWidget(del_btn)
+            cl.addStretch(1)
+            self._vault_table.setCellWidget(r, 3, cell)
+
+    def _vault_view_value(self, name: str):
+        ans = QMessageBox.warning(
+            self, "Argus — coffre",
+            f"Afficher la valeur de {name} en clair ?\n"
+            "La valeur restera affichée 30 secondes.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            val = vault_get(name) or ""
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"vault_get a échoué : {e}")
+            return
+        if not val:
+            QMessageBox.information(self, "Argus — coffre",
+                                    f"{name} : (valeur vide ou indisponible)")
+            return
+        # Use a non-modal info box that auto-closes.
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setWindowTitle(f"Argus — {name}")
+        msg.setText(f"<pre>{val}</pre>")
+        QTimer.singleShot(30000, msg.close)
+        msg.exec()
+
+    def _vault_delete_value(self, name: str):
+        ans = QMessageBox.question(
+            self, "Argus — coffre",
+            f"Supprimer définitivement {name} du coffre ?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            vault_delete(name)
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"vault_delete a échoué : {e}")
+            return
+        self._reload_vault_table()
+
+    def _rotate_masterkey(self):
+        # 2FA gate when available.
+        if HAVE_2FA:
+            try:
+                if two_fa_is_setup() and not two_fa_challenge():
+                    QMessageBox.warning(self, "Argus — 2FA",
+                                        "Échec 2FA — rotation annulée.")
+                    return
+            except Exception:
+                pass
+        ans = QMessageBox.question(
+            self, "Argus — coffre",
+            "Générer une nouvelle clé maître et ré-encrypter tous les secrets ?\n"
+            "Cette opération peut être longue selon le nombre de secrets.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            vault_rotate_masterkey()
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — coffre",
+                                 f"Rotation a échoué : {e}")
+            return
+        QMessageBox.information(self, "Argus — coffre",
+                                "Clé maître régénérée. Tous les secrets ont été ré-encryptés.")
+        self._reload_vault_table()
+
+    def _verify_audit_chain(self):
+        if not HAVE_VAULT_GATEWAY:
+            QMessageBox.information(
+                self, "Argus — gateway",
+                "Vault Gateway non disponible — démarre le gateway pour vérifier la chaîne d'audit."
+            )
+            return
+        try:
+            ok = bool(gateway_audit_chain_verify())
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — gateway",
+                                 f"Vérification a échoué : {e}")
+            return
+        if ok:
+            QMessageBox.information(self, "Argus — gateway",
+                                    "Chaîne d'audit valide ✓")
+        else:
+            QMessageBox.warning(self, "Argus — gateway",
+                                "Chaîne d'audit invalide ou interrompue ✗")
+
+    # ── Manifest table (trust-on-register) ─────────────────────────────
+    def _reload_manifest_table(self):
+        if not HAVE_VAULT_MANIFESTS:
+            return
+        try:
+            entries = manifest_list() or []
+        except Exception as e:
+            entries = []
+            QMessageBox.warning(self, "Argus — manifestes",
+                                f"manifest_list() a échoué : {e}")
+        try:
+            self._manifest_table.setRowCount(len(entries))
+        except Exception:
+            return
+        for r, rec in enumerate(entries):
+            name = rec.get("name", "")
+            needs = rec.get("needs", []) or []
+            approved_at = rec.get("approved_at", "") or "—"
+            program_hash = rec.get("program_hash", "")
+
+            self._manifest_table.setItem(r, 0, QTableWidgetItem(name))
+            self._manifest_table.setItem(
+                r, 1, QTableWidgetItem(str(len(needs))),
+            )
+            self._manifest_table.setItem(r, 2, QTableWidgetItem(approved_at))
+
+            cell = QWidget()
+            cl = QHBoxLayout(cell)
+            cl.setContentsMargins(2, 2, 2, 2)
+            cl.setSpacing(4)
+
+            view_btn = QPushButton("View")
+            view_btn.setToolTip("Voir la liste exacte des secrets entitled.")
+            view_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_view(h)
+            )
+            edit_btn = QPushButton("Edit")
+            edit_btn.setToolTip("Cocher / décocher les secrets approuvés.")
+            edit_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_edit(h)
+            )
+            rev_btn = QPushButton("Revoke")
+            rev_btn.setToolTip(
+                "Supprimer le manifeste — le programme cessera "
+                "d'être entitled à aucun secret."
+            )
+            rev_btn.clicked.connect(
+                lambda _=False, h=program_hash: self._manifest_revoke(h)
+            )
+            cl.addWidget(view_btn)
+            cl.addWidget(edit_btn)
+            cl.addWidget(rev_btn)
+            cl.addStretch(1)
+            self._manifest_table.setCellWidget(r, 3, cell)
+
+    def _manifest_view(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            QMessageBox.information(self, "Argus — manifestes",
+                                    "Manifeste introuvable.")
+            return
+        body = (
+            f"Programme : {rec.get('name', '')}\n"
+            f"Hash : {program_hash[:16]}…\n"
+            f"Approuvé le : {rec.get('approved_at', '—')}\n"
+            f"Approuvé par : {rec.get('approved_by', '—')}\n\n"
+            "Secrets entitled :\n"
+            + ("\n".join(f"  • {n}" for n in rec.get('needs', [])) or "  (aucun)")
+        )
+        QMessageBox.information(self, "Argus — manifeste", body)
+
+    def _manifest_edit(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            QMessageBox.information(self, "Argus — manifestes",
+                                    "Manifeste introuvable.")
+            return
+        current = set(rec.get("needs", []) or [])
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Argus — éditer {rec.get('name', '')}")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(QLabel(
+            "Coche les secrets que ce programme est autorisé à lire au "
+            "runtime. Les changements prennent effet immédiatement — au "
+            "prochain appel, vault_get retournera la valeur ou None."
+        ))
+        # Combine canonical + any existing custom names.
+        canonical = list(CANONICAL_SECRETS.keys()) if HAVE_CONFIG else []
+        all_keys = list(canonical) + [k for k in current if k not in canonical]
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        bv = QVBoxLayout(body)
+        boxes: dict[str, QCheckBox] = {}
+        for k in all_keys:
+            cb = QCheckBox(k)
+            cb.setChecked(k in current)
+            boxes[k] = cb
+            bv.addWidget(cb)
+        bv.addStretch(1)
+        scroll.setWidget(body)
+        dl.addWidget(scroll, 1)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        dl.addWidget(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_needs = [k for k, cb in boxes.items() if cb.isChecked()]
+        try:
+            manifest_set(
+                program_hash=program_hash,
+                name=rec.get("name", ""),
+                needs=new_needs,
+                approved_by="settings_ui",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — manifestes",
+                                 f"Échec de l'enregistrement : {e}")
+            return
+        self._reload_manifest_table()
+
+    def _manifest_revoke(self, program_hash: str):
+        rec = manifest_get(program_hash)
+        if rec is None:
+            return
+        ans = QMessageBox.question(
+            self, "Argus — manifestes",
+            f"Supprimer le manifeste de {rec.get('name', '')} ?\n"
+            "Le programme conserve son entrée whitelist mais ne sera plus "
+            "entitled à aucun secret jusqu'à ce qu'un nouveau manifeste "
+            "soit créé.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            manifest_delete(program_hash)
+        except Exception as e:
+            QMessageBox.critical(self, "Argus — manifestes",
+                                 f"Échec de la suppression : {e}")
+            return
+        self._reload_manifest_table()
+
+    def _on_theme_preview(self, name: str):
+        """Live preview — apply immediately. _cancel reverts."""
+        apply_theme(name)
+
+    def _cancel(self):
+        # Revert live-preview theme change.
+        apply_theme(self._original_theme)
+        self.reject()
+
+    def reject(self):
+        # Triggered by Esc or window-close-X — revert theme too.
+        apply_theme(self._original_theme)
+        super().reject()
+
+    def _apply(self):
+        new_theme = self.theme_combo.currentText()
+        if new_theme not in THEMES:
+            new_theme = DEFAULT_THEME
+        self.settings_mgr.set("theme", new_theme)
+        apply_theme(new_theme)  # ensure persisted choice is applied
+        self.settings_mgr.set("show_live_feed", self.cb_feed.isChecked())
+        self.settings_mgr.set("show_url_top",   self.cb_url_top.isChecked())
+        self.settings_mgr.set("show_url_bottom",self.cb_url_bottom.isChecked())
+        self.settings_mgr.set("show_search_row",self.cb_search.isChecked())
+        self.settings_mgr.set("show_favs",      self.cb_favs.isChecked())
+        # Note: API keys are saved on their per-row Save button — Apply
+        # only persists display preferences. We don't auto-save the keys
+        # tab to avoid surprising the user with a flush of partial values.
+        self.accept()
+
+
+# ── Live feed ────────────────────────────────────────────────────────────
+class FeedSignal(QObject):
+    new_request = pyqtSignal(str, str)
+
+
+class RequestInterceptor(QWebEngineUrlRequestInterceptor):
+    def __init__(self, signal: FeedSignal):
+        super().__init__()
+        self.signal = signal
+
+    def interceptRequest(self, info):
+        try:
+            url = info.requestUrl().toString()
+            method = bytes(info.requestMethod()).decode("ascii", errors="replace")
+            self.signal.new_request.emit(method, url)
+        except Exception:
+            pass
+
+
+class LiveFeed(QFrame):
+    # Emits when the user clicks the version badge — wired by ArgusBrowser
+    # to open the About dialog.
+    version_clicked = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("liveFeed")
+        self.setFixedHeight(46)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Outer horizontal: rows column on the left, version badge on the right.
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(14, 4, 10, 4)
+        outer.setSpacing(8)
+        rows_col = QVBoxLayout()
+        rows_col.setContentsMargins(0, 0, 0, 0)
+        rows_col.setSpacing(2)
+        outer.addLayout(rows_col, 1)
+        # Version badge — clickable, opens About.
+        self.version_badge = QPushButton(f"Argus v{ARGUS_VERSION}")
+        self.version_badge.setFlat(True)
+        self.version_badge.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.version_badge.setToolTip("À propos d'Argus")
+        self.version_badge.setStyleSheet(
+            "QPushButton { background: transparent; color: #9aa0ad; "
+            "border: 1px solid rgba(255,255,255,0.10); border-radius: 4px; "
+            "padding: 2px 8px; font-size: 10px; "
+            "font-family: 'Geist Mono','Consolas',monospace; }"
+            "QPushButton:hover { color: #4d9fff; border-color: #4d9fff; }"
+        )
+        self.version_badge.clicked.connect(self.version_clicked.emit)
+        outer.addWidget(self.version_badge, 0, Qt.AlignmentFlag.AlignTop)
+        self.layout_box = rows_col
+        self.rows: list[QLabel] = []
+
+    def set_update_available(self, available: bool, info: dict | None = None):
+        """Mark the version badge to indicate an update is available."""
+        if available:
+            ver = (info or {}).get("latest", "")
+            tip = f"Mise à jour disponible : {ver}" if ver else "Mise à jour disponible"
+            self.version_badge.setText(f"Argus v{ARGUS_VERSION} ↑")
+            self.version_badge.setToolTip(tip)
+            self.version_badge.setStyleSheet(
+                "QPushButton { background: rgba(61,255,180,0.10); color: #3dffb4; "
+                "border: 1px solid #3dffb4; border-radius: 4px; "
+                "padding: 2px 8px; font-size: 10px; "
+                "font-family: 'Geist Mono','Consolas',monospace; }"
+                "QPushButton:hover { color: #0a0e14; background: #3dffb4; }"
+            )
+
+    def push(self, kind: str, method: str, url: str, status: str = "—", time: str = ""):
+        display_url = url
+        if display_url.startswith(("https://", "http://")):
+            display_url = display_url.split("://", 1)[1]
+        if len(display_url) > 80:
+            display_url = display_url[:77] + "…"
+        icon = {"ok": "✓", "warn": "⚠", "bad": "✗", "info": "⏵"}.get(kind, "·")
+        text = f"{icon}  {method:<5}  {display_url:<60}  {status:>6}  {time}"
+        row = QLabel(text)
+        row.setProperty("class", "feedRow")
+        row.setProperty("kind", kind)
+        row.setStyleSheet("")
+        self.layout_box.insertWidget(0, row)
+        self.rows.insert(0, row)
+        while len(self.rows) > 2:
+            old = self.rows.pop()
+            self.layout_box.removeWidget(old)
+            old.deleteLater()
+
+
+# ── Tab bar (custom, bookmark-style) ─────────────────────────────────────
+class TabBar(QFrame):
+    tab_clicked = pyqtSignal(int)
+    tab_close_requested = pyqtSignal(int)
+    new_tab_requested = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("tabBar")
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(8, 0, 8, 0)
+        h.setSpacing(0)
+        self.tabs_layout = QHBoxLayout()
+        self.tabs_layout.setSpacing(0)
+        self.tabs_layout.setContentsMargins(0, 0, 0, 0)
+        h.addLayout(self.tabs_layout)
+        self.new_btn = QPushButton("+")
+        self.new_btn.setObjectName("newTabBtn")
+        self.new_btn.setToolTip("Nouveau tab (Ctrl+T)")
+        self.new_btn.clicked.connect(self.new_tab_requested.emit)
+        h.addWidget(self.new_btn)
+        h.addStretch(1)
+        self.tab_buttons: list[QPushButton] = []
+        self.close_buttons: list[QPushButton] = []
+        self.tab_widgets: list[QWidget] = []  # container holding btn+close
+        # Drag state — set on mousePressEvent, consulted from mouseMoveEvent.
+        # _drag_start_pos is the original press point (in TabBar coords) so
+        # we measure manhattan distance against it for the threshold check.
+        self._drag_start_pos: QPointF | None = None
+        self._drag_tab_idx: int | None = None
+
+    def add_tab(self, idx: int, title: str = "Loading…", mode: str = "normal"):
+        wrapper = QFrame()
+        w_layout = QHBoxLayout(wrapper)
+        w_layout.setContentsMargins(0, 0, 0, 0)
+        w_layout.setSpacing(0)
+        btn = QPushButton(self._truncate(title))
+        btn.setProperty("class", "tab")
+        btn.setProperty("active", False)
+        btn.setProperty("mode", mode)
+        btn.clicked.connect(lambda _, i=idx: self.tab_clicked.emit(self.tab_buttons.index(btn)))
+        close = QPushButton("×")
+        close.setProperty("class", "tabClose")
+        close.clicked.connect(lambda _, i=idx: self.tab_close_requested.emit(self.tab_buttons.index(btn)))
+        w_layout.addWidget(btn)
+        w_layout.addWidget(close)
+        self.tab_buttons.append(btn)
+        self.close_buttons.append(close)
+        self.tab_widgets.append(wrapper)
+        self.tabs_layout.addWidget(wrapper)
+        return btn
+
+    def remove_tab(self, idx: int):
+        if 0 <= idx < len(self.tab_buttons):
+            self.tabs_layout.removeWidget(self.tab_widgets[idx])
+            self.tab_widgets[idx].deleteLater()
+            self.tab_buttons.pop(idx)
+            self.close_buttons.pop(idx)
+            self.tab_widgets.pop(idx)
+
+    def update_tab(self, idx: int, title: str = None, mode: str = None):
+        if 0 <= idx < len(self.tab_buttons):
+            btn = self.tab_buttons[idx]
+            if title is not None:
+                btn.setText(self._truncate(title))
+                btn.setToolTip(title)
+            if mode is not None:
+                btn.setProperty("mode", mode)
+                btn.style().unpolish(btn); btn.style().polish(btn)
+
+    def set_active(self, idx: int):
+        for i, btn in enumerate(self.tab_buttons):
+            btn.setProperty("active", i == idx)
+            btn.style().unpolish(btn); btn.style().polish(btn)
+
+    @staticmethod
+    def _truncate(title: str, n: int = 22) -> str:
+        if not title:
+            return "Loading…"
+        return title if len(title) <= n else title[:n - 1] + "…"
+
+    # ── Drag init (inter-window tab DnD) ────────────────────────────
+    def _idx_at(self, pos) -> int | None:
+        """Return the tab index whose wrapper contains ``pos``.
+
+        ``pos`` is a QPointF (Qt6) or QPoint coming from a mouse event
+        in TabBar-local coordinates. Returns ``None`` if the point is not
+        over any tab (e.g. over the "+" button or the trailing stretch).
+        """
+        try:
+            x = int(pos.x())
+            y = int(pos.y())
+        except Exception:
+            return None
+        for i, wrapper in enumerate(self.tab_widgets):
+            if wrapper is None:
+                continue
+            geom = wrapper.geometry()
+            if geom.contains(x, y):
+                return i
+        return None
+
+    def mousePressEvent(self, event):
+        """Record the press position so mouseMoveEvent can decide whether
+        the gesture should escalate to a QDrag (>= ARGUS_TAB_DRAG_THRESHOLD).
+        """
+        try:
+            if event.button() == Qt.MouseButton.LeftButton:
+                # Qt6 events expose position() as QPointF; older signatures
+                # may return QPoint. Both have .x()/.y() so we don't care.
+                pos = event.position() if hasattr(event, "position") else event.pos()
+                self._drag_start_pos = pos
+                self._drag_tab_idx = self._idx_at(pos)
+        except Exception:
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        """Promote the press > QDrag once we cross the 8 px threshold.
+
+        Only fires while the LeftButton is held AND we recorded a tab
+        index in mousePressEvent. Cross-window merge is handled on the
+        receiver side (ArgusBrowser.dropEvent); a tearoff happens when
+        the drag ends with IgnoreAction (no acceptor).
+        """
+        try:
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                return super().mouseMoveEvent(event)
+            if self._drag_start_pos is None or self._drag_tab_idx is None:
+                return super().mouseMoveEvent(event)
+            cur = event.position() if hasattr(event, "position") else event.pos()
+            try:
+                dx = cur.x() - self._drag_start_pos.x()
+                dy = cur.y() - self._drag_start_pos.y()
+            except Exception:
+                return super().mouseMoveEvent(event)
+            # Manhattan distance threshold (matches Qt's startDragDistance idiom).
+            if abs(dx) + abs(dy) < ARGUS_TAB_DRAG_THRESHOLD:
+                return super().mouseMoveEvent(event)
+            # Snapshot drag state and clear so we don't re-enter while the
+            # drag exec loop is running.
+            tab_idx = self._drag_tab_idx
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+            self._start_tab_drag(tab_idx)
+        except Exception:
+            # Drag init must never crash the UI - fall back to default.
+            self._drag_start_pos = None
+            self._drag_tab_idx = None
+        return super().mouseMoveEvent(event)
+
+    def _start_tab_drag(self, tab_idx: int) -> None:
+        """Build the QDrag payload and execute the drag loop.
+
+        On IgnoreAction (no window accepted the drop), trigger a tearoff
+        at the current cursor position via :func:`_tearoff_at_cursor`.
+        """
+        if not (0 <= tab_idx < len(self.tab_buttons)):
+            return
+        win = self.window()
+        # Resolve current url + title from the parent ArgusBrowser when
+        # available; fall back to the button's text otherwise.
+        url = ""
+        title = ""
+        try:
+            btn = self.tab_buttons[tab_idx]
+            title = btn.toolTip() or btn.text() or ""
+        except Exception:
+            title = ""
+        try:
+            if hasattr(win, "tab_pages") and 0 <= tab_idx < len(win.tab_pages):
+                view = win.tab_pages[tab_idx]
+                url = view.url().toString() if view is not None else ""
+        except Exception:
+            url = ""
+        # Mode tagged on the button takes precedence (matches what's drawn
+        # for the user); fall back to the window's current_mode.
+        try:
+            btn_mode = self.tab_buttons[tab_idx].property("mode")
+        except Exception:
+            btn_mode = None
+        mode = btn_mode or getattr(win, "current_mode", "normal") or "normal"
+        payload = {
+            "source_window_id": id(win),
+            "tab_idx": tab_idx,
+            "mode": str(mode),
+            "url": url,
+            "title": title,
+        }
+        try:
+            mime = QMimeData()
+            mime.setData(ARGUS_TAB_MIME, json.dumps(payload).encode("utf-8"))
+        except Exception:
+            return
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        # Drag pixmap - use the tab button's grab() if possible, else a
+        # 32x32 colored block matching the tab mode.
+        try:
+            pix = self._build_drag_pixmap(tab_idx, mode)
+            if pix is not None and not pix.isNull():
+                drag.setPixmap(pix)
+                drag.setHotSpot(QPoint(pix.width() // 2, pix.height() // 2))
+        except Exception:
+            pass
+        try:
+            result = drag.exec(
+                Qt.DropAction.MoveAction | Qt.DropAction.CopyAction
+            )
+        except Exception:
+            result = Qt.DropAction.IgnoreAction
+        if result == Qt.DropAction.IgnoreAction:
+            # Drop landed outside any Argus window > tearoff.
+            try:
+                _tearoff_at_cursor(payload)
+            except Exception:
+                pass
+
+    def _build_drag_pixmap(self, tab_idx: int, mode: str) -> QPixmap | None:
+        """Return a small drag thumbnail for the tab being dragged.
+
+        Prefers a grab of the tab wrapper so users see the actual tab
+        chrome floating with their cursor; falls back to a colored block
+        keyed by mode so vault drags look obviously different.
+        """
+        try:
+            if 0 <= tab_idx < len(self.tab_widgets):
+                wrapper = self.tab_widgets[tab_idx]
+                if wrapper is not None:
+                    pix = wrapper.grab()
+                    if pix is not None and not pix.isNull():
+                        return pix
+        except Exception:
+            pass
+        # Fallback - 32x32 mode-color block.
+        try:
+            color_for = {
+                "normal":  QColor("#9aa0ad"),
+                "private": QColor("#4d9fff"),
+                "vault":   QColor("#d4af37"),
+            }
+            color = color_for.get(mode, QColor("#9aa0ad"))
+            pix = QPixmap(32, 32)
+            pix.fill(color)
+            return pix
+        except Exception:
+            return None
+
+
+def _tearoff_at_cursor(payload: dict) -> None:
+    """Spawn a new ArgusBrowser positioned at the cursor's screen.
+
+    Called when a tab drag is released over empty desktop (no Argus window
+    accepted the drop). The new window inherits the SOURCE TAB'S MODE so
+    Coffre tabs torn off into open space stay Coffre. Multi-monitor: we
+    use ``QApplication.screenAt(QCursor.pos())`` so the window lands on
+    whichever monitor the cursor is currently over.
+    """
+    try:
+        cursor_pos = QCursor.pos()
+    except Exception:
+        cursor_pos = QPoint(0, 0)
+    try:
+        target_screen = QApplication.screenAt(cursor_pos)
+        if target_screen is None:
+            target_screen = QApplication.primaryScreen()
+    except Exception:
+        target_screen = None
+    avail = None
+    try:
+        if target_screen is not None:
+            avail = target_screen.availableGeometry()
+    except Exception:
+        avail = None
+    mode = str(payload.get("mode") or "normal")
+    try:
+        new_browser = ArgusBrowser(startup_mode=mode)
+    except Exception:
+        # If we can't even spawn a window, give up silently - the source
+        # tab remains where it was.
+        return
+    # Compute geometry inside the cursor's screen so the window doesn't
+    # appear off-screen (or split across two monitors).
+    try:
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            w = min(1000, avail.width() - 40)
+            h = min(700, avail.height() - 40)
+            x = max(avail.x(), min(cursor_pos.x() - w // 2, avail.right() - w))
+            y = max(avail.y(), min(cursor_pos.y() - 30, avail.bottom() - h))
+            new_browser.resize(w, h)
+            new_browser.move(x, y)
+    except Exception:
+        pass
+    # Locate the source window via the WeakValueDictionary registry and
+    # extract the tab. payload['source_window_id'] is id(window), which
+    # may be reused after GC - WeakValueDictionary keeps the mapping
+    # valid only while the window is alive.
+    try:
+        src_id = int(payload.get("source_window_id"))
+    except Exception:
+        src_id = None
+    src = None
+    if src_id is not None:
+        try:
+            src = ArgusBrowser._instances.get(src_id)
+        except Exception:
+            src = None
+    if src is not None:
+        try:
+            tab_idx = int(payload.get("tab_idx", -1))
+            view, profile, title = src._extract_tab(tab_idx)
+            new_browser._import_tab(view, profile, title, mode)
+        except Exception:
+            # If extraction fails (index out of range, source already
+            # closed, etc.) the new window keeps its default first tab.
+            pass
+    try:
+        new_browser.show()
+        new_browser.raise_()
+        new_browser.activateWindow()
+    except Exception:
+        pass
+
+
+# ── AI side panel (right collapsible) ────────────────────────────────────
+class AIPanel(QFrame):
+    """Right-side collapsible AI assistant panel.
+
+    Width animates 0 ↔ 380px (200ms OutCubic). Sends chat to
+    netguard_ai_server.py at AI_SERVER_BASE/api/chat. Conversation persisted
+    to argus_data/ai_history.json (last AI_HISTORY_MAX messages).
+
+    Page context (URL + first 4096 chars of QWebEnginePage.toPlainText) is
+    attached to each user message via a system-style note so the model can
+    reason about whatever the user is currently looking at.
+    """
+    EXPANDED_WIDTH = 380
+    ANIM_MS = 200
+
+    # Signal: emits when the user clicks Send and we need the current page text.
+    # The browser provides the page; the panel only sees a callable + url.
+    page_text_requested = pyqtSignal()
+
+    def __init__(self, history_mgr: AIHistoryManager, parent=None):
+        super().__init__(parent)
+        self.setObjectName("aiPanel")
+        self.history = history_mgr
+        self.is_open = False
+        self._worker: AIChatWorker | None = None
+        self._pending_user_msg: str | None = None
+        # Streaming state — accumulated reply for the in-progress assistant
+        # bubble. None when no stream is active.
+        self._streaming_buf: str | None = None
+        # Provided by the browser owner via set_page_provider().
+        self._page_provider: callable | None = None
+        # Optional callable returning the current page screenshot as a
+        # data: URI (set by ArgusBrowser via set_screenshot_provider).
+        self._screenshot_provider: callable | None = None
+        # Optional callable returning current selection text (set by
+        # ArgusBrowser via set_selection_provider).
+        self._selection_provider: callable | None = None
+
+        self.setFixedWidth(0)
+        self.setMinimumWidth(0)
+        self.setMaximumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # Header — provider combo + ⚙ settings + Clear
+        header = QFrame()
+        header.setObjectName("aiPanelHeader")
+        header.setFixedHeight(40)
+        h = QHBoxLayout(header)
+        h.setContentsMargins(8, 4, 8, 4)
+        h.setSpacing(6)
+        title = QLabel("AI")
+        title.setObjectName("aiPanelTitle")
+        self.provider_combo = QComboBox()
+        for name, label in AI_PROVIDER_FALLBACK:
+            # itemData = canonical provider name ("anthropic"/"openai"/"google")
+            self.provider_combo.addItem(label, name)
+        self.provider_combo.setToolTip(
+            "Provider actif. Choisis Claude / GPT / Gemini.  "
+            "Ajoute ta clé API via le ⚙ ci-contre."
+        )
+        # Restore the persisted provider, then wire change handler. We do
+        # this before connecting currentIndexChanged so the restoration
+        # itself doesn't fire a save back (causing churn on first open).
+        self._restore_provider_selection()
+        self.provider_combo.currentIndexChanged.connect(
+            self._on_provider_changed
+        )
+        settings_btn = QPushButton("⚙")
+        settings_btn.setObjectName("aiSettingsBtn")
+        settings_btn.setToolTip("Clés API & modèles")
+        settings_btn.setFixedWidth(28)
+        settings_btn.clicked.connect(self._open_ai_settings_dialog)
+        clear_btn = QPushButton("Clear")
+        clear_btn.setObjectName("aiClearBtn")
+        clear_btn.setToolTip("Vider la conversation")
+        clear_btn.clicked.connect(self._clear_conversation)
+        h.addWidget(title)
+        h.addWidget(self.provider_combo, 1)
+        h.addWidget(settings_btn)
+        h.addWidget(clear_btn)
+        v.addWidget(header)
+
+        # Conversation history (HTML rendered into QTextBrowser)
+        self.history_view = QTextBrowser()
+        self.history_view.setObjectName("aiHistory")
+        self.history_view.setOpenExternalLinks(False)
+        v.addWidget(self.history_view, 1)
+
+        # Bottom — input + send + quick actions
+        bottom = QFrame()
+        bottom.setObjectName("aiPanelBottom")
+        b = QVBoxLayout(bottom)
+        b.setContentsMargins(8, 6, 8, 8)
+        b.setSpacing(6)
+
+        # Input row: QTextEdit (3-line height) + Send button
+        input_row = QHBoxLayout()
+        input_row.setSpacing(6)
+        self.input = QTextEdit()
+        self.input.setObjectName("aiInput")
+        self.input.setPlaceholderText("Pose une question…  (Enter envoie · Shift+Enter pour nouvelle ligne)")
+        # ~3 lines @ 12pt ≈ 60px
+        self.input.setFixedHeight(60)
+        self.input.setAcceptRichText(False)
+        self.input.installEventFilter(self)
+        self.send_btn = QPushButton("Send")
+        self.send_btn.setObjectName("aiSendBtn")
+        self.send_btn.clicked.connect(self._send_clicked)
+        input_row.addWidget(self.input, 1)
+        input_row.addWidget(self.send_btn)
+        b.addLayout(input_row)
+
+        # Quick actions
+        qa_row = QHBoxLayout()
+        qa_row.setSpacing(4)
+        for label, prefill in AI_QUICK_ACTIONS:
+            btn = QPushButton(label)
+            btn.setProperty("class", "aiQuick")
+            btn.setToolTip(prefill)
+            btn.clicked.connect(lambda _=False, p=prefill: self._prefill(p))
+            qa_row.addWidget(btn)
+        qa_row.addStretch(1)
+        b.addLayout(qa_row)
+
+        v.addWidget(bottom)
+
+        # Animator
+        self._anim = QPropertyAnimation(self, b"maximumWidth")
+        self._anim.setDuration(self.ANIM_MS)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim2 = QPropertyAnimation(self, b"minimumWidth")
+        self._anim2.setDuration(self.ANIM_MS)
+        self._anim2.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        # Restore saved conversation
+        self._render_history()
+
+    # ── Page-text bridge (browser provides current QWebEngineView) ──
+    def set_page_provider(self, fn):
+        """Register a callable returning (url, view) for the current tab."""
+        self._page_provider = fn
+
+    def set_screenshot_provider(self, fn):
+        """Register a callable returning a ``data:image/png;base64,...``
+        URI for the current tab. Used by the ``/screenshot`` slash
+        command. ``None`` to disable screenshots.
+        """
+        self._screenshot_provider = fn
+
+    def set_selection_provider(self, fn):
+        """Register a callable that resolves the current page selection.
+
+        Signature: ``fn(callback)`` — the panel passes a callback expecting
+        a single ``str`` arg. The provider should call it once with the
+        current selection text (empty string when nothing is selected).
+        Async on QtWebEngine because ``runJavaScript`` is async.
+        """
+        self._selection_provider = fn
+
+    # ── Provider selection bridge (combo ↔ ai_settings.json) ────────
+    def _restore_provider_selection(self):
+        """Read ``argus_data/ai_settings.json`` and pre-select the matching
+        item in ``provider_combo``. Falls back to index 0 when the file is
+        absent or names an unknown provider — keeps boot resilient when
+        the user hasn't run the AI panel yet."""
+        if not HAVE_AI_PROVIDERS:
+            return
+        try:
+            settings = _ai_providers.load_settings()
+        except Exception:
+            return
+        active = settings.get("provider", "anthropic")
+        for i in range(self.provider_combo.count()):
+            if self.provider_combo.itemData(i) == active:
+                self.provider_combo.setCurrentIndex(i)
+                return
+
+    def _on_provider_changed(self, _idx: int):
+        """Persist the selected provider to ``ai_settings.json`` so the
+        next AI worker picks it up. We don't refresh the running worker
+        — provider switches take effect on the *next* message."""
+        if not HAVE_AI_PROVIDERS:
+            return
+        name = self.provider_combo.currentData()
+        if not name:
+            return
+        try:
+            settings = _ai_providers.load_settings()
+            settings["provider"] = name
+            _ai_providers.save_settings(settings)
+        except Exception:
+            pass
+
+    def _open_ai_settings_dialog(self):
+        """Show the BYOK settings dialog. Constructed lazily so we don't
+        pay the import cost up front when the user never opens it."""
+        try:
+            dlg = AISettingsDialog(self)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                # Re-sync the combo with whatever the dialog persisted —
+                # the user might have changed the active provider there.
+                self._restore_provider_selection()
+        except Exception as e:
+            self.history.append("error", f"Settings dialog error: {e}")
+            self._render_history()
+
+    # ── UX behaviour ────────────────────────────────────────────────
+    def eventFilter(self, obj, event):
+        # Enter (no modifier)  → send
+        # Shift+Enter           → newline (default QTextEdit behavior, fall through)
+        # Ctrl+Enter            → also send (kept for muscle memory)
+        if obj is self.input and event.type() == event.Type.KeyPress:
+            mods = event.modifiers()
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if mods & Qt.KeyboardModifier.ShiftModifier:
+                    return False  # let the default insert a newline
+                # Plain Enter or Ctrl+Enter → send
+                self._send_clicked()
+                return True
+        return super().eventFilter(obj, event)
+
+    def toggle(self):
+        if self.is_open:
+            self.collapse()
+        else:
+            self.expand()
+
+    def expand(self):
+        if self.is_open:
+            return
+        self.is_open = True
+        self._animate_to(self.EXPANDED_WIDTH)
+        # Focus input for immediate typing
+        QTimer.singleShot(self.ANIM_MS + 30, lambda: self.input.setFocus())
+
+    def collapse(self):
+        if not self.is_open:
+            return
+        self.is_open = False
+        self._animate_to(0)
+
+    def _animate_to(self, target: int):
+        for anim, prop_get in (
+            (self._anim, self.maximumWidth),
+            (self._anim2, self.minimumWidth),
+        ):
+            anim.stop()
+            anim.setStartValue(prop_get())
+            anim.setEndValue(target)
+            anim.start()
+
+    def _prefill(self, text: str):
+        self.input.setPlainText(text)
+        self.input.setFocus()
+        cursor = self.input.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.input.setTextCursor(cursor)
+
+    def _clear_conversation(self):
+        self.history.clear()
+        self._render_history()
+
+    # ── Send ────────────────────────────────────────────────────────
+    def _send_clicked(self):
+        """Send the current input. Resolves ``/url`` / ``/selection`` /
+        ``/screenshot`` slash commands first by injecting their values
+        into the message before we ship it off to the worker.
+
+        Flow:
+          1. Read input text.
+          2. Strip leading slash commands (parse_slash_commands).
+          3. If commands present, resolve them asynchronously (selection +
+             screenshot are both async-capable) and dispatch.
+          4. Otherwise: legacy path — capture page text via toPlainText
+             callback.
+        """
+        text = self.input.toPlainText().strip()
+        if not text or self._worker is not None:
+            return
+        self._pending_user_msg = text
+        self.input.clear()
+
+        # Slash command extraction (only if providers module is loaded —
+        # otherwise the user is on the legacy server backend which doesn't
+        # need them; fallback gracefully to plain send).
+        cmds: list[str] = []
+        residual = text
+        if HAVE_AI_PROVIDERS:
+            cmds, residual = _ai_providers.parse_slash_commands(text)
+
+        if not cmds:
+            # No slash commands — same flow as before. We still record the
+            # original text in history so the user sees what they typed.
+            self.history.append("user", text)
+            self._render_history()
+            self.send_btn.setEnabled(False)
+            self._set_typing(True)
+            self._capture_page_and_send(text)
+            return
+
+        # Slash-command path: build an enriched user message that the
+        # model sees, but show the original (pre-expansion) line in
+        # history. We resolve commands sequentially because /selection
+        # and /screenshot may both be async.
+        self.history.append("user", text)
+        self._render_history()
+        self.send_btn.setEnabled(False)
+        self._set_typing(True)
+
+        url, view = self._current_page_info()
+        accumulated: dict = {"url": url, "selection": None, "screenshot": None}
+        # Track which commands still need async resolution.
+        pending = [c for c in cmds]
+
+        def maybe_dispatch():
+            if pending:
+                return
+            # All resolved — build context block and ship.
+            self._send_with_slash_context(residual or text, accumulated)
+
+        def resolve_url():
+            # /url is synchronous — already captured into accumulated["url"].
+            pending.remove("/url")
+            maybe_dispatch()
+
+        def resolve_selection():
+            if self._selection_provider is None:
+                accumulated["selection"] = ""
+                pending.remove("/selection")
+                maybe_dispatch()
+                return
+
+            def on_sel(text_sel: str):
+                accumulated["selection"] = (text_sel or "")[:AI_PAGE_TEXT_MAX]
+                if "/selection" in pending:
+                    pending.remove("/selection")
+                maybe_dispatch()
+
+            try:
+                self._selection_provider(on_sel)
+            except Exception:
+                accumulated["selection"] = ""
+                if "/selection" in pending:
+                    pending.remove("/selection")
+                maybe_dispatch()
+            # Selection async fallback: if the provider hangs, finish
+            # without it after the same 2s budget we use for page text.
+            QTimer.singleShot(
+                AI_PAGE_TEXT_TIMEOUT_MS,
+                lambda: ("/selection" in pending
+                          and (accumulated.update(selection=""),
+                               pending.remove("/selection"),
+                               maybe_dispatch())),
+            )
+
+        def resolve_screenshot():
+            if self._screenshot_provider is None:
+                accumulated["screenshot"] = ""
+                pending.remove("/screenshot")
+                maybe_dispatch()
+                return
+            try:
+                data_uri = self._screenshot_provider() or ""
+            except Exception:
+                data_uri = ""
+            # Cap size — vendor APIs reject big images.
+            if len(data_uri) > AI_SCREENSHOT_MAX_BYTES:
+                data_uri = ""  # silently drop if oversized
+            accumulated["screenshot"] = data_uri
+            pending.remove("/screenshot")
+            maybe_dispatch()
+
+        # Kick off resolution for each requested command.
+        for cmd in cmds:
+            if cmd == "/url":
+                resolve_url()
+            elif cmd == "/selection":
+                resolve_selection()
+            elif cmd == "/screenshot":
+                resolve_screenshot()
+
+    def _capture_page_and_send(self, text: str):
+        """Original page-text capture path. Extracted from _send_clicked so
+        the slash-command path doesn't have to duplicate it."""
+        url, view = self._current_page_info()
+        if view is not None:
+            received = {"done": False}
+
+            def on_text(plain_text: str):
+                if received["done"]:
+                    return
+                received["done"] = True
+                ctx_text = (plain_text or "")[:AI_PAGE_TEXT_MAX]
+                self._send_to_backend(text, url, ctx_text)
+
+            try:
+                view.page().toPlainText(on_text)
+            except Exception:
+                received["done"] = True
+                self._send_to_backend(text, url, "")
+                return
+
+            def fallback():
+                if received["done"]:
+                    return
+                received["done"] = True
+                self._send_to_backend(text, url, "")
+
+            QTimer.singleShot(AI_PAGE_TEXT_TIMEOUT_MS, fallback)
+        else:
+            self._send_to_backend(text, url, "")
+
+    def _send_with_slash_context(self, residual: str, accumulated: dict):
+        """Build a user message enriched with the resolved slash-command
+        context, then hand off to ``_send_to_backend``. The original page
+        context block is *not* added — the slash commands are already an
+        explicit ask, and stuffing both makes prompts noisy."""
+        ctx_lines = ["[Slash context]"]
+        if accumulated.get("url"):
+            ctx_lines.append(f"URL: {accumulated['url']}")
+        sel = accumulated.get("selection")
+        if sel:
+            ctx_lines.append("Selection:")
+            ctx_lines.append(sel)
+        ss = accumulated.get("screenshot")
+        if ss:
+            # We pass the data URI inline — providers that don't accept
+            # images will see a base64 blob and may reason about it as
+            # text. Real multimodal support is a follow-up.
+            ctx_lines.append(f"Screenshot (data URI, {len(ss)} bytes):")
+            ctx_lines.append(ss[:512] + "...")
+        ctx_lines.append("[/Slash context]\n\n")
+        ctx_block = "\n".join(ctx_lines)
+        # Enrich the *last* turn (just appended above) without rewriting
+        # the visible history.
+        msgs = self.history.for_api()
+        if msgs and msgs[-1]["role"] == "user":
+            msgs[-1] = {"role": "user", "content": f"{ctx_block}{residual}"}
+        self._launch_worker(msgs)
+
+    def _current_page_info(self):
+        if self._page_provider is None:
+            return ("", None)
+        try:
+            return self._page_provider()
+        except Exception:
+            return ("", None)
+
+    def _send_to_backend(self, user_msg: str, url: str, page_text: str):
+        # Build the message list: full saved conversation, plus a context-augmented
+        # version of the *latest* user msg. We only mutate the last entry in `for_api()`
+        # so prior turns stay untouched.
+        msgs = self.history.for_api()
+        if msgs and msgs[-1]["role"] == "user":
+            ctx_block = self._format_ctx(url, page_text)
+            msgs[-1] = {"role": "user", "content": f"{ctx_block}{user_msg}"}
+        self._launch_worker(msgs)
+
+    def _launch_worker(self, msgs: list[dict]):
+        """Spawn the AIChatWorker with the prepared message list. Wires
+        streaming, done, and failed signals. Centralised so the regular
+        path and the slash-command path share identical lifecycle."""
+        worker = AIChatWorker(messages=msgs, lang="fr")
+        worker.chunk.connect(self._on_worker_chunk)
+        worker.done.connect(self._on_worker_done)
+        worker.failed.connect(self._on_worker_failed)
+        self._worker = worker
+        # Reset streaming buffer — populated as chunks arrive.
+        self._streaming_buf = ""
+        worker.start()
+
+    @staticmethod
+    def _format_ctx(url: str, page_text: str) -> str:
+        if not url and not page_text:
+            return ""
+        parts = ["[Page context]"]
+        if url:
+            parts.append(f"URL: {url}")
+        if page_text:
+            parts.append("Content (first 4096 chars):")
+            parts.append(page_text)
+        parts.append("[/Page context]\n\n")
+        return "\n".join(parts)
+
+    def _on_worker_chunk(self, delta: str):
+        """Append a streaming delta to the in-progress assistant bubble.
+
+        The chunk is shown live but *not* written to history until the
+        worker finishes — that way a mid-stream failure doesn't poison
+        the persisted conversation with a half-message.
+        """
+        if self._streaming_buf is None:
+            self._streaming_buf = ""
+        self._streaming_buf += delta
+        # Re-render with the live partial bubble. We don't persist yet.
+        self._render_history()
+
+    def _on_worker_done(self, reply: str, _raw: dict):
+        self._worker = None
+        self._set_typing(False)
+        self.send_btn.setEnabled(True)
+        # When streaming, prefer the fully-accumulated buffer if the
+        # provider's final ``reply`` came back empty (some implementations
+        # emit deltas only and don't echo the full string at the end).
+        final = reply or (self._streaming_buf or "")
+        self._streaming_buf = None
+        if not final:
+            final = "(Réponse vide)"
+        self.history.append("assistant", final)
+        self._render_history()
+
+    def _on_worker_failed(self, error: str):
+        self._worker = None
+        self._set_typing(False)
+        self.send_btn.setEnabled(True)
+        # If we got partial streamed text before the failure, keep it as
+        # an assistant turn followed by the error so the user can copy
+        # what was salvageable.
+        if self._streaming_buf:
+            self.history.append("assistant", self._streaming_buf)
+            self._streaming_buf = None
+        self.history.append("error", error)
+        self._render_history()
+
+    # ── Rendering ───────────────────────────────────────────────────
+    def _set_typing(self, on: bool):
+        # Re-render with optional trailing typing bubble.
+        self._typing = on
+        self._render_history()
+
+    def _render_history(self):
+        """Render the conversation as HTML bubbles into the QTextBrowser."""
+        html_parts = [
+            "<style>",
+            "body { background: transparent; margin: 0; padding: 4px; }",
+            ".row-u { text-align: right; margin: 6px 0; }",
+            ".row-a { text-align: left;  margin: 6px 0; }",
+            ".bubble-u { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 10px 10px 2px 10px; background: #4d9fff; color: #ffffff; "
+            "white-space: pre-wrap; text-align: left; }",
+            ".bubble-a { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 10px 10px 10px 2px; background: #1c2128; color: #e6edf3; "
+            "white-space: pre-wrap; }",
+            ".bubble-e { display: inline-block; max-width: 88%; padding: 8px 10px; "
+            "border-radius: 8px; background: #3a1419; color: #ff9da6; "
+            "border: 1px solid #ff4d6a; white-space: pre-wrap; }",
+            ".retry { display: inline-block; margin-left: 8px; padding: 2px 8px; "
+            "border: 1px solid #ff4d6a; border-radius: 4px; color: #ff4d6a; "
+            "text-decoration: none; font-size: 11px; }",
+            ".typing { display: inline-block; padding: 6px 10px; border-radius: 10px; "
+            "background: #1c2128; color: #9aa0ad; }",
+            "</style>",
+        ]
+        for m in self.history.messages:
+            content = m.get("content", "")
+            # Escape HTML — user content is untrusted page text in some cases.
+            safe = (content
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;"))
+            if m["role"] == "user":
+                html_parts.append(f'<div class="row-u"><span class="bubble-u">{safe}</span></div>')
+            elif m["role"] == "assistant":
+                html_parts.append(f'<div class="row-a"><span class="bubble-a">{safe}</span></div>')
+            else:  # error
+                html_parts.append(
+                    f'<div class="row-a"><span class="bubble-e">{safe}'
+                    f'<a href="argus://retry" class="retry">Retry</a></span></div>'
+                )
+        # In-progress streaming bubble — shown live while the assistant
+        # is mid-reply. Distinct from the typing dots so the user sees
+        # actual text accumulating.
+        if self._streaming_buf:
+            buf_safe = (self._streaming_buf
+                         .replace("&", "&amp;")
+                         .replace("<", "&lt;")
+                         .replace(">", "&gt;"))
+            html_parts.append(
+                f'<div class="row-a"><span class="bubble-a">{buf_safe}<span class="typing">▌</span></span></div>'
+            )
+        elif getattr(self, "_typing", False):
+            html_parts.append('<div class="row-a"><span class="typing">…</span></div>')
+
+        self.history_view.setHtml("\n".join(html_parts))
+        # Auto-scroll to bottom
+        scrollbar = self.history_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        # Wire retry link clicks (anchorClicked emits QUrl)
+        try:
+            self.history_view.anchorClicked.disconnect()
+        except TypeError:
+            pass
+        self.history_view.anchorClicked.connect(self._on_anchor_clicked)
+
+    def _on_anchor_clicked(self, url):
+        # Only handle our internal "argus://retry" pseudo-link.
+        if url.toString() != "argus://retry":
+            return
+        # Find the last user message and resend it
+        for m in reversed(self.history.messages):
+            if m["role"] == "user":
+                self._prefill(m["content"])
+                self._send_clicked()
+                return
+
+
+# ── AI BYOK settings dialog ──────────────────────────────────────────────
+class AISettingsDialog(QDialog):
+    """Per-provider API key + model entry. Persists models + default
+    provider to ``argus_data/ai_settings.json`` and API keys to the
+    encrypted Secret Vault (``argus_data/vault/``) when available.
+
+    Layout: one tab per provider (Claude / GPT / Gemini), each with an
+    API key line edit (echo masked) and a model combo seeded from the
+    provider's ``models`` list. Plus a "Default provider" combo at the
+    top so the user can switch which one the panel actually uses.
+
+    Vault hookup
+    ------------
+    On open the dialog inspects vault state and asks for either a
+    master-password setup (first run) or an unlock (returning user). On
+    save, API keys go to the vault and the JSON file only carries
+    non-secret settings + an ``api_key_in_vault: true`` marker. If the
+    vault module / its native deps are missing, a banner warns the user
+    and the dialog falls back to plaintext storage so the workflow is
+    never blocked.
+
+    No verification round-trip on the API key itself — entering a bogus
+    key just fails on the next message with the provider's own error
+    string in the chat. Better than blocking the dialog on a network
+    call the user might not even need (e.g. they're configuring two
+    keys at once).
+    """
+
+    # Sentinel returned by the master-password prompt to signal "user
+    # cancelled, don't pop another dialog".
+    _CANCELLED = object()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Argus AI — Clés API & modèles")
+        self.setObjectName("aiSettingsDialog")
+        self.resize(540, 420)
+        # Load current settings — empty dict if none saved yet.
+        self._settings = (_ai_providers.load_settings()
+                           if HAVE_AI_PROVIDERS else {})
+        # Per-provider widgets we'll read on accept.
+        self._key_edits: dict[str, QLineEdit] = {}
+        self._model_combos: dict[str, QComboBox] = {}
+        # Tracks whether the vault is reachable AND unlocked for this
+        # session of the dialog. Set during _gate_vault().
+        self._vault_ready: bool = False
+        self._vault_warning_label = None
+        # Suppress modal prompts during automated tests (set via
+        # ``AISettingsDialog._suppress_vault_prompts = True``). Tests still
+        # exercise the underlying gate logic via direct method calls.
+        # Never pop a modal (QInputDialog / QMessageBox.exec) without a human:
+        # under pytest or an offscreen/headless Qt platform the dialog would
+        # block forever (CI jobs hung for 6 h on exactly this).
+        _headless = bool(os.environ.get("PYTEST_CURRENT_TEST")) or \
+            os.environ.get("QT_QPA_PLATFORM", "").lower() in ("offscreen", "minimal")
+        self._suppress_prompts = bool(
+            getattr(type(self), "_suppress_vault_prompts", False) or _headless
+        )
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+
+        # Banner (vault warning slot — populated by _gate_vault).
+        self._banner = QLabel("")
+        self._banner.setWordWrap(True)
+        self._banner.setStyleSheet(
+            "QLabel { background: #3a2a14; color: #f5d57a; "
+            "border: 1px solid #6a4a1c; border-radius: 4px; "
+            "padding: 6px 10px; font-size: 12px; }"
+        )
+        self._banner.hide()
+        v.addWidget(self._banner)
+
+        # Default provider row
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Provider par défaut:"))
+        self._default_combo = QComboBox()
+        for name, label in AI_PROVIDER_FALLBACK:
+            self._default_combo.addItem(label, name)
+        active = self._settings.get("provider", "anthropic")
+        for i in range(self._default_combo.count()):
+            if self._default_combo.itemData(i) == active:
+                self._default_combo.setCurrentIndex(i)
+                break
+        top.addWidget(self._default_combo, 1)
+        v.addLayout(top)
+
+        # Per-provider tabs.
+        tabs = QTabWidget()
+        if HAVE_AI_PROVIDERS:
+            for name, label in AI_PROVIDER_FALLBACK:
+                tabs.addTab(self._make_provider_tab(name), label)
+        else:
+            # Defensive fallback — shouldn't happen because the panel
+            # only opens this dialog after checking HAVE_AI_PROVIDERS,
+            # but keeps the dialog importable in tests.
+            disabled = QLabel(
+                "Module argus_ai_providers indisponible — "
+                "réinstalle Argus pour activer les providers BYOK."
+            )
+            disabled.setWordWrap(True)
+            tabs.addTab(disabled, "Indisponible")
+        v.addWidget(tabs, 1)
+
+        # Lock-vault row + Save/Cancel
+        btn_row = QHBoxLayout()
+        self._lock_btn = QPushButton("Verrouiller le coffre")
+        self._lock_btn.setToolTip(
+            "Re-verrouille immédiatement le Secret Vault. "
+            "Le prochain accès demandera à nouveau le mot de passe maître."
+        )
+        self._lock_btn.clicked.connect(self._lock_vault_clicked)
+        btn_row.addWidget(self._lock_btn)
+        btn_row.addStretch(1)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._save_and_close)
+        btns.rejected.connect(self.reject)
+        btn_row.addWidget(btns)
+        v.addLayout(btn_row)
+
+        # Run vault gating + migration AFTER widgets exist so the banner
+        # and per-tab placeholders can reflect the discovered state.
+        # Wrapped in try/except so a vault hiccup never blocks the dialog
+        # from opening at all.
+        try:
+            self._gate_vault()
+            self._refresh_key_placeholders()
+        except Exception:
+            self._show_vault_warning(
+                "Vault indisponible — les clés seront stockées en clair."
+            )
+
+    # ------------------------------------------------------------------ #
+    # Vault gating
+    # ------------------------------------------------------------------ #
+
+    def _show_vault_warning(self, msg: str) -> None:
+        """Surface a banner above the tabs so the user sees that we're
+        in plaintext mode for any reason."""
+        self._banner.setText("⚠ " + msg)
+        self._banner.show()
+
+    def _gate_vault(self) -> None:
+        """Configure ``self._vault_ready`` based on vault availability,
+        prompting the user to set up or unlock the vault as needed.
+
+        States:
+
+        * Vault module unimportable / deps missing → banner + plaintext
+          fallback. No prompt.
+        * Vault not initialized → "Set up Secret Vault" prompt. On
+          success we hold the vault unlocked for this dialog.
+        * Vault initialized + locked → "Unlock vault" prompt. On wrong
+          master we re-prompt up to 3 times then surface a banner.
+        * Vault unlocked already → migrate plaintext keys + ready.
+        """
+        if not HAVE_AI_PROVIDERS or _ai_providers is None:
+            self._show_vault_warning(
+                "Module argus_ai_providers indisponible — clés en clair."
+            )
+            return
+        if not getattr(_ai_providers, "_VAULT_AVAILABLE", False):
+            self._show_vault_warning(
+                "Coffre chiffré indisponible (manque pywin32 / keyring / "
+                "argon2-cffi). Installe-les avec: "
+                "pip install pywin32 keyring argon2-cffi. "
+                "Les clés sont stockées en clair pour l'instant."
+            )
+            return
+
+        # Already unlocked? Just migrate + go.
+        if _ai_providers.is_vault_unlocked():
+            self._vault_ready = True
+            self._post_unlock_migrate()
+            return
+
+        if self._suppress_prompts:
+            # Tests handle the master-password flow directly; don't pop
+            # modals here.
+            return
+
+        if not _ai_providers.vault_initialized():
+            ok = self._prompt_init_vault()
+            if ok:
+                self._vault_ready = True
+                self._post_unlock_migrate()
+            else:
+                self._show_vault_warning(
+                    "Coffre non initialisé — clés en clair pour cette session."
+                )
+            return
+
+        # Initialized but locked — ask for master.
+        ok = self._prompt_unlock_vault()
+        if ok:
+            self._vault_ready = True
+            self._post_unlock_migrate()
+        else:
+            self._show_vault_warning(
+                "Coffre verrouillé — clés en clair pour cette session."
+            )
+
+    def _post_unlock_migrate(self) -> None:
+        """Pull any leftover plaintext keys out of ai_settings.json."""
+        try:
+            n = _ai_providers.migrate_ai_settings_to_vault()
+            if n > 0:
+                # Reload settings so the dialog reflects the migrated
+                # state (api_key gone, api_key_in_vault: true).
+                self._settings = _ai_providers.load_settings()
+        except Exception:
+            pass
+
+    def _prompt_init_vault(self) -> bool:
+        """Show two password dialogs (set + confirm). Returns True on
+        successful init."""
+        pw1, ok1 = QInputDialog.getText(
+            self,
+            "Configurer le coffre",
+            "Premier lancement : choisis un mot de passe maître pour le "
+            "coffre chiffré.\nCe mot de passe protège tes clés API. "
+            "Il n'est pas récupérable.",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok1 or not pw1:
+            return False
+        if len(pw1) < 8:
+            QMessageBox.warning(
+                self,
+                "Mot de passe trop court",
+                "Utilise un mot de passe d'au moins 8 caractères.",
+            )
+            return False
+        pw2, ok2 = QInputDialog.getText(
+            self,
+            "Confirmer",
+            "Re-saisis le mot de passe maître :",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok2 or pw2 != pw1:
+            QMessageBox.warning(
+                self,
+                "Mots de passe différents",
+                "Les deux saisies ne correspondent pas. Annulé.",
+            )
+            return False
+        try:
+            ok = _ai_providers.init_vault(pw1)
+        except Exception:
+            ok = False
+        if not ok:
+            QMessageBox.warning(
+                self,
+                "Échec de l'initialisation",
+                "Impossible de créer le coffre. Vérifie que les modules "
+                "pywin32 / keyring / argon2-cffi sont installés.",
+            )
+        return ok
+
+    def _prompt_unlock_vault(self) -> bool:
+        for attempt in range(3):
+            pw, ok = QInputDialog.getText(
+                self,
+                "Déverrouiller le coffre",
+                "Saisis le mot de passe maître du coffre :",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok:
+                return False
+            if pw and _ai_providers.unlock_vault(pw):
+                return True
+            if attempt < 2:
+                QMessageBox.warning(
+                    self,
+                    "Mauvais mot de passe",
+                    "Mot de passe incorrect. Réessaie.",
+                )
+        return False
+
+    def _lock_vault_clicked(self) -> None:
+        if HAVE_AI_PROVIDERS and _ai_providers is not None:
+            try:
+                _ai_providers.lock_vault()
+            except Exception:
+                pass
+        self._vault_ready = False
+        self._show_vault_warning(
+            "Coffre verrouillé. Les nouvelles clés seront en clair "
+            "jusqu'à la prochaine ouverture."
+        )
+        self._refresh_key_placeholders()
+
+    def _refresh_key_placeholders(self) -> None:
+        """Update each tab's API-key placeholder + tooltip to reflect
+        whether a key is currently saved (vault entry or plaintext)."""
+        if not HAVE_AI_PROVIDERS or _ai_providers is None:
+            return
+        for name, edit in self._key_edits.items():
+            in_vault = (
+                self._vault_ready
+                and _ai_providers.secret_exists(_ai_providers._vault_name(name))
+            )
+            prov_settings = (
+                (self._settings.get("providers") or {}).get(name, {}) or {}
+            )
+            plaintext_key = prov_settings.get("api_key", "")
+            has_plain = isinstance(plaintext_key, str) and plaintext_key.strip()
+            if in_vault:
+                edit.setPlaceholderText(
+                    "•••••• (sauvegardé dans le coffre — laisse vide pour conserver)"
+                )
+            elif has_plain:
+                edit.setPlaceholderText(
+                    "•••••• (déjà configuré en clair — laisse vide pour conserver)"
+                )
+            else:
+                edit.setPlaceholderText("Colle la clé API ici")
+
+    def _make_provider_tab(self, name: str) -> QWidget:
+        provider = _ai_providers.PROVIDERS.get(name)
+        wrap = QWidget()
+        form = QFormLayout(wrap)
+        form.setContentsMargins(12, 12, 12, 12)
+
+        prov_settings = (self._settings.get("providers") or {}).get(name, {}) or {}
+
+        # API key — masked. We DO NOT pre-fill the actual key for safety;
+        # show a placeholder when one already exists so the user knows
+        # they don't need to re-enter it. New value overrides. The
+        # placeholder is finalised by _refresh_key_placeholders once
+        # vault gating has run.
+        key_edit = QLineEdit()
+        key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        existing_key = prov_settings.get("api_key") if isinstance(prov_settings, dict) else None
+        if isinstance(existing_key, str) and existing_key.strip():
+            key_edit.setPlaceholderText("•••••• (déjà configuré — laisse vide pour conserver)")
+        else:
+            key_edit.setPlaceholderText("Colle la clé API ici")
+        form.addRow("API key:", key_edit)
+        self._key_edits[name] = key_edit
+
+        # Model combo — seeded from provider.models, with the saved choice
+        # selected when present.
+        model_combo = QComboBox()
+        model_combo.setEditable(True)  # allow custom (e.g. Claude future model)
+        if provider and provider.models:
+            for m in provider.models:
+                model_combo.addItem(m)
+        saved_model = prov_settings.get("model") if isinstance(prov_settings, dict) else None
+        if isinstance(saved_model, str) and saved_model.strip():
+            idx = model_combo.findText(saved_model)
+            if idx >= 0:
+                model_combo.setCurrentIndex(idx)
+            else:
+                model_combo.setEditText(saved_model)
+        elif provider:
+            idx = model_combo.findText(provider.default_model)
+            if idx >= 0:
+                model_combo.setCurrentIndex(idx)
+        form.addRow("Modèle:", model_combo)
+        self._model_combos[name] = model_combo
+
+        # Help link
+        env_keys = provider.env_keys if provider else []
+        help_url = SECRET_HELP_URLS.get(env_keys[0]) if env_keys else None
+        if help_url:
+            link = QLabel(f'<a href="{help_url}">Obtenir une clé API</a>')
+            link.setOpenExternalLinks(True)
+            form.addRow("", link)
+
+        return wrap
+
+    def _save_and_close(self):
+        if not HAVE_AI_PROVIDERS:
+            self.accept()
+            return
+        # Merge with existing settings rather than overwrite — keeps any
+        # extra fields a future migration may have added.
+        settings = _ai_providers.load_settings()
+        settings["provider"] = self._default_combo.currentData() or "anthropic"
+        providers = settings.setdefault("providers", {})
+        for name, edit in self._key_edits.items():
+            slot = providers.setdefault(name, {})
+            new_key = edit.text().strip()
+            if new_key:
+                if self._vault_ready and _ai_providers.save_provider_key(name, new_key):
+                    # Stored in the vault — strip any legacy plaintext
+                    # field and mark the slot.
+                    slot.pop("api_key", None)
+                    slot["api_key_in_vault"] = True
+                else:
+                    # Vault unavailable / locked → degraded plaintext
+                    # path. The banner already warned the user.
+                    slot["api_key"] = new_key
+                    slot.pop("api_key_in_vault", None)
+            # else: leave existing key untouched (placeholder told the user
+            # an empty input means "keep current")
+            model_combo = self._model_combos.get(name)
+            if model_combo is not None:
+                model = model_combo.currentText().strip()
+                if model:
+                    slot["model"] = model
+        _ai_providers.save_settings(settings)
+        self.accept()
+
+
+# ── Vault auto-switch banner ─────────────────────────────────────────────
+class VaultBanner(QFrame):
+    """Non-modal banner shown when the user navigates to a known banking /
+    payment / brokerage domain while NOT already in vault mode.
+
+    Appears at the top of the tab content area. Three actions:
+        * Switch to Vault — invokes the parent's mode-switch with a vault
+          target.
+        * Not now — hide the banner for this navigation only.
+        * Always — persist the host to ``vault_auto_switch.json`` so future
+          visits trigger an automatic switch (still respecting 2FA).
+    """
+    switch_requested = pyqtSignal(str)   # institution_name
+    always_requested = pyqtSignal(str)   # host
+    dismissed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("vaultBanner")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            "QFrame#vaultBanner { background: #d4af37; border-bottom: 1px solid #b8860b; }"
+            "QFrame#vaultBanner QLabel { color: #1a1410; font-weight: 600; "
+            "font-size: 12px; padding: 6px 10px; }"
+            "QFrame#vaultBanner QPushButton.bannerPrimary { "
+            "background: #1a1410; color: #d4af37; border: 1px solid #1a1410; "
+            "border-radius: 4px; padding: 4px 12px; font-size: 11px; font-weight: 600; }"
+            "QFrame#vaultBanner QPushButton.bannerPrimary:hover { background: #2a2018; }"
+            "QFrame#vaultBanner QPushButton.bannerSecondary { "
+            "background: transparent; color: #1a1410; border: 1px solid #1a1410; "
+            "border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
+            "QFrame#vaultBanner QPushButton.bannerSecondary:hover { background: rgba(0,0,0,0.06); }"
+            "QFrame#vaultBanner QPushButton.bannerLink { "
+            "background: transparent; color: #1a1410; border: none; "
+            "padding: 4px 6px; font-size: 11px; text-decoration: underline; }"
+        )
+        self.setFixedHeight(38)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 8, 0)
+        h.setSpacing(6)
+        self._label = QLabel("Banking detected")
+        h.addWidget(self._label, 1)
+        self._switch_btn = QPushButton("Switch to Vault")
+        self._switch_btn.setProperty("class", "bannerPrimary")
+        self._switch_btn.clicked.connect(self._emit_switch)
+        h.addWidget(self._switch_btn)
+        self._notnow_btn = QPushButton("Not now")
+        self._notnow_btn.setProperty("class", "bannerSecondary")
+        self._notnow_btn.clicked.connect(self._emit_dismiss)
+        h.addWidget(self._notnow_btn)
+        self._always_btn = QPushButton("Always")
+        self._always_btn.setProperty("class", "bannerLink")
+        self._always_btn.clicked.connect(self._emit_always)
+        h.addWidget(self._always_btn)
+        self._institution = ""
+        self._host = ""
+        self.hide()
+
+    def show_for(self, institution_name: str, host: str):
+        self._institution = institution_name or "this institution"
+        self._host = host or ""
+        self._label.setText(
+            f"  Banking detected: {self._institution}. "
+            f"Switch to Vault mode for stricter protection?"
+        )
+        self.show()
+
+    def _emit_switch(self):
+        self.switch_requested.emit(self._institution)
+        self.hide()
+
+    def _emit_dismiss(self):
+        self.hide()
+        self.dismissed.emit()
+
+    def _emit_always(self):
+        if self._host:
+            self.always_requested.emit(self._host)
+        self.hide()
+
+
+# ── Form-submit JS bridge (Wave 2 task #7) ───────────────────────────────
+# A small JS payload installed into every page profile that intercepts
+# form.submit events, stops propagation, then notifies the host via a
+# location.hash sentinel that Python polls. Python decides via arbiter
+# whether to allow the submit — if allowed, JS replays the submission.
+#
+# This is the lowest-friction integration that doesn't require QWebChannel
+# (which adds a runtime dependency on qtwebchannel.js being injected first).
+# For V1 we ship logging only, with arbiter check kept best-effort: JS
+# pauses the submit, records context, calls Python, and Python decides
+# whether to release. If anything goes wrong the form proceeds (fail-open)
+# because blocking real banking submits via JS edge-cases would be worse
+# than the alternative.
+FORM_SUBMIT_INTERCEPT_JS = r"""
+(function () {
+  if (window.__argusFormHookInstalled) return;
+  window.__argusFormHookInstalled = true;
+
+  function summarize(form) {
+    var fields = form.elements ? form.elements.length : 0;
+    var hasPwd = false, hasCC = false;
+    try {
+      for (var i = 0; i < form.elements.length; i++) {
+        var el = form.elements[i];
+        var t = (el.type || '').toLowerCase();
+        var n = (el.name || '').toLowerCase();
+        if (t === 'password') hasPwd = true;
+        if (n.indexOf('card') !== -1 || n.indexOf('cc') !== -1 ||
+            n.indexOf('cvv') !== -1 || /\bccnum\b/.test(n)) hasCC = true;
+      }
+    } catch (e) {}
+    return {
+      action_url: form.action || window.location.href,
+      method: (form.method || 'GET').toUpperCase(),
+      fields_count: fields,
+      has_password: hasPwd,
+      has_cc: hasCC,
+      origin: window.location.href
+    };
+  }
+
+  document.addEventListener('submit', function (ev) {
+    try {
+      var form = ev.target;
+      if (!form || !form.tagName || form.tagName.toLowerCase() !== 'form') return;
+      var info = summarize(form);
+      // Best-effort beacon to host. Python polls runJavaScript for these.
+      window.__argusLastFormSubmit = info;
+      // Surface a short text marker the host can grep without a full RTT.
+      var beacon = '__ARGUS_FORM_SUBMIT__:' + JSON.stringify(info);
+      try { console.log(beacon); } catch (e) {}
+    } catch (e) { /* swallow */ }
+  }, true);
+})();
+"""
+
+
+# ── Custom QWebEnginePage that intercepts new-window + injects download hook ──
+class ArgusWebPage(QWebEnginePage):
+    """QWebEnginePage subclass that:
+
+    * Routes window.open / target=_blank into a new tab in our custom
+      TabBar instead of spawning an unmanaged QWebEngineView.
+    * Forwards JavaScript console messages so the host can grep for the
+      ``__ARGUS_FORM_SUBMIT__`` beacon emitted by FORM_SUBMIT_INTERCEPT_JS
+      and route the event to surveillance + arbiter.
+
+    The browser owner registers itself via :meth:`set_owner` so the page
+    can call back without holding a hard ref to the QMainWindow.
+    """
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        self._owner = None
+
+    def set_owner(self, owner):
+        self._owner = owner
+
+    def javaScriptConsoleMessage(self, level, message, line, source_id):
+        # Forward the form-submit beacon to the host owner.
+        try:
+            if message and message.startswith("__ARGUS_FORM_SUBMIT__:"):
+                payload = message.split(":", 1)[1]
+                if self._owner is not None and hasattr(self._owner, "_on_form_submit_beacon"):
+                    self._owner._on_form_submit_beacon(payload)
+        except Exception:
+            pass
+        # Default behaviour (no-op in PyQt6 base).
+        try:
+            super().javaScriptConsoleMessage(level, message, line, source_id)
+        except Exception:
+            pass
+
+    def createWindow(self, _wintype):
+        # Open in a new tab inside our window. Returning None lets Qt
+        # silently drop popups (the desired behaviour when no owner).
+        if self._owner is not None and hasattr(self._owner, "_open_new_tab"):
+            self._owner._open_new_tab("about:blank")
+            view = self._owner._current_view()
+            if view is not None:
+                return view.page()
+        return None
+
+
+# ── Quick switcher (Ctrl+K) ──────────────────────────────────────────────
+class QuickSwitcherDialog(QDialog):
+    """VS Code style command palette + tab/history/bookmark fuzzy finder.
+
+    Sources are aggregated lazily via a callable injected by ArgusBrowser
+    so this widget stays decoupled from the browser internals.
+    """
+
+    def __init__(self, sources_provider, on_activate, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Argus — Quick Switcher")
+        self.setObjectName("quickSwitcher")
+        self.setModal(True)
+        self.resize(600, 400)
+        self._sources_provider = sources_provider
+        self._on_activate = on_activate
+        self._items: list[dict] = []
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(6)
+
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Tabs / History / Bookmarks / Commands…")
+        self.input.textChanged.connect(self._refilter)
+        self.input.returnPressed.connect(self._activate_current)
+        v.addWidget(self.input)
+
+        self.list = QListWidget()
+        self.list.setUniformItemSizes(True)
+        self.list.itemActivated.connect(lambda _i: self._activate_current())
+        self.list.itemDoubleClicked.connect(lambda _i: self._activate_current())
+        v.addWidget(self.list, 1)
+
+        # Populate lazily so opening is fast even with big history.
+        QTimer.singleShot(0, self._reload_items)
+        self.input.setFocus()
+
+    def keyPressEvent(self, event):  # type: ignore[override]
+        # Esc closes; Up/Down navigate the list even from the input field.
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up):
+            row = self.list.currentRow()
+            n = self.list.count()
+            if n > 0:
+                if event.key() == Qt.Key.Key_Down:
+                    self.list.setCurrentRow(min(row + 1, n - 1))
+                else:
+                    self.list.setCurrentRow(max(row - 1, 0))
+            return
+        super().keyPressEvent(event)
+
+    def _reload_items(self):
+        try:
+            self._items = list(self._sources_provider())
+        except Exception:
+            self._items = []
+        self._refilter(self.input.text())
+
+    @staticmethod
+    def _fuzzy_score(needle: str, hay: str) -> int:
+        """Naive case-insensitive subsequence score; -1 means no match."""
+        if not needle:
+            return 0
+        needle = needle.lower()
+        hay_low = hay.lower()
+        # Prefer prefix matches.
+        if hay_low.startswith(needle):
+            return 1000 - len(hay_low)
+        if needle in hay_low:
+            return 500 - hay_low.index(needle)
+        # Subsequence fallback.
+        i = 0
+        for ch in hay_low:
+            if ch == needle[i]:
+                i += 1
+                if i == len(needle):
+                    return 100
+        return -1
+
+    def _refilter(self, text: str):
+        self.list.clear()
+        text = (text or "").strip()
+        scored: list[tuple[int, dict]] = []
+        for it in self._items:
+            label = it.get("label", "")
+            score = self._fuzzy_score(text, label)
+            if score >= 0:
+                scored.append((score, it))
+        scored.sort(key=lambda x: -x[0])
+        for _s, it in scored[:60]:
+            icon = it.get("icon", "•")
+            label = it.get("label", "")
+            row = QListWidgetItem(f"{icon}  {label}")
+            row.setData(Qt.ItemDataRole.UserRole, it)
+            self.list.addItem(row)
+        if self.list.count() > 0:
+            self.list.setCurrentRow(0)
+
+    def _activate_current(self):
+        row = self.list.currentItem()
+        if row is None and self.list.count() > 0:
+            row = self.list.item(0)
+        if row is None:
+            return
+        item = row.data(Qt.ItemDataRole.UserRole)
+        try:
+            self._on_activate(item)
+        finally:
+            self.accept()
+
+
+# ── About dialog ─────────────────────────────────────────────────────────
+class AboutDialog(QDialog):
+    """Help > About — shows version, license, modules detected, diagnostics."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("À propos d'Argus")
+        self.resize(480, 540)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(20, 20, 20, 16)
+        v.setSpacing(8)
+
+        # Logo
+        try:
+            logo_path = ROOT / "branding" / "argus" / "argus_v2_256.png"
+            if not logo_path.exists():
+                logo_path = ROOT / "branding" / "argus" / "argus_normal.png"
+            if logo_path.exists():
+                pix = QPixmap(str(logo_path))
+                if not pix.isNull():
+                    logo = QLabel()
+                    logo.setPixmap(pix.scaled(96, 96,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation))
+                    logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    v.addWidget(logo)
+        except Exception:
+            pass
+
+        title = QLabel(f"<b style='font-size:18px;'>Argus v{ARGUS_VERSION}</b>")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(title)
+
+        tagline = QLabel("Cybersecurity browser & workbench — l'œil aux 100 yeux.")
+        tagline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        tagline.setStyleSheet("color:#9aa0ad; font-size:12px;")
+        v.addWidget(tagline)
+
+        info_lines = [
+            "Licence : <b>GPL v3</b> — voir LICENSE",
+            'Repo : <a href="https://github.com/sxc3030-eng/netguard-pro-suite">'
+            'github.com/sxc3030-eng/netguard-pro-suite</a>',
+        ]
+        info = QLabel("<br>".join(info_lines))
+        info.setOpenExternalLinks(True)
+        info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        info.setStyleSheet("font-size:12px; padding:4px;")
+        v.addWidget(info)
+
+        # Modules detected
+        modules = [
+            ("Sandbox",      HAVE_SANDBOX),
+            ("Surveillance", HAVE_SURVEILLANCE),
+            ("Arbiter",      HAVE_ARBITER),
+            ("Vault",        HAVE_VAULT),
+            ("Vault domains",HAVE_VAULT_DOMAINS),
+            ("Vault gateway",HAVE_VAULT_GATEWAY),
+            ("2FA",          HAVE_2FA),
+            ("Onboarding",   HAVE_ONBOARDING),
+            ("Config",       HAVE_CONFIG),
+            ("Mythos bus",   HAVE_MYTHOS),
+            ("Updater",      HAVE_UPDATER),
+        ]
+        mod_text = "<b>Modules détectés :</b><br>" + "<br>".join(
+            f"&nbsp;&nbsp;{'✓' if ok else '✗'} {n}" for n, ok in modules
+        )
+        mod_label = QLabel(mod_text)
+        mod_label.setStyleSheet("font-size:11px; padding:6px;")
+        v.addWidget(mod_label)
+
+        v.addStretch(1)
+
+        btns = QHBoxLayout()
+        copy_btn = QPushButton("Copier diagnostic")
+        copy_btn.clicked.connect(self._copy_diag)
+        ok_btn = QPushButton("Fermer")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(self.accept)
+        btns.addWidget(copy_btn)
+        btns.addStretch(1)
+        btns.addWidget(ok_btn)
+        v.addLayout(btns)
+
+    def _copy_diag(self):
+        try:
+            from PyQt6.QtCore import QT_VERSION_STR
+        except Exception:
+            QT_VERSION_STR = "?"
+        modules = {
+            "Sandbox":       HAVE_SANDBOX,
+            "Surveillance":  HAVE_SURVEILLANCE,
+            "Arbiter":       HAVE_ARBITER,
+            "Vault":         HAVE_VAULT,
+            "Vault domains": HAVE_VAULT_DOMAINS,
+            "Vault gateway": HAVE_VAULT_GATEWAY,
+            "2FA":           HAVE_2FA,
+            "Onboarding":    HAVE_ONBOARDING,
+            "Config":        HAVE_CONFIG,
+            "Mythos bus":    HAVE_MYTHOS,
+            "Updater":       HAVE_UPDATER,
+        }
+        diag = (
+            f"Argus v{ARGUS_VERSION}\n"
+            f"Python   : {platform.python_version()}\n"
+            f"Platform : {platform.system()} {platform.release()} ({platform.machine()})\n"
+            f"PyQt6/Qt : {QT_VERSION_STR}\n"
+            f"Modules  :\n"
+            + "\n".join(f"  {'+' if v else '-'} {k}" for k, v in modules.items())
+        )
+        try:
+            cb = QApplication.clipboard()
+            cb.setText(diag)
+            QMessageBox.information(self, "Diagnostic", "Copié dans le presse-papier.")
+        except Exception:
+            QMessageBox.warning(self, "Diagnostic",
+                                "Échec de la copie. Voici le contenu :\n\n" + diag)
+
+
+# ── Reader mode overlay ──────────────────────────────────────────────────
+class ReaderModeOverlay(QFrame):
+    """F9 reader mode — strips chrome, shows article in serif font.
+
+    Content is extracted from the current page via simple JS (article tag,
+    main tag, or fallback to body innerText).
+    """
+
+    summary_requested = pyqtSignal(str)  # emits raw text → AI summarize
+    closed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("readerOverlay")
+        self.setStyleSheet("""
+            QFrame#readerOverlay {
+                background: rgba(20, 24, 33, 0.98);
+            }
+            QFrame#readerInner {
+                background: #1a1f28;
+                border: 1px solid rgba(255,255,255,0.08);
+                border-radius: 10px;
+            }
+            QPushButton#readerClose {
+                background: transparent;
+                color: #9aa0ad;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 5px;
+                padding: 4px 10px;
+                font-size: 12px;
+            }
+            QPushButton#readerClose:hover { color: #ff4d6a; border-color: #ff4d6a; }
+            QPushButton#readerSummary {
+                background: #4d9fff;
+                color: #0a0e14;
+                border: 1px solid #4d9fff;
+                border-radius: 5px;
+                padding: 4px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QTextBrowser#readerBody {
+                background: transparent;
+                color: #e6edf3;
+                border: none;
+                font-family: 'Georgia','Cambria','Times New Roman',serif;
+                font-size: 16px;
+                padding: 24px 32px;
+            }
+            QLabel#readerTitle {
+                color: #e6edf3;
+                font-family: 'Georgia',serif;
+                font-size: 22px;
+                font-weight: 700;
+                padding: 4px 8px;
+            }
+        """)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(40, 40, 40, 40)
+
+        inner = QFrame()
+        inner.setObjectName("readerInner")
+        # Constrain to readable width.
+        inner.setMaximumWidth(820)
+        iv = QVBoxLayout(inner)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(0)
+
+        bar = QFrame()
+        bv = QHBoxLayout(bar)
+        bv.setContentsMargins(12, 10, 12, 10)
+        self.title_lbl = QLabel("Reader mode")
+        self.title_lbl.setObjectName("readerTitle")
+        bv.addWidget(self.title_lbl, 1)
+        self.summary_btn = QPushButton("📝 Résume")
+        self.summary_btn.setObjectName("readerSummary")
+        self.summary_btn.setToolTip("Demande un résumé IA de cet article (Ctrl+J)")
+        self.summary_btn.clicked.connect(self._emit_summary)
+        bv.addWidget(self.summary_btn)
+        close_btn = QPushButton("Fermer")
+        close_btn.setObjectName("readerClose")
+        close_btn.clicked.connect(self.closed.emit)
+        bv.addWidget(close_btn)
+        iv.addWidget(bar)
+
+        self.body = QTextBrowser()
+        self.body.setObjectName("readerBody")
+        self.body.setOpenExternalLinks(True)
+        iv.addWidget(self.body, 1)
+
+        wrap = QHBoxLayout()
+        wrap.addStretch(1)
+        wrap.addWidget(inner, 1)
+        wrap.addStretch(1)
+        outer.addLayout(wrap, 1)
+
+    def show_content(self, title: str, text: str):
+        self.title_lbl.setText(title or "Reader mode")
+        # QTextBrowser handles plain text + paragraphs nicely.
+        self.body.setPlainText(text or "(Pas de contenu extrait.)")
+        self.show()
+        self.raise_()
+
+    def _emit_summary(self):
+        text = self.body.toPlainText()
+        if text:
+            self.summary_requested.emit(text[:6000])
+
+
+# ── Code sandbox QPlainTextEdit fallback (when Monaco HTML missing) ──────
+class CodeSandboxFallback(QWidget):
+    """Minimal QPlainTextEdit + Run button — used when monaco_sandbox.html
+    is missing or QWebEngine fails to load it. Runs JS via QWebEngineView
+    eval, no Pyodide."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(8, 8, 8, 8)
+        v.setSpacing(6)
+
+        toolbar = QHBoxLayout()
+        run_btn = QPushButton("Run JS")
+        run_btn.clicked.connect(self._run)
+        clear_btn = QPushButton("Clear output")
+        clear_btn.clicked.connect(lambda: self.output.clear())
+        toolbar.addWidget(QLabel("Code Sandbox (fallback)"))
+        toolbar.addStretch(1)
+        toolbar.addWidget(run_btn)
+        toolbar.addWidget(clear_btn)
+        v.addLayout(toolbar)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("// JS code here. Click Run JS.")
+        self.editor.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace;")
+        self.editor.setPlainText(
+            "// Argus Code Sandbox (fallback mode).\n"
+            "console.log('Hello from Argus!');\n"
+            "1 + 1\n"
+        )
+        v.addWidget(self.editor, 2)
+
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setStyleSheet("font-family: 'Geist Mono','Consolas',monospace; background: #050709;")
+        v.addWidget(self.output, 1)
+
+        # Hidden web view used as JS evaluator.
+        self._eval_view = QWebEngineView()
+        self._eval_view.setVisible(False)
+        self._eval_view.setHtml("<html><body><script>console.log('eval-ready');</script></body></html>")
+
+    def _run(self):
+        code = self.editor.toPlainText()
+        # Wrap in IIFE that captures console.log, returns the result string.
+        wrapper = (
+            "(function(){var _o=[];var _e=console.log;console.log=function(){"
+            "_o.push(Array.prototype.map.call(arguments,function(a){"
+            "try{return typeof a==='object'?JSON.stringify(a):String(a);}catch(e){return String(a);}"
+            "}).join(' '));};try{var r=eval(" + json.dumps(code) + ");console.log=_e;"
+            "return _o.join('\\n')+(r!==undefined?'\\n→ '+String(r):'');"
+            "}catch(e){console.log=_e;return 'ERROR: '+String(e);}})()"
+        )
+        try:
+            self._eval_view.page().runJavaScript(wrapper, self._on_result)
+        except Exception as e:
+            self.output.appendPlainText(f"[failed to eval] {e}")
+
+    def _on_result(self, result):
+        self.output.appendPlainText(str(result if result is not None else ""))
+
+
+# ── Main window ──────────────────────────────────────────────────────────
+class ArgusBrowser(QMainWindow):
+    # Class-level registry mapping id(self) -> ArgusBrowser. WeakValueDictionary
+    # so a closed window is GC'd and removed automatically; used by the tab DnD
+    # payload to find the source window when a drop / tearoff occurs.
+    _instances: "WeakValueDictionary[int, ArgusBrowser]" = WeakValueDictionary()
+
+    def __init__(self, startup_mode: str = "normal"):
+        super().__init__()
+        self.setWindowTitle("Argus 2.0 — NetGuard Cybersecurity Browser")
+        # Register this window in the global instance registry so cross-window
+        # tab drags can locate the source by id(window).
+        try:
+            ArgusBrowser._instances[id(self)] = self
+        except Exception:
+            pass
+        # Accept tab DnD drops on this window. Per-event filtering happens in
+        # dragEnterEvent / dropEvent based on the strict same-mode policy.
+        try:
+            self.setAcceptDrops(True)
+        except Exception:
+            pass
+
+        # Adapt to actual usable area (excludes Windows taskbar / macOS dock /
+        # Linux WM panels). Without this the window can extend past the
+        # taskbar and clip the bottom dock row.
+        try:
+            screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen is not None else None
+        except Exception:
+            avail = None
+        if avail is not None and avail.width() > 0 and avail.height() > 0:
+            target_w = min(1400, max(960, avail.width() - 40))
+            target_h = min(900, max(640, avail.height() - 40))
+            self.resize(target_w, target_h)
+            self.move(
+                avail.x() + (avail.width() - target_w) // 2,
+                avail.y() + (avail.height() - target_h) // 2,
+            )
+        else:
+            self.resize(1400, 900)
+
+        # Resolve startup_mode against the canonical MODES list. An unknown
+        # value silently falls back to normal so the window always starts in
+        # a valid state (defensive against bad caller input).
+        _valid_mode_ids = {m["id"] for m in MODES}
+        if startup_mode not in _valid_mode_ids:
+            startup_mode = "normal"
+        try:
+            self.mode_idx = next(
+                i for i, m in enumerate(MODES) if m["id"] == startup_mode
+            )
+        except StopIteration:
+            self.mode_idx = 0
+        # Track current mode by name (separate from the cycling index so vault
+        # can be entered/exited without forcing private as an intermediate).
+        self.current_mode: str = startup_mode
+        self.dev_tools_view = None
+        self.dev_tools_container = None
+        self.tab_pages: list[QWebEngineView] = []
+        # Per-tab profile reference so we know which profile a download
+        # came from (and can route the download to the right sandbox path).
+        self.tab_profiles: list[QWebEngineProfile] = []
+        self.favs_mgr = FavoritesManager(FAVS_FILE)
+        self.settings_mgr = SettingsManager(SETTINGS_FILE)
+        self.ai_history_mgr = AIHistoryManager(AI_HISTORY_FILE)
+
+        # Vault auto-switch — set of hosts the user has whitelisted with
+        # "Always". Persisted as JSON in argus_data/vault_auto_switch.json.
+        self._vault_always_hosts: set[str] = self._load_vault_always()
+        # Track which navigation we already showed a banner for (so the
+        # banner doesn't flap during in-page redirects).
+        self._banner_shown_host: str = ""
+
+        # Apply persisted theme BEFORE building UI so widgets pick it up.
+        apply_theme(self.settings_mgr.get("theme") or DEFAULT_THEME)
+
+        # ── Surveillance / arbiter init (best-effort) ──
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_init()
+            except Exception:
+                pass
+        if HAVE_ARBITER:
+            try:
+                arbiter_init("balanced")
+            except Exception:
+                pass
+
+        # ── Profile (persistent — sessions survive restart) ──
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        DOWNLOADS_SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
+        # Default ("normal") profile. Either built via argus_sandbox (preferred,
+        # ships randomized UA + anti-skimmer hardening) or a plain persistent
+        # profile if the sandbox module is missing.
+        if HAVE_SANDBOX:
+            try:
+                self.profile = make_normal_profile()
+                self.profile.setParent(self)
+            except Exception:
+                self.profile = QWebEngineProfile("argus-default", self)
+                self._configure_basic_profile(
+                    self.profile,
+                    storage=str(DATA_DIR / "normal"),
+                    cache=str(CACHE_DIR / "normal"),
+                )
+        else:
+            self.profile = QWebEngineProfile("argus-default", self)
+            self._configure_basic_profile(
+                self.profile,
+                storage=str(DATA_DIR / "normal"),
+                cache=str(CACHE_DIR / "normal"),
+            )
+        # Anti-skimmer hardening + form-submit hook installed on the default
+        # profile (re-applied per-profile in _build_profile_for_mode).
+        self._install_profile_scripts(self.profile)
+        self._wire_profile_downloads(self.profile)
+
+        self.feed_signal = FeedSignal()
+        self.feed_signal.new_request.connect(self._on_request)
+        self.interceptor = RequestInterceptor(self.feed_signal)
+        self.profile.setUrlRequestInterceptor(self.interceptor)
+
+        # Cached pristine private/vault profiles. Built lazily on first use
+        # so cold start stays fast (vault profile randomizes UA which is OK
+        # to defer).
+        self._mode_profiles: dict[str, QWebEngineProfile] = {"normal": self.profile}
+
+        # ── Layout ──
+        root = QWidget()
+        root.setObjectName("root")
+        self.root = root
+        self.setCentralWidget(root)
+        v = QVBoxLayout(root)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # Menu bar — File / Help (kept minimal so we don't shadow the existing
+        # dock-driven UI, but lets users discover About + new actions).
+        self._build_menu_bar()
+
+        self.feed = LiveFeed()
+        self.feed.version_clicked.connect(self._open_about)
+        v.addWidget(self.feed)
+
+        # Top URL strip (optional) — shows current URL + a spinner on the right
+        self.top_url_strip = QFrame()
+        self.top_url_strip.setObjectName("topUrlStrip")
+        self.top_url_strip.setFixedHeight(26)
+        tu_layout = QHBoxLayout(self.top_url_strip)
+        tu_layout.setContentsMargins(14, 2, 8, 2)
+        tu_layout.setSpacing(6)
+        self.top_url_text = QLabel("https://duckduckgo.com")
+        self.top_url_text.setObjectName("topUrlText")
+        self.top_url_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.top_spinner = Spinner("topSpinner")
+        tu_layout.addWidget(self.top_url_text, 1)
+        tu_layout.addWidget(self.top_spinner)
+        v.addWidget(self.top_url_strip)
+
+        self.tab_bar = TabBar()
+        self.tab_bar.tab_clicked.connect(self._on_tab_clicked)
+        self.tab_bar.tab_close_requested.connect(self._on_tab_close)
+        self.tab_bar.new_tab_requested.connect(lambda: self._open_new_tab(HOME_URL))
+        v.addWidget(self.tab_bar)
+
+        # Main area = vault banner + pages_stack + AI side panel
+        # The banner stacks above the page area (but below the tab bar) so
+        # users see it without it hijacking focus.
+        main_area = QWidget()
+        ma_layout = QHBoxLayout(main_area)
+        ma_layout.setContentsMargins(0, 0, 0, 0)
+        ma_layout.setSpacing(0)
+        page_column = QWidget()
+        page_v = QVBoxLayout(page_column)
+        page_v.setContentsMargins(0, 0, 0, 0)
+        page_v.setSpacing(0)
+        self.vault_banner = VaultBanner(parent=page_column)
+        self.vault_banner.switch_requested.connect(self._on_banner_switch)
+        self.vault_banner.always_requested.connect(self._on_banner_always)
+        page_v.addWidget(self.vault_banner)
+        self.pages_stack = QStackedWidget()
+        page_v.addWidget(self.pages_stack, 1)
+        ma_layout.addWidget(page_column, 1)
+        self.ai_panel = AIPanel(self.ai_history_mgr)
+        self.ai_panel.set_page_provider(self._current_page_info_for_ai)
+        # Slash-command bridges: /selection runs JS in the page; /screenshot
+        # snapshots the QWebEngineView via QWidget.grab().
+        self.ai_panel.set_selection_provider(self._ai_get_selection_async)
+        self.ai_panel.set_screenshot_provider(self._ai_get_screenshot_data_uri)
+        ma_layout.addWidget(self.ai_panel)
+        v.addWidget(main_area, 1)
+
+        self.dev_tools_container = QWidget()
+        self.dev_tools_container.setVisible(False)
+        self.dev_tools_container.setMinimumHeight(200)
+        QVBoxLayout(self.dev_tools_container).setContentsMargins(0, 0, 0, 0)
+        v.addWidget(self.dev_tools_container)
+
+        v.addWidget(self._build_dock())
+
+        self._build_overlays()
+        # Theme is applied app-wide via apply_theme() — no per-window stylesheet.
+        self._apply_mode()
+
+        # First tab
+        self._open_new_tab(HOME_URL)
+
+        # Apply persisted display settings
+        self._apply_display_settings()
+
+        # Hotkeys
+        QShortcut(QKeySequence("F12"), self, activated=self._toggle_devtools)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=lambda: self.search.setFocus())
+        QShortcut(QKeySequence("Ctrl+R"), self, activated=lambda: self._current_page() and self._current_page().reload())
+        QShortcut(QKeySequence("F5"), self, activated=lambda: self._current_page() and self._current_page().reload())
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self._current_page() and self._current_page().back())
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self._current_page() and self._current_page().forward())
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=lambda: self._open_new_tab(HOME_URL))
+        QShortcut(QKeySequence("Ctrl+W"), self, activated=lambda: self._on_tab_close(self.pages_stack.currentIndex()))
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self._toggle_favorite_current)
+        QShortcut(QKeySequence("Ctrl+,"), self, activated=self._open_settings)
+        QShortcut(QKeySequence("Ctrl+J"), self, activated=self._toggle_ai_panel)
+        QShortcut(QKeySequence("Ctrl+P"), self, activated=self._print_current_page)
+        # New hotkeys (V3 polish pass)
+        QShortcut(QKeySequence("Ctrl+K"), self, activated=self._open_quick_switcher)
+        QShortcut(QKeySequence("F9"), self, activated=self._toggle_reader_mode)
+        QShortcut(QKeySequence("Ctrl+Shift+N"), self, activated=self._open_code_sandbox_tab)
+
+        # Reader mode overlay (lazily shown). Parented to the page column so
+        # it covers content but not the dock / tab bar.
+        self.reader_overlay = ReaderModeOverlay(parent=root)
+        self.reader_overlay.hide()
+        self.reader_overlay.closed.connect(self._close_reader_mode)
+        self.reader_overlay.summary_requested.connect(self._summarize_in_ai_panel)
+
+        # Restore AI panel state (persisted across sessions)
+        if bool(self.settings_mgr.get("ai_panel_open")):
+            QTimer.singleShot(50, self.ai_panel.expand)
+
+        # Background update check (best-effort, non-blocking via QTimer).
+        if HAVE_UPDATER:
+            QTimer.singleShot(2500, self._check_for_update_async)
+
+    # ── Build helpers ─────────────────────────────────────────
+    def _build_dock(self) -> QFrame:
+        dock = QFrame()
+        dock.setObjectName("dock")
+        # 156px = 52 per row, enough for emoji buttons (🛡 🤖 ✂ ⚙) which
+        # need ~40px content height (ascender+descender) after margins.
+        # Was 120 = 40/row = clipped row3 (user reported "on perd des icon
+        # en bas" on 2026-04-29 with screenshot showing partial bottom row).
+        dock.setFixedHeight(156)
+        v = QVBoxLayout(dock)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        # Row 1 — HTTPS / URL
+        row1 = QFrame()
+        row1.setProperty("class", "dockRow")
+        row1.setProperty("first", True)
+        h1 = QHBoxLayout(row1)
+        h1.setContentsMargins(14, 6, 14, 6)
+        self.lock_label = QLabel("🔒")
+        self.lock_label.setProperty("class", "lock")
+        self.url_display = QLabel("https://duckduckgo.com")
+        self.url_display.setObjectName("urlDisplay")
+        self.url_display.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        info_btn = QPushButton("ⓘ")
+        info_btn.setProperty("class", "dockBtn")
+        info_btn.setToolTip("Cert details / JA3 / IP server")
+        # Spinner — animates while a page is loading, sits on the right of the URL bar
+        self.bottom_spinner = Spinner("spinner")
+        gear_btn = QPushButton("⚙")
+        gear_btn.setProperty("class", "dockBtn")
+        gear_btn.setToolTip("Page settings")
+        h1.addWidget(self.lock_label)
+        h1.addWidget(self.url_display, 1)
+        h1.addWidget(self.bottom_spinner)
+        h1.addWidget(info_btn)
+        h1.addWidget(gear_btn)
+        self.row_https = row1
+
+        # Row 2 — Engine + Search + ★ favorite button
+        row2 = QFrame()
+        row2.setProperty("class", "dockRow")
+        h2 = QHBoxLayout(row2)
+        h2.setContentsMargins(14, 6, 14, 6)
+        h2.setSpacing(8)
+        self.engine = QComboBox()
+        self.engine.setObjectName("engineSelect")
+        for name, _ in SEARCH_ENGINES:
+            self.engine.addItem(name)
+        self.search = QLineEdit()
+        self.search.setObjectName("searchBar")
+        self.search.setPlaceholderText("Recherche, URL, IP, ou >commande   (Ctrl+L)")
+        self.search.returnPressed.connect(self._on_search)
+        # NEW: star button to add current page to favorites
+        self.star_btn = QPushButton("☆")
+        self.star_btn.setObjectName("starBtn")
+        self.star_btn.setProperty("class", "dockBtn")
+        self.star_btn.setToolTip("Ajouter aux favoris (Ctrl+D)")
+        self.star_btn.clicked.connect(self._toggle_favorite_current)
+        h2.addWidget(self.engine)
+        h2.addWidget(self.search, 1)
+        h2.addWidget(self.star_btn)
+        self.row_search = row2
+
+        # Row 3 — Settings + Favs (dynamic) + F12 + New Tab
+        row3 = QFrame()
+        row3.setProperty("class", "dockRow")
+        h3 = QHBoxLayout(row3)
+        h3.setContentsMargins(14, 6, 14, 6)
+        h3.setSpacing(6)
+        settings_btn = QPushButton("⚙")
+        settings_btn.setProperty("class", "dockBtn")
+        settings_btn.setToolTip("Settings (Ctrl+,)")
+        settings_btn.clicked.connect(self._open_settings)
+
+        self.favs_bar = QFrame()
+        self.favs_bar.setObjectName("favsBar")
+        self.favs_layout = QHBoxLayout(self.favs_bar)
+        self.favs_layout.setContentsMargins(4, 2, 4, 2)
+        self.favs_layout.setSpacing(2)
+        self.favs_bar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._render_favs()
+
+        # Mode toggle button (Normal / Privé / Coffre) — moved from floating top-center to here
+        self.mode_btn = QPushButton(f"{MODES[0]['icon']}  {MODES[0]['text']}")
+        self.mode_btn.setObjectName("modeBtn")
+        self.mode_btn.setProperty("mode", "normal")
+        self.mode_btn.setToolTip("Click pour changer mode (Normal / Privé / Coffre)")
+        self.mode_btn.clicked.connect(self._cycle_mode)
+
+        # NetGuard backend status button (replaces the F12 button — F12 key still works)
+        self.ng_btn = QPushButton("🛡  NetGuard")
+        self.ng_btn.setObjectName("ngBtn")
+        self.ng_btn.setProperty("status", "down")
+        self.ng_btn.setToolTip("Backend NetGuard — click pour lancer / voir état")
+        self.ng_btn.clicked.connect(self._toggle_netguard)
+
+        # vinom-snip launcher (✂) — sibling repo at ../vinom-snip/
+        self.snip_btn = QPushButton("✂")
+        self.snip_btn.setObjectName("ngBtn")  # reuse ngBtn style for visual match
+        self.snip_btn.setToolTip("Lancer vinom-snip (capture+annotation)")
+        self.snip_btn.clicked.connect(self._launch_vinom_snip)
+
+        # AI side panel toggle (Ctrl+J)
+        self.ai_btn = QPushButton("🤖")
+        self.ai_btn.setObjectName("aiBtn")
+        self.ai_btn.setProperty("open", False)
+        self.ai_btn.setToolTip("Panneau IA (Ctrl+J)")
+        self.ai_btn.clicked.connect(self._toggle_ai_panel)
+
+        new_tab_btn = QPushButton("+")
+        new_tab_btn.setProperty("class", "dockBtn")
+        new_tab_btn.setProperty("primary", True)
+        new_tab_btn.setToolTip("Nouveau tab (Ctrl+T)")
+        new_tab_btn.clicked.connect(lambda: self._open_new_tab(HOME_URL))
+
+        h3.addWidget(settings_btn)
+        h3.addWidget(self.favs_bar, 1)
+        h3.addWidget(self.mode_btn)
+        h3.addWidget(self.ng_btn)
+        h3.addWidget(self.snip_btn)
+        h3.addWidget(self.ai_btn)
+        h3.addWidget(new_tab_btn)
+        self.row_actions = row3
+
+        v.addWidget(row1); v.addWidget(row2); v.addWidget(row3)
+        return dock
+
+    def _render_favs(self):
+        # Clear existing
+        while self.favs_layout.count():
+            it = self.favs_layout.takeAt(0)
+            if it.widget():
+                it.widget().deleteLater()
+        # Add favorites
+        for fav in self.favs_mgr.favorites:
+            b = QPushButton(fav.get("label", "★"))
+            b.setProperty("class", "fav")
+            b.setProperty("broken", fav.get("broken", False))
+            b.setToolTip(f"{fav.get('title', '')} — {fav['url']}\nRight-click: remove")
+            url = fav["url"]
+            b.clicked.connect(lambda _, u=url: self._navigate(u))
+            b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _pos, u=url, btn=b: self._fav_context_menu(u, btn))
+            self.favs_layout.addWidget(b)
+        self.favs_layout.addStretch(1)
+
+    def _fav_context_menu(self, url: str, btn: QPushButton):
+        m = QMenu(self)
+        rem = m.addAction("Supprimer ce favori")
+        rem.triggered.connect(lambda: (self.favs_mgr.remove(url), self._render_favs(), self._update_star_btn()))
+        m.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    def _build_overlays(self):
+        # Periodic NetGuard health check (NetGuard + mode buttons live in dock row 3)
+        self.ng_check_timer = QTimer(self)
+        self.ng_check_timer.timeout.connect(self._check_netguard_status)
+        self.ng_check_timer.start(5000)  # every 5s
+        QTimer.singleShot(500, self._check_netguard_status)  # initial check soon after start
+
+    # ── Tab management ────────────────────────────────────────
+    def _open_new_tab(self, url: str = "about:blank"):
+        # Tabs are bound to the current mode's profile so privé/coffre
+        # switching is observable per-tab. Switching mode replaces a tab's
+        # view with a fresh one bound to the target profile (see _set_mode).
+        profile = self._mode_profile_for(self.current_mode)
+        view = self._create_view_for_profile(profile)
+        view.setUrl(QUrl(url))
+        self.tab_pages.append(view)
+        self.tab_profiles.append(profile)
+        idx = self.pages_stack.addWidget(view)
+        self.tab_bar.add_tab(idx, "Loading…", mode=self.current_mode)
+        self._switch_to_tab(len(self.tab_pages) - 1)
+
+    def _create_view_for_profile(self, profile: QWebEngineProfile) -> QWebEngineView:
+        """Build a QWebEngineView wired to ``profile`` and our hooks.
+
+        Uses :class:`ArgusWebPage` so console-message form-submit beacons
+        and createWindow popup intercepts route back to this owner.
+        """
+        view = QWebEngineView()
+        page = ArgusWebPage(profile, view)
+        page.set_owner(self)
+        view.setPage(page)
+        view.urlChanged.connect(lambda u, v=view: self._on_view_url_changed(v, u))
+        view.titleChanged.connect(lambda t, v=view: self._on_view_title_changed(v, t))
+        view.loadStarted.connect(lambda v=view: self._on_load_started(v))
+        view.loadFinished.connect(lambda _ok, v=view: self._on_load_finished(v))
+        return view
+
+    def _on_tab_clicked(self, idx: int):
+        if 0 <= idx < len(self.tab_pages):
+            self._switch_to_tab(idx)
+
+    def _on_tab_close(self, idx: int):
+        if not (0 <= idx < len(self.tab_pages)):
+            return
+        view = self.tab_pages.pop(idx)
+        if 0 <= idx < len(self.tab_profiles):
+            self.tab_profiles.pop(idx)
+        self.pages_stack.removeWidget(view)
+        view.deleteLater()
+        self.tab_bar.remove_tab(idx)
+        if not self.tab_pages:
+            self._open_new_tab(HOME_URL)
+        else:
+            new_idx = min(idx, len(self.tab_pages) - 1)
+            self._switch_to_tab(new_idx)
+
+    def _switch_to_tab(self, idx: int):
+        if not (0 <= idx < len(self.tab_pages)):
+            return
+        self.pages_stack.setCurrentIndex(idx)
+        self.tab_bar.set_active(idx)
+        view = self.tab_pages[idx]
+        self._sync_url_display(view.url().toString())
+        # Sync spinner state (tab still loading?)
+        try:
+            loading = view.page().isLoading() if hasattr(view.page(), "isLoading") else False
+        except Exception:
+            loading = False
+        self._set_spinning(loading)
+
+    # ── Inter-window tab DnD (receiver side) ─────────────────────
+    def _decode_tab_drag_payload(self, event) -> dict | None:
+        """Return the parsed payload dict if the event carries an Argus tab,
+        else ``None``. Wraps json/utf-8 decoding so dragMoveEvent / dropEvent
+        can call this cheaply for every event without try/except boilerplate.
+        """
+        try:
+            mime = event.mimeData()
+            if not mime.hasFormat(ARGUS_TAB_MIME):
+                return None
+            raw = bytes(mime.data(ARGUS_TAB_MIME))
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return None
+
+    def dragEnterEvent(self, event):
+        """Accept tab drags only when source mode == this window's mode.
+
+        On a refused drop we surface a transient warning in the live feed
+        so the user understands why nothing happened.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dragEnterEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            if _can_accept_drop(src_mode, self.current_mode):
+                event.acceptProposedAction()
+            else:
+                # Don't accept the proposed action; let the drag move on.
+                # We don't log here yet (event may still find another window
+                # that accepts) — the warning fires on dropEvent.
+                event.ignore()
+        except Exception:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        """Same accept logic as dragEnterEvent — needed for the drop indicator
+        to remain visible while moving across the window.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dragMoveEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            if _can_accept_drop(src_mode, self.current_mode):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+        except Exception:
+            event.ignore()
+
+    def dropEvent(self, event):
+        """Receive a tab from another Argus window (or this same window).
+
+        Strict same-mode policy (already enforced in dragEnterEvent, but we
+        re-check here in case the policy changes mid-drag — defense in depth).
+        On accept, extract the tab from the source and import into self.
+        On reject, fire a brief warning in the SOURCE window's live feed so
+        the user gets feedback even if the cursor isn't over the source.
+        """
+        try:
+            payload = self._decode_tab_drag_payload(event)
+            if payload is None:
+                return super().dropEvent(event)
+            src_mode = str(payload.get("mode") or "")
+            try:
+                src_id = int(payload.get("source_window_id"))
+            except Exception:
+                src_id = None
+            src = None
+            if src_id is not None:
+                try:
+                    src = ArgusBrowser._instances.get(src_id)
+                except Exception:
+                    src = None
+            if not _can_accept_drop(src_mode, self.current_mode):
+                # Surface the refusal in the SOURCE window's feed (so user
+                # sees it where the drag started). Fall back to self if the
+                # source is gone.
+                feeder = src if src is not None else self
+                try:
+                    feeder._set_live_feed_arbiter_decision(
+                        "warn",
+                        "Cross-mode drag bloqué",
+                        reason=f"{src_mode} -> {self.current_mode}",
+                    )
+                except Exception:
+                    pass
+                event.ignore()
+                return
+            # Same-mode merge: extract from source, import into self.
+            if src is None:
+                event.ignore()
+                return
+            try:
+                tab_idx = int(payload.get("tab_idx", -1))
+            except Exception:
+                tab_idx = -1
+            if not (0 <= tab_idx < len(src.tab_pages)):
+                event.ignore()
+                return
+            try:
+                view, profile, title = src._extract_tab(tab_idx)
+                self._import_tab(view, profile, title, src_mode)
+                event.acceptProposedAction()
+            except Exception:
+                event.ignore()
+        except Exception:
+            try:
+                event.ignore()
+            except Exception:
+                pass
+
+    def _extract_tab(self, idx: int):
+        """Detach the tab at ``idx`` from this window without destroying it.
+
+        Returns a (view, profile, title) tuple. The view is removed from
+        ``pages_stack``, ``tab_pages``, ``tab_profiles``, and the tab bar
+        UI but kept alive (no deleteLater) so the new owner can re-parent
+        it. If this leaves the window with zero tabs we open a placeholder
+        HOME_URL tab — the window stays open per the spec.
+        """
+        if not (0 <= idx < len(self.tab_pages)):
+            raise IndexError(f"tab idx {idx} out of range (have {len(self.tab_pages)})")
+        view = self.tab_pages.pop(idx)
+        profile = None
+        if 0 <= idx < len(self.tab_profiles):
+            profile = self.tab_profiles.pop(idx)
+        # Capture the title from the active tab button BEFORE we remove it.
+        title = ""
+        try:
+            if 0 <= idx < len(self.tab_bar.tab_buttons):
+                btn = self.tab_bar.tab_buttons[idx]
+                # toolTip holds the un-truncated title; text() is truncated.
+                title = btn.toolTip() or btn.text() or ""
+        except Exception:
+            title = ""
+        if not title:
+            try:
+                title = view.title() or view.url().toString() or "Tab"
+            except Exception:
+                title = "Tab"
+        try:
+            self.pages_stack.removeWidget(view)
+        except Exception:
+            pass
+        # Detach view from this window so re-parenting is clean.
+        try:
+            view.setParent(None)
+        except Exception:
+            pass
+        try:
+            self.tab_bar.remove_tab(idx)
+        except Exception:
+            pass
+        # If we just emptied the window, open a placeholder so it stays
+        # usable (per spec: "leave window as-is with placeholder, do NOT close").
+        if not self.tab_pages:
+            try:
+                self._open_new_tab(HOME_URL)
+            except Exception:
+                pass
+        else:
+            # Activate a sensible neighbour so the user doesn't see a dead
+            # gap where the dragged tab was.
+            try:
+                new_idx = min(idx, len(self.tab_pages) - 1)
+                if new_idx >= 0:
+                    self._switch_to_tab(new_idx)
+            except Exception:
+                pass
+        return view, profile, title
+
+    def _import_tab(self, view, profile, title: str, mode: str) -> int:
+        """Re-parent ``view`` into this window's tab strip and activate it.
+
+        Used by both cross-window merges (dropEvent) and tearoffs
+        (`_tearoff_at_cursor`). Returns the new tab's index.
+        """
+        # Re-parent the view into our pages stack.
+        try:
+            view.setParent(self.pages_stack)
+        except Exception:
+            pass
+        # Re-wire the per-view signals to THIS window. The signals from the
+        # old window were captured in lambdas that close over the source
+        # ArgusBrowser; we connect new lambdas that route to self.
+        try:
+            view.urlChanged.connect(lambda u, v=view: self._on_view_url_changed(v, u))
+        except Exception:
+            pass
+        try:
+            view.titleChanged.connect(lambda t, v=view: self._on_view_title_changed(v, t))
+        except Exception:
+            pass
+        try:
+            view.loadStarted.connect(lambda v=view: self._on_load_started(v))
+        except Exception:
+            pass
+        try:
+            view.loadFinished.connect(lambda _ok, v=view: self._on_load_finished(v))
+        except Exception:
+            pass
+        # Re-route the page's owner to self so popup createWindow + form
+        # beacons land in THIS window's handlers.
+        try:
+            page = view.page()
+            if hasattr(page, "set_owner"):
+                page.set_owner(self)
+        except Exception:
+            pass
+        # Stash and add to UI.
+        self.tab_pages.append(view)
+        self.tab_profiles.append(profile)
+        try:
+            new_idx = self.pages_stack.addWidget(view)
+        except Exception:
+            new_idx = len(self.tab_pages) - 1
+        try:
+            self.tab_bar.add_tab(new_idx, title or "Loading…", mode=mode)
+        except Exception:
+            pass
+        try:
+            self._switch_to_tab(len(self.tab_pages) - 1)
+        except Exception:
+            pass
+        return len(self.tab_pages) - 1
+
+    def _current_view(self) -> QWebEngineView | None:
+        idx = self.pages_stack.currentIndex()
+        if 0 <= idx < len(self.tab_pages):
+            return self.tab_pages[idx]
+        return None
+
+    def _current_page(self) -> QWebEngineView | None:
+        return self._current_view()
+
+    # ── Event handlers ────────────────────────────────────────
+    def _on_view_url_changed(self, view: QWebEngineView, url: QUrl):
+        url_str = url.toString()
+        if view is self._current_view():
+            self._sync_url_display(url_str)
+            # Surveillance hook: log every navigation in the active tab.
+            if HAVE_SURVEILLANCE and url_str and not url_str.startswith("about:"):
+                try:
+                    surveil_log_event("navigation", {"url": url_str, "mode": self.current_mode})
+                except Exception:
+                    pass
+            # Auto-vault detection on navigation.
+            self._maybe_show_vault_banner(url_str)
+
+    def _on_view_title_changed(self, view: QWebEngineView, title: str):
+        try:
+            idx = self.tab_pages.index(view)
+            self.tab_bar.update_tab(idx, title=title or "Loading…")
+        except ValueError:
+            pass
+        if view is self._current_view() and title:
+            self.setWindowTitle(f"Argus — {title}")
+
+    def _sync_url_display(self, url_str: str):
+        self.url_display.setText(url_str)
+        if hasattr(self, "top_url_text"):
+            self.top_url_text.setText(url_str)
+        if url_str.startswith("https://"):
+            self.lock_label.setText("🔒")
+            self.lock_label.setProperty("level", "ok")
+        elif url_str.startswith("http://"):
+            self.lock_label.setText("⚠")
+            self.lock_label.setProperty("level", "warn")
+        else:
+            self.lock_label.setText("·")
+            self.lock_label.setProperty("level", "ok")
+        self.lock_label.style().unpolish(self.lock_label)
+        self.lock_label.style().polish(self.lock_label)
+        self._update_star_btn()
+
+    def _on_load_started(self, view):
+        if view is self._current_view():
+            self._set_spinning(True)
+
+    def _on_load_finished(self, view):
+        if view is self._current_view():
+            self._set_spinning(False)
+
+    def _set_spinning(self, on: bool):
+        if not hasattr(self, "bottom_spinner"):
+            return
+        if on:
+            self.bottom_spinner.start()
+            if hasattr(self, "top_spinner"):
+                self.top_spinner.start()
+        else:
+            self.bottom_spinner.stop()
+            if hasattr(self, "top_spinner"):
+                self.top_spinner.stop()
+
+    def _on_request(self, method: str, url: str):
+        kind = "info"
+        if url.startswith("https://"):
+            kind = "ok"
+        elif url.startswith("http://"):
+            kind = "warn"
+        bad_keywords = ["tracker", "doubleclick", "facebook.com/tr", "google-analytics"]
+        if any(k in url for k in bad_keywords):
+            kind = "warn"
+        self.feed.push(kind, method, url, "—", "")
+
+    def _on_search(self):
+        q = self.search.text().strip()
+        if not q:
+            return
+        if q.startswith(("http://", "https://")):
+            self._navigate(q)
+        elif "." in q and " " not in q and not q.startswith(">"):
+            self._navigate("https://" + q)
+        else:
+            engine_idx = self.engine.currentIndex()
+            template = SEARCH_ENGINES[engine_idx][1]
+            self._navigate(template.format(q=quote(q)))
+        self.search.clear()
+
+    def _navigate(self, url: str):
+        view = self._current_view()
+        if view:
+            view.setUrl(QUrl(url))
+        else:
+            self._open_new_tab(url)
+
+    # ── Favorites ─────────────────────────────────────────────
+    def _toggle_favorite_current(self):
+        view = self._current_view()
+        if not view:
+            return
+        url = view.url().toString()
+        if not url or url.startswith("about:"):
+            return
+        if self.favs_mgr.has(url):
+            self.favs_mgr.remove(url)
+        else:
+            self.favs_mgr.add(url, view.title() or url)
+        self._render_favs()
+        self._update_star_btn()
+
+    def _update_star_btn(self):
+        view = self._current_view()
+        if not view:
+            return
+        url = view.url().toString()
+        saved = self.favs_mgr.has(url)
+        self.star_btn.setText("★" if saved else "☆")
+        self.star_btn.setProperty("saved", saved)
+        self.star_btn.style().unpolish(self.star_btn)
+        self.star_btn.style().polish(self.star_btn)
+
+    # ── DevTools / Mode ───────────────────────────────────────
+    def _toggle_devtools(self):
+        if not self.dev_tools_container.isVisible():
+            view = self._current_view()
+            if view is None:
+                return
+            if self.dev_tools_view is None:
+                self.dev_tools_view = QWebEngineView()
+                page = QWebEnginePage(self.profile, self.dev_tools_view)
+                self.dev_tools_view.setPage(page)
+                self.dev_tools_container.layout().addWidget(self.dev_tools_view)
+            view.page().setDevToolsPage(self.dev_tools_view.page())
+            self.dev_tools_container.setVisible(True)
+        else:
+            self.dev_tools_container.setVisible(False)
+
+    def _cycle_mode(self):
+        # Move forward through normal -> private -> vault -> normal …
+        next_idx = (self.mode_idx + 1) % len(MODES)
+        target_id = MODES[next_idx]["id"]
+        self._set_mode(target_id, source="cycle")
+
+    def _set_mode(self, target_id: str, source: str = "user"):
+        """Switch to ``target_id`` (one of normal/private/vault) with full
+        confirmation + 2FA gating + profile swap on the active tab.
+
+        ``source`` is recorded in surveillance for auditability.
+        """
+        old_id = self.current_mode
+        if old_id == target_id:
+            return
+
+        # ── Confirmation ─────────────────────────────────────
+        # Switching INTO vault is a privileged action — confirm + 2FA.
+        if target_id == "vault":
+            if not self._enter_vault_mode_gate():
+                # Aborted (2FA refused, arbiter blocked, etc.). Stay put.
+                return
+        elif target_id == "private":
+            ans = QMessageBox.question(
+                self, "Argus — mode Privé",
+                "Activer le mode Privé ?\n\n"
+                "Le tab actif sera rechargé dans un profil éphémère "
+                "(cookies + cache effacés à la fermeture).",
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+        elif target_id == "normal" and old_id in ("private", "vault"):
+            # Going back to normal — informational confirm.
+            ans = QMessageBox.question(
+                self, "Argus — retour mode Normal",
+                "Retourner en mode Normal ?\n\n"
+                "Le tab actif sera rechargé dans le profil persistant.",
+            )
+            if ans != QMessageBox.StandardButton.Yes:
+                return
+
+        # ── Apply ────────────────────────────────────────────
+        self.current_mode = target_id
+        try:
+            self.mode_idx = next(i for i, m in enumerate(MODES) if m["id"] == target_id)
+        except StopIteration:
+            self.mode_idx = 0
+
+        # Surveillance audit trail.
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("mode_switch", {
+                    "from": old_id, "to": target_id, "source": source,
+                })
+            except Exception:
+                pass
+
+        # Recreate the active tab's view bound to the new profile so
+        # new requests use the right cookie jar / cache. Keep URL.
+        idx = self.pages_stack.currentIndex()
+        if 0 <= idx < len(self.tab_pages):
+            old_view = self.tab_pages[idx]
+            current_url = old_view.url().toString() or "about:blank"
+            new_profile = self._mode_profile_for(target_id, current_url=current_url)
+            new_view = self._create_view_for_profile(new_profile)
+            new_view.setUrl(QUrl(current_url))
+            # Swap into the stack at the same index.
+            self.pages_stack.removeWidget(old_view)
+            self.pages_stack.insertWidget(idx, new_view)
+            self.tab_pages[idx] = new_view
+            if 0 <= idx < len(self.tab_profiles):
+                self.tab_profiles[idx] = new_profile
+            else:
+                self.tab_profiles.append(new_profile)
+            old_view.deleteLater()
+            self.pages_stack.setCurrentIndex(idx)
+            self.tab_bar.set_active(idx)
+
+        self._apply_mode()
+        self._set_live_feed_arbiter_decision(
+            "info", f"Mode → {target_id.upper()}", reason=f"source={source}"
+        )
+
+    def _apply_mode(self):
+        """Apply visual chrome (button + window border + window icon) for current_mode.
+
+        Does NOT recreate tabs — that's done in _set_mode. Safe to call
+        from __init__ before any tabs exist.
+        """
+        m = MODES[self.mode_idx]
+        if hasattr(self, "mode_btn"):
+            self.mode_btn.setText(f"{m['icon']}  {m['text']}")
+            self.mode_btn.setProperty("mode", m["id"])
+            self.mode_btn.style().unpolish(self.mode_btn); self.mode_btn.style().polish(self.mode_btn)
+        self.root.setProperty("mode", m["id"])
+        self.root.style().unpolish(self.root); self.root.style().polish(self.root)
+        # Update active tab's mode for the bar
+        idx = self.pages_stack.currentIndex()
+        if idx >= 0:
+            self.tab_bar.update_tab(idx, mode=m["id"])
+
+        # Mode-specific window icon — iris colour tracks active mode
+        # (blue Normal / deep-blue Privé / gold Coffre).
+        _icon_map = {
+            "normal":  "argus_normal.ico",
+            "private": "argus_private.ico",
+            "vault":   "argus_vault.ico",
+        }
+        _icon_file = (
+            Path(__file__).resolve().parent / "branding" / "argus"
+            / _icon_map.get(self.current_mode, "argus_normal.ico")
+        )
+        if _icon_file.exists():
+            self.setWindowIcon(QIcon(str(_icon_file)))
+
+    def _enter_vault_mode_gate(self) -> bool:
+        """Privileged-mode gate. Returns True if user passes all checks.
+
+        Sequence:
+            1. Show TOTP setup wizard if not already configured.
+            2. Run TOTP challenge.
+            3. Ask the arbiter to bless the action (advisory).
+        """
+        if HAVE_2FA:
+            try:
+                if not two_fa_is_setup():
+                    QMessageBox.information(
+                        self, "Argus — mode Coffre",
+                        "Le mode Coffre nécessite un second facteur (TOTP). "
+                        "On va d'abord configurer un nouveau secret.",
+                    )
+                    try:
+                        ok = bool(two_fa_setup_wizard(self))
+                    except Exception as e:
+                        QMessageBox.critical(self, "Argus — 2FA",
+                                             f"Échec configuration 2FA :\n{e}")
+                        return False
+                    if not ok:
+                        return False
+                try:
+                    challenge_ok = bool(two_fa_challenge(self))
+                except Exception as e:
+                    QMessageBox.critical(self, "Argus — 2FA",
+                                         f"Échec challenge 2FA :\n{e}")
+                    return False
+                if not challenge_ok:
+                    QMessageBox.warning(self, "Argus — 2FA",
+                                        "Code TOTP refusé. Mode Coffre annulé.")
+                    return False
+            except Exception:
+                # Defensive: if 2FA is broken, don't silently downgrade
+                # security. Refuse to enter vault mode.
+                QMessageBox.critical(self, "Argus — 2FA",
+                                     "Erreur 2FA imprévue. Mode Coffre annulé.")
+                return False
+        else:
+            # Module missing — surface a degraded warning but allow entry
+            # (the brief asks for graceful degradation).
+            QMessageBox.warning(
+                self, "Argus — 2FA indisponible",
+                "Le module argus_2fa est manquant. Le mode Coffre sera "
+                "activé sans second facteur.",
+            )
+
+        # Arbiter advisory check on vault entry.
+        if HAVE_ARBITER:
+            try:
+                view = self._current_view()
+                cur = view.url().toString() if view is not None else ""
+                decision = arbiter_decide("vault_mode_entry",
+                                           {"current_url": cur},
+                                           mode=self.current_mode)
+                if decision is not None and getattr(decision, "verdict", "allow") == "block":
+                    QMessageBox.critical(
+                        self, "Argus — bloqué",
+                        f"L'arbitre Argus a bloqué l'entrée Coffre :\n"
+                        f"{getattr(decision, 'reason', 'unspecified')}",
+                    )
+                    return False
+            except Exception:
+                # Best-effort: arbiter failure shouldn't block legitimate
+                # vault entry.
+                pass
+        return True
+
+    # ── Settings dialog ───────────────────────────────────────
+    def _open_settings(self):
+        # Dialog inherits the active app-wide theme; no per-widget stylesheet override.
+        dlg = SettingsDialog(self.settings_mgr, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_display_settings()
+        # Either way, ensure the active theme is the persisted one
+        # (covers both Save and Cancel paths).
+        apply_theme(self.settings_mgr.get("theme") or DEFAULT_THEME)
+
+    # ── AI panel ──────────────────────────────────────────────
+    def _toggle_ai_panel(self):
+        if self.ai_panel.is_open:
+            self.ai_panel.collapse()
+        else:
+            self.ai_panel.expand()
+        # Reflect state in the dock button + persist preference.
+        self.ai_btn.setProperty("open", self.ai_panel.is_open)
+        self.ai_btn.style().unpolish(self.ai_btn)
+        self.ai_btn.style().polish(self.ai_btn)
+        self.settings_mgr.set("ai_panel_open", self.ai_panel.is_open)
+
+    def _current_page_info_for_ai(self) -> tuple[str, "QWebEngineView | None"]:
+        """Provide (url, view) for AIPanel context capture."""
+        view = self._current_view()
+        if view is None:
+            return ("", None)
+        return (view.url().toString(), view)
+
+    def _ai_get_selection_async(self, callback):
+        """Resolve the current page text selection asynchronously. Used by
+        the AI panel's ``/selection`` slash command.
+
+        QtWebEngine's ``runJavaScript`` invokes ``callback`` on the GUI
+        thread once the page returns the selection string. If no view is
+        active (or runJavaScript raises), we invoke the callback with an
+        empty string immediately so the slash-command resolver completes.
+        """
+        view = self._current_view()
+        if view is None:
+            try:
+                callback("")
+            except Exception:
+                pass
+            return
+        try:
+            page = view.page()
+            page.runJavaScript(
+                "window.getSelection ? window.getSelection().toString() : ''",
+                lambda result: callback(result if isinstance(result, str) else ""),
+            )
+        except Exception:
+            try:
+                callback("")
+            except Exception:
+                pass
+
+    def _ai_get_screenshot_data_uri(self) -> str:
+        """Return a ``data:image/png;base64,...`` URI of the current view.
+
+        ``QWidget.grab()`` works even on QWebEngineView because the engine
+        renders into the widget's surface. Returns an empty string if no
+        view is active or the grab fails — the panel handles that as
+        "no screenshot available" without raising.
+        """
+        view = self._current_view()
+        if view is None:
+            return ""
+        try:
+            pix: QPixmap = view.grab()
+            if pix.isNull():
+                return ""
+            buf = QBuffer()
+            buf.open(QIODevice.OpenModeFlag.WriteOnly)
+            ok = pix.save(buf, "PNG")
+            if not ok:
+                return ""
+            b64 = bytes(buf.data().toBase64()).decode("ascii")
+            return f"data:image/png;base64,{b64}"
+        except Exception:
+            return ""
+
+    def _apply_display_settings(self):
+        s = self.settings_mgr
+        if hasattr(self, "feed"):
+            self.feed.setVisible(s.get("show_live_feed"))
+        if hasattr(self, "top_url_strip"):
+            self.top_url_strip.setVisible(s.get("show_url_top"))
+        if hasattr(self, "row_https"):
+            self.row_https.setVisible(s.get("show_url_bottom"))
+        if hasattr(self, "row_search"):
+            self.row_search.setVisible(s.get("show_search_row"))
+        if hasattr(self, "row_actions"):
+            self.row_actions.setVisible(s.get("show_favs"))
+
+    # ── NetGuard backend control ──────────────────────────────
+    def _check_netguard_status(self):
+        """Ping the NetGuard WS port to know if backend is up."""
+        import socket
+        status = "down"
+        try:
+            sock = socket.create_connection(("127.0.0.1", 8765), timeout=0.5)
+            sock.close()
+            status = "up"
+        except (OSError, ConnectionRefusedError):
+            status = "down"
+        if hasattr(self, "ng_btn"):
+            self.ng_btn.setProperty("status", status)
+            label = {"up": "🛡  NetGuard ✓", "down": "🛡  NetGuard ✗", "warn": "🛡  NetGuard ⚠"}.get(status, "🛡  NetGuard")
+            self.ng_btn.setText(label)
+            self.ng_btn.style().unpolish(self.ng_btn)
+            self.ng_btn.style().polish(self.ng_btn)
+
+    def _toggle_netguard(self):
+        """If NetGuard is down, launch netguard.py + ai_server.py in background."""
+        import socket
+        import subprocess
+        try:
+            sock = socket.create_connection(("127.0.0.1", 8765), timeout=0.3)
+            sock.close()
+            # Already running — just inform user via the live feed
+            self.feed.push("info", "NG", "NetGuard backend already running on :8765",
+                          "OK", "")
+            return
+        except OSError:
+            pass
+        # Not running — launch
+        try:
+            subprocess.Popen(
+                [sys.executable, str(ROOT / "netguard.py")],
+                cwd=str(ROOT), creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.feed.push("info", "NG", "Lancement NetGuard backend…", "STARTING", "")
+            QTimer.singleShot(2000, self._check_netguard_status)
+        except Exception as e:
+            self.feed.push("bad", "NG", f"Échec lancement NetGuard: {e}", "FAIL", "")
+
+    # ── Profile builders / mode profile cache ─────────────────
+    def _configure_basic_profile(self, profile: QWebEngineProfile,
+                                 storage: str, cache: str,
+                                 cookie_policy: QWebEngineProfile.PersistentCookiesPolicy =
+                                 QWebEngineProfile.PersistentCookiesPolicy.AllowPersistentCookies):
+        """Plain configuration used when argus_sandbox is unavailable."""
+        Path(storage).mkdir(parents=True, exist_ok=True)
+        Path(cache).mkdir(parents=True, exist_ok=True)
+        profile.setPersistentStoragePath(storage)
+        profile.setCachePath(cache)
+        profile.setPersistentCookiesPolicy(cookie_policy)
+        s = profile.settings()
+        s.setAttribute(QWebEngineSettings.WebAttribute.JavascriptEnabled, True)
+        s.setAttribute(QWebEngineSettings.WebAttribute.LocalStorageEnabled, True)
+
+    def _install_profile_scripts(self, profile: QWebEngineProfile):
+        """Inject form-submit interceptor + (optionally) anti-skimmer JS
+        into ``profile``. Idempotent — re-installing replaces by name."""
+        # Form-submit interceptor — always installed.
+        try:
+            scripts = profile.scripts()
+            existing = scripts.findScript("argus_form_intercept")
+            if not existing.isNull():
+                scripts.remove(existing)
+            s = QWebEngineScript()
+            s.setName("argus_form_intercept")
+            s.setSourceCode(FORM_SUBMIT_INTERCEPT_JS)
+            s.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentReady)
+            s.setRunsOnSubFrames(True)
+            s.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+            scripts.insert(s)
+        except Exception:
+            pass
+        # Anti-skimmer hardening from sandbox module (best-effort).
+        if HAVE_SANDBOX and install_anti_skimmer_script is not None:
+            try:
+                install_anti_skimmer_script(profile)
+            except Exception:
+                pass
+
+    def _wire_profile_downloads(self, profile: QWebEngineProfile):
+        """Connect the profile's downloadRequested signal exactly once.
+
+        Keeps a per-profile attribute ``_argus_dl_wired`` so we don't double-
+        connect when the same profile is re-handed to multiple tabs.
+        """
+        if getattr(profile, "_argus_dl_wired", False):
+            return
+        try:
+            profile.downloadRequested.connect(self._on_download_requested)
+            try:
+                setattr(profile, "_argus_dl_wired", True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _mode_profile_for(self, mode_id: str,
+                          current_url: str = "") -> QWebEngineProfile:
+        """Resolve (and lazily build) the profile for a given mode.
+
+        Vault profiles are scoped to the institution domain when possible
+        so cookies don't leak between banks; private profiles are off-the-
+        record (in-memory only).
+        """
+        # Normal is the persistent profile created in __init__.
+        if mode_id == "normal":
+            return self._mode_profiles["normal"]
+
+        # Private — one shared off-the-record profile is enough.
+        if mode_id == "private":
+            cached = self._mode_profiles.get("private")
+            if cached is not None:
+                return cached
+            if HAVE_SANDBOX and make_private_profile is not None:
+                try:
+                    p = make_private_profile()
+                    p.setParent(self)
+                except Exception:
+                    p = QWebEngineProfile(self)  # off-the-record (no name)
+            else:
+                p = QWebEngineProfile(self)  # off-the-record (no storage)
+            self._install_profile_scripts(p)
+            self._wire_profile_downloads(p)
+            self._mode_profiles["private"] = p
+            return p
+
+        # Vault — try to scope to the institution if we can detect one.
+        if mode_id == "vault":
+            allowed = self._domain_for_vault(current_url)
+            cache_key = f"vault::{allowed or '*'}"
+            cached = self._mode_profiles.get(cache_key)
+            if cached is not None:
+                return cached
+            if HAVE_SANDBOX and make_vault_profile is not None:
+                try:
+                    if allowed:
+                        try:
+                            p = make_vault_profile(allowed_domain=allowed)
+                        except TypeError:
+                            # Older sandbox signature without allowed_domain.
+                            p = make_vault_profile()
+                    else:
+                        p = make_vault_profile()
+                    p.setParent(self)
+                except Exception:
+                    p = QWebEngineProfile(self)
+            else:
+                # No sandbox — fall back to a fresh off-the-record profile so
+                # the user at least gets isolation from "normal" cookies.
+                p = QWebEngineProfile(self)
+            self._install_profile_scripts(p)
+            self._wire_profile_downloads(p)
+            self._mode_profiles[cache_key] = p
+            return p
+
+        # Unknown mode — return normal as a safe default.
+        return self._mode_profiles["normal"]
+
+    @staticmethod
+    def _domain_for_vault(url: str) -> str:
+        try:
+            host = urlparse(url).netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            # Take the eTLD+1 if obvious (banking domains rarely have
+            # multi-level public suffixes — keep it simple for V1).
+            return host or ""
+        except Exception:
+            return ""
+
+    # ── Vault auto-switch banner ──────────────────────────────
+    def _load_vault_always(self) -> set[str]:
+        if not VAULT_AUTO_SWITCH_FILE.exists():
+            return set()
+        try:
+            data = json.loads(VAULT_AUTO_SWITCH_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return set()
+        if not isinstance(data, dict):
+            return set()
+        hosts = data.get("hosts")
+        if isinstance(hosts, list):
+            return {str(h).lower() for h in hosts if isinstance(h, str)}
+        return set()
+
+    def _save_vault_always(self):
+        try:
+            VAULT_AUTO_SWITCH_FILE.parent.mkdir(parents=True, exist_ok=True)
+            VAULT_AUTO_SWITCH_FILE.write_text(
+                json.dumps({"hosts": sorted(self._vault_always_hosts)},
+                           indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    def _maybe_show_vault_banner(self, url_str: str):
+        if not url_str or self.current_mode == "vault":
+            self.vault_banner.hide()
+            return
+        if not HAVE_VAULT_DOMAINS:
+            return
+        try:
+            match = is_vault_domain(url_str)
+        except Exception:
+            match = None
+        if match is None:
+            self._banner_shown_host = ""
+            self.vault_banner.hide()
+            return
+        host = self._domain_for_vault(url_str)
+        # Auto-switch path (user previously clicked "Always" for this host).
+        if host and host in self._vault_always_hosts:
+            # Only auto-trigger once per host per nav.
+            if self._banner_shown_host != host:
+                self._banner_shown_host = host
+                # Defer one tick so the URL change finishes settling first.
+                QTimer.singleShot(0, lambda: self._set_mode("vault", source="auto"))
+            return
+        # Otherwise show the banner.
+        if self._banner_shown_host == host:
+            return
+        self._banner_shown_host = host
+        institution = getattr(match, "institution_name",
+                              getattr(match, "name", str(match)))
+        self.vault_banner.show_for(institution, host)
+
+    def _on_banner_switch(self, _institution: str):
+        self._set_mode("vault", source="banner")
+
+    def _on_banner_always(self, host: str):
+        if not host:
+            return
+        self._vault_always_hosts.add(host.lower())
+        self._save_vault_always()
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("vault_always_added", {"host": host.lower()})
+            except Exception:
+                pass
+        self._set_mode("vault", source="banner-always")
+
+    # ── Download sandbox ──────────────────────────────────────
+    def _on_download_requested(self, dl_request):
+        """Per-profile downloadRequested handler.
+
+        Routes the heuristic+arbiter decision through ``arbiter_decide_async``
+        and updates UI on the GUI thread by funnelling the callback through
+        QTimer.singleShot.
+        """
+        try:
+            # Filename / origin metadata for the heuristic.
+            try:
+                url = dl_request.url().toString()
+            except Exception:
+                url = ""
+            try:
+                filename = dl_request.downloadFileName() or ""
+            except Exception:
+                filename = ""
+            try:
+                origin_url = dl_request.page().url().toString()
+            except Exception:
+                origin_url = ""
+            ext = ""
+            if filename and "." in filename:
+                ext = "." + filename.rsplit(".", 1)[-1].lower()
+
+            ctx = {
+                "url": url, "filename": filename, "ext": ext,
+                "origin_url": origin_url, "mode": self.current_mode,
+            }
+        except Exception:
+            return
+
+        # Always log the download attempt to surveillance.
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("download", ctx)
+            except Exception:
+                pass
+
+        # If arbiter is unavailable, default-allow with a note in the feed.
+        if not HAVE_ARBITER:
+            self._handle_dl_decision_main(None, dl_request, ctx)
+            return
+
+        # Hand off to arbiter on a background thread.
+        def _cb(decision):
+            # Marshall to GUI thread.
+            QTimer.singleShot(0, lambda d=decision: self._handle_dl_decision_main(d, dl_request, ctx))
+        try:
+            arbiter_decide_async("download", ctx, _cb, mode=self.current_mode)
+        except Exception:
+            self._handle_dl_decision_main(None, dl_request, ctx)
+
+    def _handle_dl_decision_main(self, decision, dl_request, ctx: dict):
+        verdict = "allow"
+        reason = "no arbiter"
+        if decision is not None:
+            verdict = getattr(decision, "verdict", "allow") or "allow"
+            reason = getattr(decision, "reason", "") or ""
+
+        filename = ctx.get("filename") or "download.bin"
+        sandbox_path = self._sandbox_target_path(filename)
+
+        if verdict == "allow":
+            # Save into the sandbox folder by default — never user's Downloads.
+            try:
+                dl_request.setDownloadDirectory(str(DOWNLOADS_SANDBOX_DIR))
+                # PyQt6 also exposes setDownloadFileName on QWebEngineDownloadRequest.
+                try:
+                    dl_request.setDownloadFileName(sandbox_path.name)
+                except Exception:
+                    pass
+                dl_request.accept()
+            except Exception as e:
+                self._set_live_feed_arbiter_decision(
+                    "bad", f"Download failed: {e}", reason="dl-accept-failed",
+                )
+                return
+            self._set_live_feed_arbiter_decision(
+                "ok", f"Allowed: download {filename}", reason=reason or "ok",
+            )
+            return
+
+        if verdict == "warn":
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Argus — téléchargement risqué")
+            box.setText(
+                f"Argus signale un risque pour le téléchargement :\n\n"
+                f"  • Fichier : {filename}\n"
+                f"  • Source  : {ctx.get('origin_url', '')}\n\n"
+                f"Raison : {reason}"
+            )
+            cont = box.addButton("Continuer (sandbox)", QMessageBox.ButtonRole.AcceptRole)
+            cancel = box.addButton("Annuler", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel)
+            box.exec()
+            if box.clickedButton() is cont:
+                try:
+                    dl_request.setDownloadDirectory(str(DOWNLOADS_SANDBOX_DIR))
+                    try:
+                        dl_request.setDownloadFileName(sandbox_path.name)
+                    except Exception:
+                        pass
+                    dl_request.accept()
+                except Exception:
+                    return
+                self._set_live_feed_arbiter_decision(
+                    "warn", f"User-overrode warn: {filename}", reason=reason,
+                )
+            else:
+                try:
+                    dl_request.cancel()
+                except Exception:
+                    pass
+                self._set_live_feed_arbiter_decision(
+                    "warn", f"Cancelled (warn): {filename}", reason=reason,
+                )
+            return
+
+        # block
+        try:
+            dl_request.cancel()
+        except Exception:
+            pass
+        QMessageBox.critical(
+            self, "Argus — téléchargement bloqué",
+            f"Argus a bloqué le téléchargement :\n\n"
+            f"  • Fichier : {filename}\n\n"
+            f"Raison : {reason}",
+        )
+        self._set_live_feed_arbiter_decision(
+            "bad", f"Blocked: download {filename}", reason=reason,
+        )
+
+    @staticmethod
+    def _sandbox_target_path(filename: str) -> Path:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe = "".join(c for c in filename if c.isalnum() or c in ("-", "_", ".")) or "download.bin"
+        return DOWNLOADS_SANDBOX_DIR / f"{ts}_{safe}"
+
+    # ── Print (Ctrl+P) ────────────────────────────────────────
+    def _print_current_page(self):
+        view = self._current_view()
+        if view is None:
+            return
+        printer = QPrinter()
+        dlg = QPrintDialog(printer, self)
+        dlg.setWindowTitle("Argus — Imprimer")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        page = view.page()
+        try:
+            page.print(printer, lambda success: None)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Argus — impression",
+                f"Échec de l'impression :\n{e}",
+            )
+
+    # ── Form-submit JS bridge → Python ────────────────────────
+    def _on_form_submit_beacon(self, payload: str):
+        """Receive the JSON payload from FORM_SUBMIT_INTERCEPT_JS.
+
+        V1 scope: surveillance logging + arbiter advisory check (the
+        decision does NOT prevent the submit — JS already let the form
+        proceed by the time the console log fires). Future: replace the
+        passive console-log bridge with a synchronous QWebChannel that
+        can pause the submit pending arbiter verdict.
+        """
+        try:
+            data = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(data, dict):
+            return
+        ctx = {
+            "action_url":   data.get("action_url", ""),
+            "method":       data.get("method", ""),
+            "fields_count": int(data.get("fields_count") or 0),
+            "has_password": bool(data.get("has_password")),
+            "has_cc":       bool(data.get("has_cc")),
+            "origin":       data.get("origin", ""),
+            "mode":         self.current_mode,
+        }
+        if HAVE_SURVEILLANCE:
+            try:
+                surveil_log_event("form_submit", ctx)
+            except Exception:
+                pass
+        # Advisory arbiter call — purely for the live feed.
+        if HAVE_ARBITER:
+            def _cb(decision):
+                if decision is None:
+                    return
+                verdict = getattr(decision, "verdict", "allow") or "allow"
+                reason = getattr(decision, "reason", "") or ""
+                kind = {"allow": "ok", "warn": "warn", "block": "bad"}.get(verdict, "info")
+                action = ctx.get("action_url", "")
+                short = action[:60] + "…" if len(action) > 60 else action
+                QTimer.singleShot(0, lambda: self._set_live_feed_arbiter_decision(
+                    kind, f"form_submit → {short}", reason=f"{verdict}: {reason}",
+                ))
+            try:
+                arbiter_decide_async("form_submit", ctx, _cb, mode=self.current_mode)
+            except Exception:
+                pass
+
+    # ── Live feed surveillance widget extension ──────────────
+    def _set_live_feed_arbiter_decision(self, kind: str, label: str,
+                                        reason: str = ""):
+        """Surface arbiter / surveillance highlights in the live feed.
+
+        ``kind`` ∈ {ok, warn, bad, info}. The existing LiveFeed.push API
+        is reused so the visual style stays consistent with HTTP rows.
+        """
+        if not hasattr(self, "feed"):
+            return
+        icon = {"ok": "✓", "warn": "⚠", "bad": "✗", "info": "ⓘ"}.get(kind, "·")
+        # Method column reused as a category tag for arbiter rows.
+        category = "GUARD"
+        line = f"{icon} {label}"
+        try:
+            self.feed.push(kind, category, line, reason or "—", "")
+        except Exception:
+            pass
+
+    # ── Overlay positioning ───────────────────────────────────
+    # ── Menu bar ──────────────────────────────────────────────
+    def _build_menu_bar(self):
+        try:
+            mb = self.menuBar()
+            mb.clear()
+            file_menu = mb.addMenu("&Fichier")
+            act_new_tab = file_menu.addAction("Nouveau tab\tCtrl+T")
+            act_new_tab.triggered.connect(
+                lambda: self._open_new_tab(HOME_URL)
+            )
+            act_new_sandbox = file_menu.addAction("Nouveau Code Sandbox\tCtrl+Shift+N")
+            act_new_sandbox.triggered.connect(self._open_code_sandbox_tab)
+            file_menu.addSeparator()
+            act_settings = file_menu.addAction("Paramètres…\tCtrl+,")
+            act_settings.triggered.connect(self._open_settings)
+            file_menu.addSeparator()
+            act_quit = file_menu.addAction("Quitter")
+            act_quit.triggered.connect(self.close)
+
+            view_menu = mb.addMenu("&Affichage")
+            act_quick = view_menu.addAction("Quick Switcher…\tCtrl+K")
+            act_quick.triggered.connect(self._open_quick_switcher)
+            act_reader = view_menu.addAction("Mode Lecture\tF9")
+            act_reader.triggered.connect(self._toggle_reader_mode)
+            act_ai = view_menu.addAction("Panneau IA\tCtrl+J")
+            act_ai.triggered.connect(self._toggle_ai_panel)
+
+            tools_menu = mb.addMenu("&Outils")
+            act_snip = tools_menu.addAction("Lancer vinom-snip")
+            act_snip.triggered.connect(self._launch_vinom_snip)
+            act_sandbox_tab = tools_menu.addAction("Code Sandbox (nouveau tab)")
+            act_sandbox_tab.triggered.connect(self._open_code_sandbox_tab)
+
+            help_menu = mb.addMenu("&Aide")
+            act_about = help_menu.addAction("À propos d'Argus")
+            act_about.triggered.connect(self._open_about)
+        except Exception:
+            # Menu bar is decorative — never crash startup over it.
+            pass
+
+    # ── About / version banner ────────────────────────────────
+    def _open_about(self):
+        try:
+            dlg = AboutDialog(self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.information(self, "Argus", f"v{ARGUS_VERSION}\n\n{e}")
+
+    def _check_for_update_async(self):
+        """Best-effort update check; updates the version badge if newer is found."""
+        if not HAVE_UPDATER:
+            return
+        try:  # Store build: updates come from the Store, never from GitHub (policy 10.8)
+            from netguard_paths import is_store_build as _is_store_build
+            if _is_store_build():
+                return
+        except Exception:
+            pass
+
+        def _worker():
+            try:
+                info = _argus_check_for_update(current=ARGUS_VERSION)
+            except Exception:
+                info = None
+
+            def _apply():
+                if info and isinstance(info, dict) and info.get("update_available"):
+                    try:
+                        self.feed.set_update_available(True, info)
+                    except Exception:
+                        pass
+
+            try:
+                QTimer.singleShot(0, _apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # ── vinom-snip launcher ───────────────────────────────────
+    def _launch_vinom_snip(self):
+        """Try a few entrypoints in ../vinom-snip/. Show a toast in the live
+        feed on success or failure. Logs to surveillance."""
+        snip_root = ROOT.parent / "vinom-snip"
+        candidates: list[list[str]] = []
+        # Pre-built C# .exe (real product wins) takes precedence if present.
+        for exe_rel in (
+            "src/VinomSnip.App/bin/Release/net8.0-windows10.0.19041.0/win-x64/VinomSnip.exe",
+            "src/VinomSnip.App/bin/Debug/net8.0-windows10.0.19041.0/win-x64/VinomSnip.exe",
+            "VinomSnip.exe",
+            "src/VinomSnip.App/bin/Release/VinomSnip.exe",
+            "src/VinomSnip.App/bin/Debug/VinomSnip.exe",
+        ):
+            full = snip_root / exe_rel
+            if full.exists():
+                candidates.append([str(full)])
+        # Python entry points (kept for Python-port future-proofing).
+        for py_rel in ("__main__.py", "main.py", "vinom_snip.py", "src/main.py"):
+            full = snip_root / py_rel
+            if full.exists():
+                candidates.append([sys.executable, str(full)])
+        # `dotnet run` against the csproj as last resort.
+        csproj = snip_root / "src" / "VinomSnip.App" / "VinomSnip.App.csproj"
+        if csproj.exists():
+            candidates.append(["dotnet", "run", "--project", str(csproj)])
+
+        if not candidates:
+            self.feed.push("warn", "snip",
+                           "vinom-snip not installed at ../vinom-snip/",
+                           "404", "")
+            return
+
+        cmd = candidates[0]
+        try:
+            subprocess.Popen(
+                cmd,
+                cwd=str(snip_root),
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.feed.push("info", "snip",
+                           f"Lancé : {Path(cmd[0]).name}", "OK", "")
+            try:
+                surveil_log_event("user_action", {"type": "snip_launched",
+                                                  "cmd": cmd[0]})
+            except Exception:
+                pass
+        except Exception as e:
+            self.feed.push("bad", "snip", f"Échec lancement: {e}", "FAIL", "")
+
+    # ── Quick switcher (Ctrl+K) ───────────────────────────────
+    def _open_quick_switcher(self):
+        try:
+            dlg = QuickSwitcherDialog(
+                sources_provider=self._collect_quick_switcher_items,
+                on_activate=self._activate_quick_switcher_item,
+                parent=self,
+            )
+            dlg.exec()
+        except Exception as e:
+            self.feed.push("bad", "qs", f"Quick switcher error: {e}", "ERR", "")
+
+    def _collect_quick_switcher_items(self) -> list[dict]:
+        items: list[dict] = []
+        # Open tabs
+        try:
+            for i, view in enumerate(self.tab_pages):
+                title = view.title() or view.url().toString() or f"Tab {i+1}"
+                items.append({
+                    "kind": "tab",
+                    "icon": "📑",
+                    "label": f"Tab — {title}",
+                    "tab_index": i,
+                })
+        except Exception:
+            pass
+        # Bookmarks
+        try:
+            for fav in self.favs_mgr.favorites:
+                title = fav.get("title") or fav.get("url", "")
+                items.append({
+                    "kind": "bookmark",
+                    "icon": "★",
+                    "label": f"Bookmark — {title}",
+                    "url": fav.get("url", ""),
+                })
+        except Exception:
+            pass
+        # History (last 50)
+        if HAVE_SURVEILLANCE:
+            try:
+                events = surveil_query(event_types=["navigation"], limit=50) or []
+                seen = set()
+                for ev in reversed(events):  # newest first
+                    payload = ev.get("payload", {}) if isinstance(ev, dict) else {}
+                    url = payload.get("url") or ev.get("url") or ""
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    items.append({
+                        "kind": "history",
+                        "icon": "🕓",
+                        "label": f"History — {url}",
+                        "url": url,
+                    })
+                    if len(seen) >= 50:
+                        break
+            except Exception:
+                pass
+        # Commands
+        commands = [
+            ("Nouveau tab",          "cmd_new_tab"),
+            ("Toggle AI Panel",      "cmd_toggle_ai"),
+            ("Ouvrir Settings",      "cmd_settings"),
+            ("Cycle Mode",           "cmd_cycle_mode"),
+            ("Lancer vinom-snip",    "cmd_snip"),
+            ("Code Sandbox",         "cmd_sandbox"),
+            ("Mode Lecture",         "cmd_reader"),
+            ("À propos d'Argus",     "cmd_about"),
+            ("Toggle DevTools (F12)","cmd_devtools"),
+            ("Toggle NetGuard",      "cmd_ng"),
+        ]
+        for label, cmd_id in commands:
+            items.append({
+                "kind": "command",
+                "icon": "⚡",
+                "label": f"Cmd — {label}",
+                "cmd": cmd_id,
+            })
+        return items
+
+    def _activate_quick_switcher_item(self, item: dict):
+        if not isinstance(item, dict):
+            return
+        kind = item.get("kind")
+        if kind == "tab":
+            idx = item.get("tab_index")
+            if isinstance(idx, int) and 0 <= idx < len(self.tab_pages):
+                self._switch_to_tab(idx)
+        elif kind in ("bookmark", "history"):
+            url = item.get("url")
+            if url:
+                self._open_new_tab(url)
+        elif kind == "command":
+            cmd = item.get("cmd")
+            if cmd == "cmd_new_tab":
+                self._open_new_tab(HOME_URL)
+            elif cmd == "cmd_toggle_ai":
+                self._toggle_ai_panel()
+            elif cmd == "cmd_settings":
+                self._open_settings()
+            elif cmd == "cmd_cycle_mode":
+                self._cycle_mode()
+            elif cmd == "cmd_snip":
+                self._launch_vinom_snip()
+            elif cmd == "cmd_sandbox":
+                self._open_code_sandbox_tab()
+            elif cmd == "cmd_reader":
+                self._toggle_reader_mode()
+            elif cmd == "cmd_about":
+                self._open_about()
+            elif cmd == "cmd_devtools":
+                self._toggle_devtools()
+            elif cmd == "cmd_ng":
+                self._toggle_netguard()
+
+    # ── Code sandbox tab ─────────────────────────────────────
+    def _open_code_sandbox_tab(self):
+        """Open a new tab pointing at branding/argus/monaco_sandbox.html.
+
+        Falls back to a QPlainTextEdit-based JS-only sandbox if the HTML is
+        missing or QWebEngine cannot resolve the file URL.
+        """
+        html_path = ROOT / "branding" / "argus" / "monaco_sandbox.html"
+        if html_path.exists():
+            try:
+                file_url = QUrl.fromLocalFile(str(html_path)).toString()
+                self._open_new_tab(file_url)
+                self.feed.push("info", "sandbox",
+                               "Code Sandbox loaded (Monaco)", "OK", "")
+                return
+            except Exception:
+                pass
+        # Fallback — embed CodeSandboxFallback in a new QWidget tab.
+        # We don't fully integrate this widget into the QStackedWidget tab
+        # system (that would need refactor) — instead show as modal-less
+        # secondary window so the feature still works on V1.
+        try:
+            wnd = QMainWindow(self)
+            wnd.setWindowTitle("Argus — Code Sandbox (fallback)")
+            wnd.resize(900, 640)
+            wnd.setCentralWidget(CodeSandboxFallback())
+            wnd.show()
+            self.feed.push("warn", "sandbox",
+                           "Monaco HTML missing — fallback editor shown",
+                           "WARN", "")
+        except Exception as e:
+            self.feed.push("bad", "sandbox", f"Sandbox failed: {e}", "ERR", "")
+
+    # ── Reader mode (F9) ─────────────────────────────────────
+    def _toggle_reader_mode(self):
+        if self.reader_overlay.isVisible():
+            self._close_reader_mode()
+            return
+        view = self._current_view()
+        if view is None:
+            return
+        # Inject a JS extractor — falls back to body innerText if no <article>.
+        js = (
+            "(function(){var n=document.querySelector('article')||"
+            "document.querySelector('main')||document.body;"
+            "var t=(document.title||'')+'';var c=(n?n.innerText:'')+'';"
+            "return JSON.stringify({title:t,text:c});})()"
+        )
+        try:
+            view.page().runJavaScript(js, self._on_reader_extracted)
+        except Exception:
+            self._on_reader_extracted("")
+
+    def _on_reader_extracted(self, payload):
+        title = ""
+        text = ""
+        try:
+            if isinstance(payload, str) and payload:
+                data = json.loads(payload)
+                title = (data.get("title") or "").strip()
+                text = (data.get("text") or "").strip()
+        except Exception:
+            pass
+        if not text:
+            view = self._current_view()
+            text = "(Aucun contenu extrait pour cette page.)"
+            if view is not None:
+                title = title or view.title() or view.url().toString()
+        # Position overlay over the page column area.
+        try:
+            self.reader_overlay.setGeometry(self.root.rect())
+        except Exception:
+            pass
+        self.reader_overlay.show_content(title, text)
+        try:
+            surveil_log_event("user_action", {"type": "reader_mode_open",
+                                              "title": title})
+        except Exception:
+            pass
+
+    def _close_reader_mode(self):
+        self.reader_overlay.hide()
+
+    def _summarize_in_ai_panel(self, text: str):
+        """Pre-fill the AI panel with a summary request and send."""
+        try:
+            if not self.ai_panel.is_open:
+                self._toggle_ai_panel()
+            # Prefill the input + click send programmatically.
+            preset = (
+                "Résume cet article en 5-7 points clés :\n\n"
+                + (text or "")[:6000]
+            )
+            self.ai_panel.input.setPlainText(preset)
+            QTimer.singleShot(80, self.ai_panel._send_clicked)
+        except Exception as e:
+            self.feed.push("bad", "ai", f"Summary failed: {e}", "ERR", "")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition_overlays()
+        # Keep the reader overlay covering the root area.
+        try:
+            if hasattr(self, "reader_overlay") and self.reader_overlay.isVisible():
+                self.reader_overlay.setGeometry(self.root.rect())
+        except Exception:
+            pass
+
+    def _reposition_overlays(self):
+        # Mode + NetGuard buttons now live in the dock — no floating overlays to position.
+        pass
+
+
+def main():
+    # Windows: unique AppUserModelID so the taskbar groups Argus correctly
+    # and shows the .ico instead of falling back to the python.exe icon.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Argus.Cybersec.Workbench.1"
+            )
+        except Exception:
+            pass
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Argus")
+    app.setApplicationDisplayName("Argus — Cybersecurity Workbench")
+    app.setOrganizationName("NetGuard")
+    app.setStyle("Fusion")
+
+    # App-wide icon (taskbar / Alt-Tab / window title bar). Picked up by every
+    # window unless overridden. Mode-specific icon is set per-window in
+    # ArgusBrowser._apply_mode so it tracks the active mode live.
+    _argus_root = Path(__file__).resolve().parent
+    _argus_default_ico = _argus_root / "branding" / "argus" / "argus_normal.ico"
+    if _argus_default_ico.exists():
+        app.setWindowIcon(QIcon(str(_argus_default_ico)))
+
+    # Apply persisted theme as early as possible (before window construction)
+    # so any splash / dialog inherits the right palette from frame 1.
+    try:
+        prelim = SettingsManager(SETTINGS_FILE)
+        apply_theme(prelim.get("theme") or DEFAULT_THEME)
+    except Exception:
+        apply_theme(DEFAULT_THEME)
+
+    # ── Splash screen — show 1.5s while heavy modules import ──
+    splash = None
+    try:
+        splash_path = _argus_root / "branding" / "argus" / "argus_splash.png"
+        if splash_path.exists():
+            pix = QPixmap(str(splash_path))
+            if not pix.isNull():
+                # Scale down if image is huge — keep splash readable on 1080p.
+                if pix.width() > 720 or pix.height() > 480:
+                    pix = pix.scaled(720, 480,
+                                     Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                splash = QSplashScreen(pix, Qt.WindowType.WindowStaysOnTopHint)
+                splash.showMessage(
+                    f"Argus v{ARGUS_VERSION}",
+                    Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+                    Qt.GlobalColor.white,
+                )
+                splash.show()
+                app.processEvents()
+    except Exception:
+        splash = None
+
+    win = ArgusBrowser()
+    win.show()
+
+    # Splash stays on top for ~1.5s, then closes. If splash failed to load
+    # we just continue with no-op.
+    if splash is not None:
+        QTimer.singleShot(1500, lambda: splash.finish(win))
+
+    # First-run onboarding — the dialog is responsible for calling
+    # mark_first_run_complete() when the user clicks Get Started.
+    if HAVE_ONBOARDING:
+        try:
+            if is_first_run():
+                # Show shortly after the main window paints so the dialog
+                # has somewhere to anchor + the user sees Argus' chrome.
+                QTimer.singleShot(150, lambda: show_first_run_dialog(parent=win))
+        except Exception:
+            pass
+
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

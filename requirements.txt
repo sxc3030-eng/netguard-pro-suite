@@ -1,0 +1,44 @@
+# NetGuard / Argus / GeniA / Vinom suite — runtime requirements.
+# Pinned with `>=` only; concrete versions resolved at install time.
+
+# Core network engine
+scapy>=2.5.0
+websockets>=14.0      # <14: process_request(path, headers) signature made the Origin check a silent no-op
+
+# Crypto (vault, backups, license manager)
+cryptography>=42.0.0
+bcrypt>=4.1.0
+
+# Secret Vault (triple-encryption: DPAPI + Keychain + Argon2id)
+# All three are *optional* — vault degrades gracefully to plaintext fallback
+# if any are missing (UI banner shows the install hint).
+keyring>=24.0.0           # Layer 2: Windows Credential Manager / macOS Keychain / Linux Secret Service
+argon2-cffi>=23.1.0       # Layer 3: Argon2id master password KDF (memory-hard)
+
+# Process & connection inspection (app-identification per packet,
+# bandwidth tracking per IP, rogue Npcap consumer detector)
+psutil>=5.9.0
+
+# Mode Fantôme (system tray icon + balloon notifications)
+pystray>=0.19.0
+
+# Secret resolver (config.py)
+python-dotenv>=1.0.0
+
+# 2FA TOTP gate (argus_2fa)
+pyotp>=2.9.0
+qrcode[pil]>=7.4.0
+
+# Argus PyQt browser
+PyQt6>=6.6.0
+PyQt6-WebEngine>=6.6.0
+
+# Branding / icon generators
+pillow>=10.0.0
+numpy>=1.24.0
+
+# HTTP / API clients
+requests>=2.31.0
+
+# Windows-only — installed by the CI matrix conditionally
+pywin32>=306; sys_platform == "win32"

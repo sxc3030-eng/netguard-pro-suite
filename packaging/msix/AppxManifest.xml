@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NetGuard AI — manifeste MSIX (version Store).
+  Remplacer PUBLISHER_CN et PUBLISHER_NAME par les valeurs du Partner Center,
+  et NETGUARD_PACKAGE_NAME par l'identité réservée dans le Store.
+
+  Capacités déclarées (toutes justifiées dans la fiche de soumission) :
+  - runFullTrust : application de bureau Win32 (pywebview + Python)
+  - allowElevation : capture de paquets Npcap et règles de pare-feu (netsh)
+  - internetClient / internetClientServer / privateNetworkClientServer :
+    serveur WebSocket local, honeypot, flux de menaces, fournisseurs IA
+  - StartupTask : démarrage avec la session (remplace HKCU\Run et la tâche planifiée)
+  Npcap n'est PAS inclus (licence) : l'application affiche une boîte de dialogue
+  au premier lancement et renvoie vers npcap.com.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap5="http://schemas.microsoft.com/appx/manifest/uap/windows10/5"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap5 desktop rescap">
+
+  <Identity Name="NETGUARD_PACKAGE_NAME" Publisher="CN=PUBLISHER_CN" Version="4.1.0.0" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>NetGuard AI</DisplayName>
+    <PublisherDisplayName>PUBLISHER_NAME</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Surveillance réseau en temps réel, blocage par IP et par pays, carte des connexions, assistant IA local.</Description>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="fr-CA" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="NetGuardAI" Executable="NetGuardAI.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="NetGuard AI"
+        Description="Surveillance et protection réseau avec assistant IA"
+        BackgroundColor="#0f0f13"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+      <Extensions>
+        <!-- Démarrage avec la session : remplace HKCU\Run / Register-ScheduledTask -->
+        <desktop:Extension Category="windows.startupTask" Executable="NetGuardAI.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="NetGuardAIStartup" Enabled="false" DisplayName="NetGuard AI" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="allowElevation" />
+  </Capabilities>
+</Package>

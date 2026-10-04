@@ -9,7 +9,7 @@
 <h3 align="center">Client Email Securise avec Filtrage Intelligent & Protection Anti-Phishing</h3>
 
 <p align="center">
-  <b>Partie de l'ecosysteme <a href="#">NetGuard Pro</a></b><br>
+  <b>Partie de l'ecosysteme <a href="#">NetGuard AI</a></b><br>
   Un client email local, securise et intelligent qui filtre, classe et protege vos emails en temps reel.
 </p>
 
@@ -371,6 +371,6 @@ MIT License - Voir [LICENSE](../LICENSE)
 ---
 
 <p align="center">
-  <b>MailShield Pro</b> fait partie de l'ecosysteme <b>NetGuard Pro</b><br>
+  <b>MailShield Pro</b> fait partie de l'ecosysteme <b>NetGuard AI</b><br>
   <sub>Developpe avec Python, securise par design</sub>
 </p>

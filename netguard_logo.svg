@@ -69,5 +69,5 @@
 
   <!-- Bottom text -->
   <text x="100" y="192" text-anchor="middle" font-family="'Outfit',sans-serif" font-size="9"
-        font-weight="600" letter-spacing="3" fill="#5a5a72">NETGUARD PRO</text>
+        font-weight="600" letter-spacing="3" fill="#5a5a72">NETGUARD AI</text>
 </svg>
