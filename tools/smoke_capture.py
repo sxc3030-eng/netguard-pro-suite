@@ -41,6 +41,7 @@ def main() -> int:
     ap.add_argument("--engine", default="", choices=["", "etw", "poll", "npcap"])
     ap.add_argument("--port", type=int, default=8791)
     ap.add_argument("--seconds", type=float, default=10.0)
+    ap.add_argument("--exe", default="", help="test a packaged NetGuardAI.exe instead of the source tree")
     ap.add_argument("--out", default="", help="also write the report to this file (elevated runs have no console to read)")
     args = ap.parse_args()
     if args.out:
@@ -58,9 +59,10 @@ def main() -> int:
     env = dict(os.environ, NETGUARD_DATA_DIR=data_dir, PYTHONUTF8="1")
     if args.engine:
         env["NETGUARD_CAPTURE_ENGINE"] = args.engine
-    proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "netguard.py"), "--headless",
-                             "--no-block", "--port", str(args.port)],
-                            cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    launcher = [args.exe] if args.exe else [sys.executable, os.path.join(ROOT, "netguard.py")]
+    proc = subprocess.Popen(launcher + ["--headless", "--no-block", "--port", str(args.port)],
+                            cwd=os.path.dirname(args.exe) if args.exe else ROOT, env=env,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         token_file = os.path.join(data_dir, ".netguard_token")
         for _ in range(60):

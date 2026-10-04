@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Construit le paquet MSIX « NetGuard AI » pour le Microsoft Store.
 
@@ -18,7 +18,7 @@
 param(
   [string]$PublisherCN = "CN=PUBLISHER_CN",
   [string]$PackageName = "NETGUARD_PACKAGE_NAME",
-  [string]$Version = "4.1.0.0",
+  [string]$Version = "4.2.0.0",
   [string]$PfxPath = "",
   [string]$PfxPassword = ""
 )
@@ -47,7 +47,7 @@ Copy-Item -Recurse (Join-Path $root "dist\NetGuardAI\*") $pkg
 
 Write-Host "[2/4] Manifeste + assets"
 $manifest = Get-Content (Join-Path $root "packaging\msix\AppxManifest.xml") -Raw
-$manifest = $manifest.Replace("CN=PUBLISHER_CN", $PublisherCN).Replace("NETGUARD_PACKAGE_NAME", $PackageName).Replace('Version="4.1.0.0"', "Version=`"$Version`"")
+$manifest = $manifest.Replace("CN=PUBLISHER_CN", $PublisherCN).Replace("NETGUARD_PACKAGE_NAME", $PackageName).Replace('Version="4.2.0.0"', "Version=`"$Version`"")
 Set-Content -Path (Join-Path $pkg "AppxManifest.xml") -Value $manifest -Encoding utf8
 New-Item -ItemType Directory -Force (Join-Path $pkg "Assets") | Out-Null
 # Logos : générer depuis netguard_logo.svg (150x150, 44x44, 310x150, 50x50 StoreLogo)
