@@ -472,6 +472,15 @@ def _writer_loop() -> None:
             item = None  # treat as flush tick
 
         if item is not None:
+            flush_evt = item.get("__flush__")
+            if flush_evt is not None:
+                # Barrier from _flush_now(): write what we have, then signal.
+                if pending:
+                    _safe_flush(pending)
+                    pending = []
+                last_flush = time.monotonic()
+                flush_evt.set()
+                continue
             if item.get("__sentinel__"):
                 # Final flush requested by shutdown.
                 if pending:
@@ -650,22 +659,26 @@ def surveil_log_event(
 
 
 def _flush_now() -> None:
-    """Block until the queue is drained — used by query/export/stats."""
+    """Block until everything queued so far is on disk — used by query/export/stats.
+
+    A barrier marker travels through the queue: the writer flushes its pending
+    batch when it meets it and signals back. Deterministic (no fixed sleep that
+    a slow machine can outrun) and bounded (a dead writer cannot hang callers).
+    """
     if not _STATE.initialized:
         return
-    # Wait for queue to empty — bounded, and only while a writer is alive
-    # (a dead writer would otherwise make this loop spin forever).
-    deadline = time.monotonic() + 5.0
-    while not _STATE.queue.empty():
-        thread = _STATE.thread
-        if thread is None or not thread.is_alive() or time.monotonic() > deadline:
+    thread = _STATE.thread
+    if thread is None or not thread.is_alive():
+        return
+    done = threading.Event()
+    try:
+        _STATE.queue.put({"__flush__": done}, timeout=5.0)
+    except Exception:
+        return
+    deadline = time.monotonic() + 30.0
+    while not done.wait(timeout=0.2):
+        if not thread.is_alive() or time.monotonic() > deadline:
             break
-        time.sleep(0.01)
-    # Then nudge writer to flush its in-memory pending list. We do this
-    # by injecting a no-op marker that forces the loop to evaluate the
-    # batch-flush condition on the next iteration. Simpler: just wait
-    # for one full FLUSH_INTERVAL.
-    time.sleep(FLUSH_INTERVAL_SECONDS + 0.05)
 
 
 def _list_dates_on_disk() -> List[str]:

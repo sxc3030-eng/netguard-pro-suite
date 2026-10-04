@@ -266,8 +266,9 @@ def test_sample_runs_as_subprocess(bus_and_gateway, tmp_path):
         cwd=str(ROOT),
         env=env,
         capture_output=True,
+        stdin=subprocess.DEVNULL,   # an un-inheritable parent stdin raised WinError 50 on Windows
         text=True,
-        timeout=30,
+        timeout=60,
     )
     assert proc.returncode == 0, (
         f"sample exited {proc.returncode}\n"

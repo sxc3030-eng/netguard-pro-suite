@@ -1188,6 +1188,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if length <= 0:
             return {}
         if length > _MAX_BODY_BYTES:
+            # Drain (bounded) before answering: replying while the client is still
+            # sending makes it see a reset / broken pipe instead of the 413.
+            remaining = min(length, 8 * _MAX_BODY_BYTES)
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+            except OSError:
+                pass
+            self.close_connection = True
             self._json(413, {"ok": False, "error": "body_too_large"})
             raise _RequestAborted()
         raw = self.rfile.read(length).decode("utf-8", errors="replace")
