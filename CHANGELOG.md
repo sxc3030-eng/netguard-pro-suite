@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-04 — Moteur de capture ETW : plus besoin de Npcap (branche `moteur-etw`)
+
+- Nouveau paquet `capture/` : moteur **ETW** (intégré à Windows, aucun pilote, flux + octets + processus + DNS en temps réel), moteur de repli **poll** (sans administrateur), et Npcap en « mode expert » optionnel.
+- `process_observation` : pipeline de détection indépendant de scapy ; `analyze_packet` n'est plus qu'un adaptateur.
+- Les adresses de la machine ne sont plus traitées comme externes (IPv6 global, IP publique sans NAT).
+- La localisation affichée est celle de l'extrémité distante, y compris pour le trafic sortant.
+- scapy déplacé dans `requirements-expert.txt` ; pastille du moteur actif dans le tableau de bord ; `docs/MOTEUR_CAPTURE.md`.
+
 ### 2026-09-30 — NetGuard AI : audit mémoire + superaudit (branche `netguard-ai`)
 
 **Renommage** : « NetGuard Pro » devient **NetGuard AI** partout (exécutable `NetGuardAI.exe`, tâche planifiée, titres). Les règles de pare-feu gardent le préfixe `NetGuard_*`.

@@ -4,8 +4,8 @@ NetGuard AI est distribué sous **GPL v3 ou ultérieure** (voir `LICENSE`).
 
 | Composant | Usage | Licence | Note |
 |---|---|---|---|
-| scapy | capture et analyse de paquets | **GPL v2 (uniquement)** | ⚠ GPLv2-only et GPLv3 ne sont pas compatibles dans un même binaire combiné. Voir « Décisions à prendre » dans `docs/SUPERAUDIT_2026-09-30.md` : relicencier NetGuard en « GPL v2 ou ultérieure », ou isoler scapy dans un processus de capture séparé. |
-| Npcap | pilote de capture Windows | Npcap License (propriétaire, gratuit pour usage personnel ; OEM pour redistribution) | **Non redistribué** : l'utilisateur l'installe lui-même depuis npcap.com (boîte de dialogue au premier lancement). |
+| scapy | moteur de capture « expert » **optionnel** (non installé par défaut, absent de la version Store) | **GPL v2 (uniquement)** | Depuis le moteur ETW (octobre 2026), scapy n'est plus chargé ni distribué par défaut : le conflit GPLv2-only / GPLv3 ne concerne plus que l'utilisateur qui installe lui-même `requirements-expert.txt`. |
+| Npcap | pilote de capture Windows, mode expert **optionnel** seulement | Npcap License (propriétaire) | **Non redistribué et non requis** : le moteur par défaut est ETW (intégré à Windows). |
 | websockets | serveur WebSocket du tableau de bord | BSD-3-Clause | |
 | psutil | identification des processus, connexions | BSD-3-Clause | |
 | pywebview | fenêtre native | BSD-3-Clause | nécessite WebView2 Runtime (Microsoft, EULA WebView2) |
