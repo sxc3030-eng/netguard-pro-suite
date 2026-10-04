@@ -447,6 +447,19 @@ def _prune_old_files(retention_days: int) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _safe_flush(events: List[Dict[str, Any]]) -> None:
+    """Flush a batch without ever letting an I/O error kill the writer thread.
+
+    Before: a disk error (folder removed, disk full, permission) raised out of
+    _writer_loop, the thread died, the queue was never drained again and every
+    surveil_stats()/query()/export() call blocked forever in _flush_now().
+    """
+    try:
+        _flush_batch(events)
+    except Exception as exc:  # noqa: BLE001 — the audit trail must keep running
+        _LOG.error("surveillance flush failed, %d event(s) dropped: %s", len(events), exc)
+
+
 def _writer_loop() -> None:
     """Drain the queue, batch encrypt, append to disk."""
     pending: List[Dict[str, Any]] = []
@@ -462,7 +475,7 @@ def _writer_loop() -> None:
             if item.get("__sentinel__"):
                 # Final flush requested by shutdown.
                 if pending:
-                    _flush_batch(pending)
+                    _safe_flush(pending)
                     pending = []
                 return
             pending.append(item)
@@ -471,13 +484,13 @@ def _writer_loop() -> None:
             len(pending) >= FLUSH_BATCH_SIZE
             or (time.monotonic() - last_flush) >= FLUSH_INTERVAL_SECONDS
         ):
-            _flush_batch(pending)
+            _safe_flush(pending)
             pending = []
             last_flush = time.monotonic()
 
         if _STATE.stop_evt.is_set() and _STATE.queue.empty():
             if pending:
-                _flush_batch(pending)
+                _safe_flush(pending)
             return
 
 
@@ -640,8 +653,13 @@ def _flush_now() -> None:
     """Block until the queue is drained — used by query/export/stats."""
     if not _STATE.initialized:
         return
-    # Wait for queue to empty.
+    # Wait for queue to empty — bounded, and only while a writer is alive
+    # (a dead writer would otherwise make this loop spin forever).
+    deadline = time.monotonic() + 5.0
     while not _STATE.queue.empty():
+        thread = _STATE.thread
+        if thread is None or not thread.is_alive() or time.monotonic() > deadline:
+            break
         time.sleep(0.01)
     # Then nudge writer to flush its in-memory pending list. We do this
     # by injecting a no-op marker that forces the loop to evaluate the

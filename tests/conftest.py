@@ -199,3 +199,24 @@ def clean_blocked_ips():
     if hasattr(netguard, "RULES"):
         for k, v in rules_before.items():
             netguard.RULES[k] = v
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QtWebEngine teardown: once argus_pyqt (QtWebEngine) has been imported, the
+# interpreter segfaults at exit ("Release of profile requested but WebEnginePage
+# still not deleted") AFTER every test passed — CI then reports exit code 139.
+# Exit with pytest's real status as soon as the session is finished.
+# ─────────────────────────────────────────────────────────────────────────────
+def pytest_sessionfinish(session, exitstatus):
+    session.config._ng_exitstatus = int(exitstatus)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config):
+    import os as _os
+    if "PyQt6.QtWebEngineWidgets" in sys.modules or "PyQt6.QtWebEngineCore" in sys.modules:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            _os._exit(getattr(config, "_ng_exitstatus", 0))
