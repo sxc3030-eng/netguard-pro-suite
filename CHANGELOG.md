@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-05 — 4.2.1 : fin d'essai et licence payante (branche `licence-stripe`)
+
+- Après les 30 jours d'essai, la surveillance et la carte restent actives ; le blocage (manuel, automatique, par pays), l'assistant IA et les alertes externes demandent une licence. Le déblocage n'est jamais verrouillé.
+- Barre de licence dans le tableau de bord : jours d'essai restants, puis « Acheter une licence » et « J'ai une clé ».
+- Activation par clé `NGPRO-…` (commande `license_activate`), vérification Ed25519 ; nouvelle paire de clés (l'ancienne clé privée était perdue).
+- L'essai ne se relance plus en supprimant le fichier de licence (second repère dans le registre) ni en le datant dans le futur.
+- Achat par lien de paiement Stripe ; la clé est émise et envoyée par courriel par le site Archipel (`/api/licence-netguard`).
+- Les builds Store restent gérés par le Store (aucun verrou maison).
+
 ### 2026-10-04 — Moteur de capture ETW : plus besoin de Npcap (branche `moteur-etw`)
 
 - Nouveau paquet `capture/` : moteur **ETW** (intégré à Windows, aucun pilote, flux + octets + processus + DNS en temps réel), moteur de repli **poll** (sans administrateur), et Npcap en « mode expert » optionnel.

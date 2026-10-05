@@ -33,10 +33,75 @@ TRIAL_DAYS = 30
 
 # Activation registry — kept OUTSIDE the vault on purpose so licensing works
 # before the vault is unlocked (vault is a paid feature behind licensing).
-ACTIVATIONS_DIR = os.environ.get(
-    "NETGUARD_DATA_DIR",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "argus_data"),
+try:
+    # Writable data dir (frozen / Program Files installs are read-only)
+    from netguard_paths import DATA_DIR as _NG_DATA_DIR, is_frozen as _ng_is_frozen
+    _ACT_DEFAULT = _NG_DATA_DIR if _ng_is_frozen() else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "argus_data")
+except Exception:  # pragma: no cover
+    _ACT_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "argus_data")
+ACTIVATIONS_DIR = os.environ.get("NETGUARD_DATA_DIR", _ACT_DEFAULT)
+
+# Where the "Acheter" button of the dashboard sends the user (Stripe Payment Link).
+PURCHASE_URL = os.environ.get(
+    "NETGUARD_PURCHASE_URL",
+    "https://buy.stripe.com/4gMeVc4IF15G4FRfND7ok00",
 )
+
+# Second, independent record of the first launch: deleting netguard_license.json
+# used to hand out a brand new 30-day trial.
+_TRIAL_REG_KEY = r"Software\NetGuard AI"
+_TRIAL_REG_VALUE = "t0"
+
+
+def _trial_anchor_read() -> str:
+    """ISO date of the very first launch stored outside the data folder ('' if none)."""
+    if os.environ.get("NETGUARD_DATA_DIR") and not os.environ.get("NETGUARD_TRIAL_ANCHOR"):
+        return ""          # throw-away data dir (tests, portable runs): no global marker
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _TRIAL_REG_KEY) as k:
+            val, _ = winreg.QueryValueEx(k, _TRIAL_REG_VALUE)
+            return str(val or "")
+    except OSError:
+        return ""
+    except Exception:
+        return ""
+
+
+def _trial_anchor_write(iso: str) -> None:
+    if os.environ.get("NETGUARD_DATA_DIR") and not os.environ.get("NETGUARD_TRIAL_ANCHOR"):
+        return
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _TRIAL_REG_KEY) as k:
+            winreg.SetValueEx(k, _TRIAL_REG_VALUE, 0, winreg.REG_SZ, iso)
+    except Exception:
+        pass
+
+
+def _effective_trial_start(file_value: str):
+    """Earliest trustworthy trial start among the licence file and the registry marker.
+    A date in the future (clock or file tampering) counts as an expired trial."""
+    now = datetime.now()
+    candidates = []
+    for raw in (file_value, _trial_anchor_read()):
+        if not raw:
+            continue
+        try:
+            candidates.append(datetime.fromisoformat(raw))
+        except Exception:
+            return now - timedelta(days=TRIAL_DAYS + 1)      # unreadable → expired
+    if not candidates:
+        return None
+    start = min(candidates)
+    if start > now + timedelta(days=1):
+        return now - timedelta(days=TRIAL_DAYS + 1)          # future-dated → expired
+    return start
 ACTIVATIONS_FILE = os.path.join(ACTIVATIONS_DIR, ".activations.json")
 
 # Ed25519 public key for license verification (32 bytes, base64-encoded).
@@ -46,7 +111,7 @@ ACTIVATIONS_FILE = os.path.join(ACTIVATIONS_DIR, ".activations.json")
 # A placeholder (all zeros) means license activation is disabled — trial still works.
 LICENSE_PUBLIC_KEY_B64 = os.environ.get(
     "NETGUARD_LICENSE_PUBKEY",
-    "qZ3Me9HcO3W0rHANv97FEQMAhDdRA7GvX+iMqX2j/rQ="
+    "XO8scA3lVtFJTLFGgJEp9RxiEdZstTZkKE+p92DNjMw="
 )
 
 # Feature tiers
@@ -794,12 +859,15 @@ def init_license() -> dict:
             }
 
     # Check trial status
-    if not data.get("trial_start"):
-        # First launch — start trial
-        data["trial_start"] = datetime.now().isoformat()
+    trial_start = _effective_trial_start(data.get("trial_start") or "")
+    if trial_start is None:
+        # Very first launch on this Windows account — start trial
+        now_iso = datetime.now().isoformat()
+        data["trial_start"] = now_iso
         data["machine_id"] = machine_id
         data["tier"] = TIER_TRIAL
         _save_license(data)
+        _trial_anchor_write(now_iso)
         print(f"[LICENSE] Periode d'essai activee ({TRIAL_DAYS} jours)")
         return {
             "tier": TIER_TRIAL,
@@ -810,13 +878,17 @@ def init_license() -> dict:
             "machine_id": machine_id,
         }
 
-    # Existing trial — check if still valid
-    try:
-        trial_start = datetime.fromisoformat(data["trial_start"])
-        elapsed = (datetime.now() - trial_start).days
-        days_left = max(0, TRIAL_DAYS - elapsed)
-    except Exception:
-        days_left = 0
+    # Existing trial — check if still valid. Keep file and registry marker in sync
+    # (file deleted → restored from the marker; marker missing → written).
+    if not data.get("trial_start"):
+        data["trial_start"] = trial_start.isoformat()
+        data.setdefault("machine_id", machine_id)
+        data.setdefault("tier", TIER_TRIAL)
+        _save_license(data)
+    if not _trial_anchor_read():
+        _trial_anchor_write(trial_start.isoformat())
+    elapsed = (datetime.now() - trial_start).days
+    days_left = max(0, min(TRIAL_DAYS, TRIAL_DAYS - elapsed))
 
     if days_left > 0:
         return {

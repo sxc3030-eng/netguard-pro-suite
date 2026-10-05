@@ -2372,6 +2372,54 @@ function ngShowEngine(msg){
   b.title = tip;
   b.style.display = text ? '' : 'none';
 }
+// ── Licence: trial countdown, end-of-trial bar, purchase and activation ─────
+let _ngLicLast = '';
+function ngBuy(){ sendCmd({cmd:'open_purchase'}); }
+function ngEnterKey(){
+  const k = (prompt('Collez votre clé de licence NetGuard AI (elle commence par NGPRO-) :') || '').trim();
+  if (!k) return;
+  sendCmd({cmd:'license_activate', key: k});
+}
+function ngLicenceUi(msg){
+  if (!msg) return;
+  if (msg.type === 'license_required') {
+    showToast(msg.error || 'Cette fonction demande une licence NetGuard AI.', 'var(--amber)');
+    return;
+  }
+  if (msg.type === 'license_activated') {
+    if (msg.ok) { showToast('Licence activée. Merci !', 'var(--green)'); sendCmd({cmd:'get_state'}); }
+    else showToast('Activation refusée : ' + (msg.error || 'clé invalide'), 'var(--red)');
+    return;
+  }
+  if (msg.type !== 'state') return;
+  const sig = [msg.license_tier, msg.license_trial, msg.license_days_left, msg.license_locked].join('|');
+  if (sig === _ngLicLast) return;
+  _ngLicLast = sig;
+  let bar = document.getElementById('ng-licence-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'ng-licence-bar';
+    bar.style.cssText = 'display:none;align-items:center;gap:12px;padding:8px 16px;font-size:12px;border-bottom:1px solid var(--border2,#333);flex-wrap:wrap';
+    const txt = document.createElement('span'); txt.id = 'ng-licence-text'; txt.style.flex = '1';
+    const buy = document.createElement('button'); buy.className = 'btn btn-blue'; buy.textContent = 'Acheter une licence'; buy.onclick = ngBuy;
+    const key = document.createElement('button'); key.className = 'btn'; key.textContent = "J'ai une clé"; key.onclick = ngEnterKey;
+    bar.appendChild(txt); bar.appendChild(buy); bar.appendChild(key);
+    document.body.insertBefore(bar, document.body.firstChild);
+  }
+  const txt = document.getElementById('ng-licence-text');
+  if (msg.license_locked) {
+    bar.style.display = 'flex';
+    bar.style.background = 'rgba(255,77,106,.12)';
+    txt.textContent = "Période d'essai terminée. La surveillance et la carte restent actives ; le blocage, l'assistant IA et les alertes demandent une licence.";
+  } else if (msg.license_trial) {
+    bar.style.display = 'flex';
+    bar.style.background = 'rgba(77,159,255,.08)';
+    const d = msg.license_days_left;
+    txt.textContent = "Version d'essai : " + d + (d > 1 ? ' jours restants.' : ' jour restant.');
+  } else {
+    bar.style.display = 'none';
+  }
+}
 function getNgToken() {
   // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
   try {
@@ -2461,6 +2509,7 @@ window.addEventListener('pywebviewready', function() {
 function handleMsg(msg) {
   ngRememberGeoOnline(msg);
   ngShowEngine(msg);
+  ngLicenceUi(msg);
   if (msg.type === 'state' && !paused) {
     lastState = msg;
     render(msg);
