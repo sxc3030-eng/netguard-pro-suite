@@ -2432,16 +2432,15 @@ function getNgToken() {
   } catch(_) {}
   let t = '';
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
-  if (!t || t.length < 32) {
-    t = (prompt('NetGuard auth token required.\nOpen .netguard_token in the install dir and paste its content:') || '').trim();
-    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
-    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
-  }
+  // Never ask the user for the token: the native window hands it over (pywebviewready below).
+  if (!t || t.length < 32) { window._ngNoToken = true; return ''; }
+  window._ngNoToken = false;
   return t;
 }
 let ngAuthed = false;
 
 function connectWS() {
+  if (nativeMode) return;
   ws = new WebSocket(WS_URL);
   ngAuthed = false;
   ws.onopen = () => {
@@ -2456,7 +2455,7 @@ function connectWS() {
     document.getElementById('dot').classList.add('offline');
     document.getElementById('conn-status').textContent = t('status_disconnected');
     document.getElementById('conn-status').style.color = 'var(--red)';
-    clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000);
+    clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, 3000);
   };
   ws.onerror = () => {};
   ws.onmessage = e => {
@@ -2503,6 +2502,14 @@ function sendCmd(obj) {
 // Listen for pywebview ready event
 window.addEventListener('pywebviewready', function() {
   nativeMode = true;
+  clearTimeout(window._ngReconnectTimer);
+  try { if (ws) ws.close(); } catch(_) {}
+  // Store the session token so the pages opened from here (map, history, panels) connect on their own.
+  try {
+    window.pywebview.api.get_ws_token().then(function(tok) {
+      if (tok && tok.length >= 32) { try { localStorage.setItem('ng_ws_token', tok); } catch(_) {} }
+    }).catch(function(){});
+  } catch(_) {}
   initConnection();
 });
 

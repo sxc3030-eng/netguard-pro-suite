@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### 2026-10-05 — 4.2.2 : plus de demande de jeton à l'ouverture
+
+- La fenêtre ne demande plus jamais de coller le jeton d'authentification : l'application le transmet elle-même au tableau de bord, puis aux pages ouvertes depuis celui-ci (carte, historique, panneaux, réseau).
+
 ### 2026-10-05 — 4.2.1 : fin d'essai et licence payante (branche `licence-stripe`)
 
 - Après les 30 jours d'essai, la surveillance et la carte restent actives ; le blocage (manuel, automatique, par pays), l'assistant IA et les alertes externes demandent une licence. Le déblocage n'est jamais verrouillé.

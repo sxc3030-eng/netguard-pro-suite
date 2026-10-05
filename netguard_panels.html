@@ -330,11 +330,9 @@ function getNgToken() {
   } catch(_) {}
   let t = '';
   try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
-  if (!t || t.length < 32) {
-    t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
-    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
-    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
-  }
+  // Never ask the user for the token: the main window stores it for this page.
+  if (!t || t.length < 32) { window._ngNoToken = true; return ''; }
+  window._ngNoToken = false;
   return t;
 }
 let ngAuthed = false;
