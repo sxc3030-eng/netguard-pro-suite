@@ -34,6 +34,7 @@ def v6_payload(pid, size, daddr, saddr, dport, sport):
             + socket.inet_pton(socket.AF_INET6, saddr) + struct.pack(">HH", dport, sport) + b"\x00" * 12)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows ABI: ctypes.wintypes sizes differ elsewhere")
 class TestEtwStructs:
     @pytest.mark.skipif(struct.calcsize("P") != 8, reason="x64 layout")
     def test_sizes_match_windows_sdk(self):
