@@ -2,7 +2,7 @@
 NetGuard AI - Moteur de surveillance réseau
 Capture, analyse et bloque les paquets en temps réel
 Auteur: NetGuard AI
-Version: 4.2.0
+Version: 4.2.1
 Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
 
@@ -89,6 +89,47 @@ except Exception:
         LicenseManager = None
         LicenseSeatExhaustedError = Exception
         LicenseError = Exception
+
+# ── Licence gate ─────────────────────────────────────────────────────────
+# During the 30-day trial and with a licence everything is available. After the
+# trial, monitoring and the map keep working; blocking, the AI assistant and
+# external alerts need a licence. Unblocking is NEVER gated (no user is trapped).
+_PAID_COMMANDS = frozenset({
+    "block_ip", "quarantine_ip", "isolate_device", "set_geo_countries",
+    "set_discord_webhook", "set_telegram", "test_discord", "test_telegram",
+})
+_LICENSE_REFRESHED = 0.0
+
+
+def _license_refresh(force: bool = False) -> None:
+    """Re-read the licence state at most every 10 minutes (a session can cross day 30)."""
+    global _LICENSE_REFRESHED
+    if _LICENSE_SKIP:
+        return
+    now = time.time()
+    if not force and now - _LICENSE_REFRESHED < 600:
+        return
+    _LICENSE_REFRESHED = now
+    try:
+        from license_manager import init_license as _init
+        LICENSE.update(_init())
+    except Exception:
+        pass
+
+
+def license_locked() -> bool:
+    """True when the trial is over and no licence is active."""
+    _license_refresh()
+    return bool(LICENSE.get("expired")) and LICENSE.get("tier") not in ("pro", "enterprise")
+
+
+def purchase_url() -> str:
+    try:
+        from license_manager import PURCHASE_URL
+        return PURCHASE_URL
+    except Exception:
+        return "https://archipelonline.com/programmes/netguard-ai/"
+
 
 # Fix pythonw (no console) — redirect None stdout/stderr to devnull
 if sys.stdout is None:
@@ -473,8 +514,8 @@ GEO_IP_RANGES = {
            "178.140.0.0/14","185.71.76.0/22","193.232.0.0/14","194.8.0.0/15","195.2.0.0/16"],
     "CN": ["1.0.1.0/24","1.0.2.0/23","27.0.0.0/13","36.0.0.0/11","39.0.0.0/8",
            "42.0.0.0/8","49.0.0.0/8","58.0.0.0/7","60.0.0.0/8","61.0.0.0/8",
-           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.2.0.0/8",
-           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.2.0.0/7","163.0.0.0/8",
+           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.2.1.0/8",
+           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.2.1.0/7","163.0.0.0/8",
            "171.0.0.0/8","175.0.0.0/8","180.0.0.0/6","182.0.0.0/7","183.0.0.0/8"],
     "KP": ["175.45.176.0/22","210.52.109.0/24"],
     "IR": ["2.144.0.0/13","5.22.0.0/15","5.52.0.0/14","31.2.128.0/17","37.98.128.0/17",
@@ -482,7 +523,7 @@ GEO_IP_RANGES = {
            "82.99.192.0/18","85.133.0.0/16","87.107.0.0/16","89.32.0.0/14","91.98.0.0/15",
            "94.182.0.0/15","95.38.0.0/15","109.120.128.0/17","176.65.192.0/18",
            "188.136.0.0/13","194.225.0.0/16","195.146.32.0/19"],
-    "KR": ["1.16.0.0/12","1.176.0.0/12","14.2.0.0/11","27.96.0.0/14","49.142.0.0/17",
+    "KR": ["1.16.0.0/12","1.176.0.0/12","14.2.1.0/11","27.96.0.0/14","49.142.0.0/17",
            "58.120.0.0/13","59.0.0.0/11","61.32.0.0/13","61.40.0.0/13","112.144.0.0/12",
            "119.64.0.0/11","121.128.0.0/11","122.32.0.0/11","125.128.0.0/11",
            "175.192.0.0/11","203.226.0.0/15","210.94.0.0/15","211.36.0.0/14"],
@@ -491,10 +532,10 @@ GEO_IP_RANGES = {
     "IN": ["1.6.0.0/15","14.96.0.0/11","27.4.0.0/14","43.224.0.0/11","45.112.0.0/12",
            "49.32.0.0/12","59.88.0.0/13","103.0.0.0/8","106.64.0.0/10","115.240.0.0/13",
            "117.192.0.0/11","119.224.0.0/11","122.160.0.0/11","180.64.0.0/12","182.64.0.0/10"],
-    "US": ["3.0.0.0/8","4.2.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
-           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.2.0.0/8",
-           "34.2.0.0/8","35.0.0.0/8","44.2.0.0/8","45.0.0.0/8","52.0.0.0/8",
-           "54.2.0.0/8","64.2.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
+    "US": ["3.0.0.0/8","4.2.1.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
+           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.2.1.0/8",
+           "34.2.1.0/8","35.0.0.0/8","44.2.1.0/8","45.0.0.0/8","52.0.0.0/8",
+           "54.2.1.0/8","64.2.1.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
     "DE": ["5.1.0.0/17","46.4.0.0/14","78.42.0.0/15","80.154.0.0/15","81.169.0.0/16",
            "82.113.0.0/16","84.44.0.0/14","85.14.0.0/15","87.77.0.0/16","89.0.0.0/16",
            "91.65.0.0/16","94.130.0.0/15","213.160.0.0/14"],
@@ -1686,7 +1727,7 @@ def backup_create(name: str = "", include: list = None) -> dict:
     backup_path = os.path.join(BACKUP_DIR, f"{backup_name}.json")
 
     backup_data = {
-        "version": "4.2.0",
+        "version": "4.2.1",
         "timestamp": datetime.now().isoformat(),
         "name": backup_name,
     }
@@ -2373,6 +2414,8 @@ def block_ip_os(ip: str, reason: str, manual: bool = False):
     if not _validate_ip(ip):
         return
     if not manual:
+        if license_locked():
+            return                       # automatic blocking is a licensed feature
         if is_private(ip) or is_whitelisted(ip):
             log.info(f"[BLOCK] ignoré (privée/liste blanche): {ip} — {reason}")
             return
@@ -3036,6 +3079,8 @@ def _send_telegram_alert(threat: dict):
 
 def dispatch_alert(threat: dict):
     """Point unique d'envoi d'alertes vers Discord/Telegram"""
+    if license_locked():
+        return                           # external alerts are a licensed feature
     sev_order = {"low": 0, "med": 1, "high": 2, "critical": 3}
     threat_sev = sev_order.get(threat.get("severity", ""), 0)
     if CFG.discord_enabled:
@@ -3869,6 +3914,8 @@ def build_state_message() -> dict:
             "license_days_left":  LICENSE.get("trial_days_left", 0),
             "license_expired":    LICENSE.get("expired", False),
             "license_banner":     get_trial_banner(),
+            "license_locked":     license_locked(),
+            "purchase_url":       purchase_url(),
         }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4157,6 +4204,37 @@ async def handle_ws_command(ws, msg: dict):
         await ws.send(json.dumps({"type": "error", "error": "message invalide"}))
         return
     cmd = msg.get("cmd")
+
+    # ── Licence ───────────────────────────────────────────────────────────
+    if cmd in _PAID_COMMANDS and license_locked():
+        await ws.send(json.dumps({
+            "type": "license_required", "cmd": cmd, "purchase_url": purchase_url(),
+            "error": "Période d'essai terminée : cette fonction demande une licence NetGuard AI.",
+        }))
+        return
+    if cmd == "license_activate":
+        key = msg.get("key")
+        if not isinstance(key, str) or len(key) > 4096:
+            await ws.send(json.dumps({"type": "license_activated", "ok": False, "error": "clé invalide"}))
+            return
+        try:
+            from license_manager import activate_license
+            res = activate_license(key.strip())
+        except Exception as e:
+            res = {"ok": False, "error": f"activation impossible: {type(e).__name__}"}
+        _license_refresh(force=True)
+        await ws.send(json.dumps({"type": "license_activated", "ok": bool(res.get("ok")),
+                                  "error": res.get("error", ""), "tier": res.get("tier", ""),
+                                  "message": res.get("message", "")}))
+        return
+    if cmd == "open_purchase":
+        try:
+            import webbrowser as _wb
+            _wb.open(purchase_url())
+        except Exception:
+            pass
+        await ws.send(json.dumps({"type": "purchase_opened", "url": purchase_url()}))
+        return
 
     if cmd == "get_state":
         await ws.send(json.dumps(build_state_message()))
@@ -5804,7 +5882,7 @@ def main_webview():
     try:
         print("""
 +--------------------------------------------------------------+
-|       NetGuard AI v4.2.0 -- Fenetre native (pywebview)      |
+|       NetGuard AI v4.2.1 -- Fenetre native (pywebview)      |
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5813,7 +5891,7 @@ def main_webview():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard AI v4.2.0] Demarrage (pywebview)...")
+        print("[NetGuard AI v4.2.1] Demarrage (pywebview)...")
 
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
 
@@ -5869,7 +5947,7 @@ def main_webview():
     dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(
-        "NetGuard AI v4.2.0",
+        "NetGuard AI v4.2.1",
         dashboard_path,
         js_api=api,
         width=1360,
@@ -5912,7 +5990,7 @@ def main():
     try:
         print(f"""
 +--------------------------------------------------------------+
-|       NetGuard AI v4.2.0 -- Mode {mode_label:<24}|
+|       NetGuard AI v4.2.1 -- Mode {mode_label:<24}|
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5921,7 +5999,7 @@ def main():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard AI v4.2.0] Demarrage...")
+        print("[NetGuard AI v4.2.1] Demarrage...")
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
     try:
         asyncio.run(main_async(interface))

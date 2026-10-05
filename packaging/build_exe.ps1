@@ -15,7 +15,7 @@
   powershell -ExecutionPolicy Bypass -File packaging\build_exe.ps1 -NoUac -SkipInstaller
 #>
 param(
-  [string]$Version = "4.2.0",
+  [string]$Version = "4.2.1",
   [switch]$NoUac,
   [switch]$SkipInstaller,
   [string]$Python = "python"

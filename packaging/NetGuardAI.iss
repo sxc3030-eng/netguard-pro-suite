@@ -2,7 +2,7 @@
 ; Construit par packaging\build_exe.ps1 : ISCC /DAppVersion=… /DSourceDir=… /DOutputDir=… NetGuardAI.iss
 
 #ifndef AppVersion
-  #define AppVersion "4.2.0"
+  #define AppVersion "4.2.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\dist\NetGuardAI"

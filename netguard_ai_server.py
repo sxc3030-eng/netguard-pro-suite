@@ -424,6 +424,30 @@ def _ws_send_sync(payload: dict, timeout: float = 5.0) -> dict:
     return asyncio.run(_go())
 
 
+_LICENSE_CACHE = {"ts": 0.0, "locked": False, "url": ""}
+
+
+def _license_locked() -> tuple[bool, str]:
+    """(trial over and no licence, purchase URL). Cached 60 s; never raises.
+    Store builds are licensed by the Store and are never locked here."""
+    import time as _time
+    now = _time.time()
+    if now - _LICENSE_CACHE["ts"] < 60:
+        return _LICENSE_CACHE["locked"], _LICENSE_CACHE["url"]
+    locked, url = False, ""
+    try:
+        from netguard_paths import is_store_build
+        if not is_store_build():
+            import license_manager as _lm
+            st = _lm.init_license()
+            locked = bool(st.get("expired")) and st.get("tier") not in ("pro", "enterprise")
+            url = getattr(_lm, "PURCHASE_URL", "")
+    except Exception:
+        locked = False
+    _LICENSE_CACHE.update(ts=now, locked=locked, url=url)
+    return locked, url
+
+
 class _RequestAborted(Exception):
     """Raised after a response was already sent (e.g. 413) to stop the handler."""
 
@@ -1342,6 +1366,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._json(404, {"ok": False, "error": "not_found"})
         if not self._authorized():
             return
+        # The assistant is a licensed feature once the 30-day trial is over
+        # (settings stay reachable so a key can still be removed).
+        if self.path != "/api/settings":
+            locked, url = _license_locked()
+            if locked:
+                return self._json(402, {
+                    "ok": False, "error": "license_required", "purchase_url": url,
+                    "reply": "Période d'essai terminée : l'assistant demande une licence NetGuard AI.",
+                })
         if self.path == "/api/settings":
             payload = self._read_json()
             settings = _load_settings()
