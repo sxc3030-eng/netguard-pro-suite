@@ -1,8 +1,9 @@
 # NetGuard / Argus / GeniA / Vinom suite — runtime requirements.
 # Pinned with `>=` only; concrete versions resolved at install time.
 
-# Core network engine
-scapy>=2.5.0
+# Core network engine: none to install — the ETW engine uses Windows itself (ctypes).
+# scapy + the Npcap driver are only needed for the optional expert engine:
+#   pip install -r requirements-expert.txt
 websockets>=14.0      # <14: process_request(path, headers) signature made the Origin check a silent no-op
 
 # Crypto (vault, backups, license manager)

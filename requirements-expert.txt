@@ -1,0 +1,3 @@
+# Optional "expert" capture engine (packet payloads: DPI, IDS rules, JA3, pcap).
+# Also install the Npcap driver from https://npcap.com (Windows). scapy is GPL-2.0-only.
+scapy>=2.5.0

@@ -2,7 +2,7 @@
 NetGuard AI - Moteur de surveillance réseau
 Capture, analyse et bloque les paquets en temps réel
 Auteur: NetGuard AI
-Version: 4.1.0
+Version: 4.2.0
 Usage: python netguard.py [--interface eth0] [--port 8765] [--no-block]
 """
 
@@ -216,6 +216,9 @@ class Config:
     npcap_kill_rogue:       bool  = False
     # Honeypot listeners bind address ("0.0.0.0" = every interface, or the LAN IP only)
     honeypot_bind:          str   = "0.0.0.0"
+    # Capture engine: auto | etw (Windows built-in, admin, no driver) | poll (no admin)
+    # | npcap (expert mode: packet payloads, needs the Npcap driver + scapy)
+    capture_engine:         str   = "auto"
     auto_forensic_severity: str   = "critical"
     # v3.0 — WireGuard VPN
     wg_enabled:         bool  = False
@@ -470,8 +473,8 @@ GEO_IP_RANGES = {
            "178.140.0.0/14","185.71.76.0/22","193.232.0.0/14","194.8.0.0/15","195.2.0.0/16"],
     "CN": ["1.0.1.0/24","1.0.2.0/23","27.0.0.0/13","36.0.0.0/11","39.0.0.0/8",
            "42.0.0.0/8","49.0.0.0/8","58.0.0.0/7","60.0.0.0/8","61.0.0.0/8",
-           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.1.0.0/8",
-           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.1.0.0/7","163.0.0.0/8",
+           "101.0.0.0/8","106.0.0.0/8","110.0.0.0/7","112.0.0.0/7","114.2.0.0/8",
+           "115.0.0.0/8","116.0.0.0/6","120.0.0.0/6","124.2.0.0/7","163.0.0.0/8",
            "171.0.0.0/8","175.0.0.0/8","180.0.0.0/6","182.0.0.0/7","183.0.0.0/8"],
     "KP": ["175.45.176.0/22","210.52.109.0/24"],
     "IR": ["2.144.0.0/13","5.22.0.0/15","5.52.0.0/14","31.2.128.0/17","37.98.128.0/17",
@@ -479,7 +482,7 @@ GEO_IP_RANGES = {
            "82.99.192.0/18","85.133.0.0/16","87.107.0.0/16","89.32.0.0/14","91.98.0.0/15",
            "94.182.0.0/15","95.38.0.0/15","109.120.128.0/17","176.65.192.0/18",
            "188.136.0.0/13","194.225.0.0/16","195.146.32.0/19"],
-    "KR": ["1.16.0.0/12","1.176.0.0/12","14.1.0.0/11","27.96.0.0/14","49.142.0.0/17",
+    "KR": ["1.16.0.0/12","1.176.0.0/12","14.2.0.0/11","27.96.0.0/14","49.142.0.0/17",
            "58.120.0.0/13","59.0.0.0/11","61.32.0.0/13","61.40.0.0/13","112.144.0.0/12",
            "119.64.0.0/11","121.128.0.0/11","122.32.0.0/11","125.128.0.0/11",
            "175.192.0.0/11","203.226.0.0/15","210.94.0.0/15","211.36.0.0/14"],
@@ -488,10 +491,10 @@ GEO_IP_RANGES = {
     "IN": ["1.6.0.0/15","14.96.0.0/11","27.4.0.0/14","43.224.0.0/11","45.112.0.0/12",
            "49.32.0.0/12","59.88.0.0/13","103.0.0.0/8","106.64.0.0/10","115.240.0.0/13",
            "117.192.0.0/11","119.224.0.0/11","122.160.0.0/11","180.64.0.0/12","182.64.0.0/10"],
-    "US": ["3.0.0.0/8","4.1.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
-           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.1.0.0/8",
-           "34.1.0.0/8","35.0.0.0/8","44.1.0.0/8","45.0.0.0/8","52.0.0.0/8",
-           "54.1.0.0/8","64.1.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
+    "US": ["3.0.0.0/8","4.2.0.0/8","8.0.0.0/8","12.0.0.0/8","13.0.0.0/8",
+           "15.0.0.0/8","17.0.0.0/8","18.0.0.0/8","23.0.0.0/8","24.2.0.0/8",
+           "34.2.0.0/8","35.0.0.0/8","44.2.0.0/8","45.0.0.0/8","52.0.0.0/8",
+           "54.2.0.0/8","64.2.0.0/8","65.0.0.0/8","66.0.0.0/8","67.0.0.0/8"],
     "DE": ["5.1.0.0/17","46.4.0.0/14","78.42.0.0/15","80.154.0.0/15","81.169.0.0/16",
            "82.113.0.0/16","84.44.0.0/14","85.14.0.0/15","87.77.0.0/16","89.0.0.0/16",
            "91.65.0.0/16","94.130.0.0/15","213.160.0.0/14"],
@@ -1106,6 +1109,8 @@ class NetState:
         self.outbound_seen         = {}   # remote ip -> ts of our last packet TO it
         self.block_failures        = 0    # netsh/iptables returned non-zero (no admin?)
         self.capture_error         = ""   # why packet capture is not running (shown in UI)
+        self.capture_engine        = ""   # etw | poll | npcap (set by start_capture_engine)
+        self.capture_caps          = ()   # what the running engine can see
         self.is_admin              = False
         self.dpi_alerts            = deque(maxlen=200)
         self.suricata_alerts       = deque(maxlen=200)
@@ -1681,7 +1686,7 @@ def backup_create(name: str = "", include: list = None) -> dict:
     backup_path = os.path.join(BACKUP_DIR, f"{backup_name}.json")
 
     backup_data = {
-        "version": "4.1.0",
+        "version": "4.2.0",
         "timestamp": datetime.now().isoformat(),
         "name": backup_name,
     }
@@ -2084,6 +2089,9 @@ def _record_open_locked() -> str:
     return path
 
 def record_start():
+    if STATE.capture_engine and "pcap" not in STATE.capture_caps:
+        log.warning("[RECORD] enregistrement pcap indisponible avec le moteur %s (mode expert Npcap requis)", STATE.capture_engine)
+        return False
     with STATE.record_lock:
         if STATE.record_active:
             return False
@@ -2172,7 +2180,14 @@ def auto_block_check(src_ip: str, established: bool = False):
             block_ip_os(src_ip, f"Auto-block: {STATE.ip_hit_counter[src_ip]} hits")
             add_threat(src_ip, "Auto-block", f"Seuil de {CFG.auto_block_hits} hits atteint", "high")
 
+_LOCAL_IPS: set = set()   # this machine's own addresses (refreshed by the capture engine)
+
 def is_private(ip: str) -> bool:
+    # A machine with a public IPv4/IPv6 address on its interface (no NAT, or
+    # global IPv6) must never treat its OWN traffic as coming from an external
+    # host — it used to score, geo-locate and even auto-block itself.
+    if ip in _LOCAL_IPS:
+        return True
     try:
         a = ipaddress.ip_address(ip)
         return a.is_private or a.is_loopback or a.is_link_local
@@ -3181,6 +3196,8 @@ def _wg_generate_peer_config(name: str = "client") -> str:
     )
 
 def analyze_packet(pkt):
+    """scapy adapter (Npcap / libpcap engine): extract the fields, then run the
+    engine-independent pipeline. Kept thin on purpose."""
     if not HAS_SCAPY:
         return
 
@@ -3200,15 +3217,6 @@ def analyze_packet(pkt):
     src_port = 0
     flags    = ""
     is_syn   = False
-
-    # v3.0 — Accumulate anomaly data (under _ANOMALY_LOCK: anomaly_flush swaps the dict)
-    with _ANOMALY_LOCK:
-        acc = _anomaly_accum.get(src_ip)
-        if acc is None:
-            acc = _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
-        acc["pkts"] += 1
-        acc["bytes"] += pkt_len
-
     if pkt.haslayer(TCP):
         dst_port = pkt[TCP].dport
         src_port = pkt[TCP].sport
@@ -3217,6 +3225,41 @@ def analyze_packet(pkt):
     elif pkt.haslayer(UDP):
         dst_port = pkt[UDP].dport
         src_port = pkt[UDP].sport
+
+    payload = bytes(pkt[Raw].load) if pkt.haslayer(Raw) else b""
+    is_dns = bool(pkt.haslayer(DNS))
+    dns_qname = ""
+    if is_dns:
+        try:
+            if pkt[DNS].qr == 0 and pkt[DNS].qd is not None:
+                dns_qname = _safe_str(pkt[DNS].qd.qname.decode(errors="replace").rstrip("."), 253)
+        except Exception:
+            dns_qname = ""
+    raw_frame = bytes(pkt) if STATE.record_active else None
+
+    process_observation(src_ip, dst_ip, src_port, dst_port, proto, pkt_len,
+                        flags=flags, is_syn=is_syn, payload=payload,
+                        is_dns=is_dns, dns_qname=dns_qname, raw_frame=raw_frame)
+
+
+def process_observation(src_ip: str, dst_ip: str, src_port: int, dst_port: int,
+                        proto: str, pkt_len: int, *, flags: str = "", is_syn: bool = False,
+                        payload: bytes = b"", is_dns: bool = False, dns_qname: str = "",
+                        raw_frame: bytes = None, process_label: str = ""):
+    """Engine-independent detection pipeline.
+
+    One call per observed unit of traffic: a packet (Npcap engine) or a flow
+    event (ETW engine: send / receive / connect / accept, no payload). Everything
+    that needs packet contents (DPI, IDS rules, JA3, payload entropy, pcap
+    recording) simply does nothing when `payload` / `raw_frame` are empty.
+    """
+    # v3.0 — Accumulate anomaly data (under _ANOMALY_LOCK: anomaly_flush swaps the dict)
+    with _ANOMALY_LOCK:
+        acc = _anomaly_accum.get(src_ip)
+        if acc is None:
+            acc = _anomaly_accum[src_ip] = {"pkts": 0, "bytes": 0, "ports": set(), "protos": defaultdict(int)}
+        acc["pkts"] += 1
+        acc["bytes"] += pkt_len
 
     # v3.0 — Behavioral profiling
     if not is_private(src_ip):
@@ -3231,9 +3274,9 @@ def analyze_packet(pkt):
             if acc is not None:
                 acc["protos"][proto] += 1
 
-    if STATE.record_active:
+    if STATE.record_active and raw_frame is not None:
         try:
-            record_write_packet(bytes(pkt))
+            record_write_packet(raw_frame)
         except Exception as e:
             # Disk full / file vanished: stop cleanly instead of pretending to record
             log.error(f"[RECORD] écriture impossible, arrêt de l'enregistrement: {e}")
@@ -3290,17 +3333,12 @@ def analyze_packet(pkt):
                 _schedule_intel_lookup(src_ip)
 
         # ── DNS Blackhole ───────────────────────────────────────────────
-        if RULES.get("detect_malicious_dns", {}).get("enabled", True) and pkt.haslayer("DNS"):
-            try:
-                from scapy.layers.dns import DNS, DNSQR
-                if pkt[DNS].qr == 0 and pkt.haslayer(DNSQR):
-                    queried = _safe_str(pkt[DNSQR].qname.decode(errors="replace").rstrip("."), 253)
-                    if dns_blackhole_check(queried):
-                        decision = "block"
-                        reason   = f"DNS Blackhole: {queried}"
-                        add_threat(src_ip, "DNS Blackhole", f"Requête vers domaine bloqué: {queried}", "high")
-            except Exception:
-                pass
+        if RULES.get("detect_malicious_dns", {}).get("enabled", True) and dns_qname:
+            queried = dns_qname
+            if dns_blackhole_check(queried):
+                decision = "block"
+                reason   = f"DNS Blackhole: {queried}"
+                add_threat(src_ip, "DNS Blackhole", f"Requête vers domaine bloqué: {queried}", "high")
 
         # ── Géoblocage
         if GEO_BLOCKED_COUNTRIES and not is_private(src_ip):
@@ -3345,7 +3383,7 @@ def analyze_packet(pkt):
                         add_threat(src_ip, "SYN Flood", syn_reason, "high", "block_syn_flood")
                         block_ip_os(src_ip, syn_reason)
 
-            if decision == "allow" and pkt.haslayer(DNS):
+            if decision == "allow" and is_dns:
                 dns_reason = detect_dns_tunneling(src_ip)
                 if dns_reason:
                     decision = "warn"
@@ -3353,9 +3391,6 @@ def analyze_packet(pkt):
                     add_threat(src_ip, "DNS Tunneling", dns_reason, "med")
 
         if CFG.dpi_enabled and decision == "allow":
-            payload = b""
-            if pkt.haslayer(Raw):
-                payload = bytes(pkt[Raw].load)
             if payload:
                 for hit in dpi_inspect(src_ip, payload):
                     alert = {
@@ -3372,9 +3407,6 @@ def analyze_packet(pkt):
 
         # ── Suricata IDS ───────────────────────────────────────────────
         if SURICATA_ENABLED and decision == "allow":
-            payload = b""
-            if HAS_SCAPY and pkt.haslayer(Raw):
-                payload = bytes(pkt[Raw].load)
             if payload:
                 for hit in suricata_match(src_ip, payload, proto):
                     alert = {
@@ -3390,22 +3422,21 @@ def analyze_packet(pkt):
                         auto_block_check(src_ip, established)
 
         # v3.0 — JA3 Fingerprinting
-        if CFG.ja3_enabled and pkt.haslayer(Raw):
-            raw = bytes(pkt[Raw].load)
+        if CFG.ja3_enabled and payload:
+            raw = payload
             if len(raw) > 10 and raw[0] == 0x16:
                 ja3_hash = extract_ja3(raw)
                 if ja3_hash:
                     ja3_check(src_ip, ja3_hash)
 
         # v3.0 — Entropy analysis
-        if CFG.entropy_enabled and pkt.haslayer(Raw):
-            entropy_check_payload(src_ip, bytes(pkt[Raw].load), dst_port)
+        if CFG.entropy_enabled and payload:
+            entropy_check_payload(src_ip, payload, dst_port)
 
         # v3.0 — DNS entropy
-        if CFG.entropy_enabled and pkt.haslayer(DNS) and pkt[DNS].qr == 0:
+        if CFG.entropy_enabled and dns_qname:
             try:
-                qname = _safe_str(pkt[DNS].qd.qname.decode(errors="replace").rstrip("."), 253)
-                entropy_check_dns(src_ip, qname)
+                entropy_check_dns(src_ip, dns_qname)
             except Exception:
                 pass
 
@@ -3424,6 +3455,8 @@ def analyze_packet(pkt):
         # Geo lookup for ANY new external IP: single worker + bounded queue
         if not is_private(src_ip):
             _schedule_geo_lookup(src_ip)
+        elif not is_private(dst_ip):
+            _schedule_geo_lookup(dst_ip)     # outbound: locate where the traffic GOES
 
         # Update risk score (only for external IPs — private ones never score)
         if not is_private(src_ip):
@@ -3439,15 +3472,18 @@ def analyze_packet(pkt):
         STATE.ip_last_seen[dst_ip] = _now_s
 
         # Get geo info for packet entry (with guaranteed coords via fallback)
-        geo = _geo_city_cache.get(src_ip, {})
-        country_code = geo.get("country") or get_country(src_ip) or ""
+        # The interesting end is the remote one: the source for inbound traffic,
+        # the destination for outbound traffic (was always the source → "LAN").
+        peer_ip = src_ip if not is_private(src_ip) else (dst_ip if not is_private(dst_ip) else src_ip)
+        geo = _geo_city_cache.get(peer_ip, {})
+        country_code = geo.get("country") or get_country(peer_ip) or ""
         city = geo.get("city", "")
-        lat, lon = _get_ip_coords(src_ip, country_code)
+        lat, lon = _get_ip_coords(peer_ip, country_code)
         location = f"{city}, {GEO_COUNTRY_NAMES.get(country_code, country_code)}" if city else GEO_COUNTRY_NAMES.get(country_code, country_code)
         # Fallback for non-routable IPs (LAN, multicast, link-local, loopback) so the UI shows
         # a readable origin instead of an empty string. Only applied when GeoIP returned nothing.
         if not location:
-            special = _label_special_ip(src_ip)
+            special = _label_special_ip(peer_ip)
             if special:
                 location = special
                 if not country_code:
@@ -3459,7 +3495,7 @@ def analyze_packet(pkt):
         STATE.bytes_per_ip[dst_ip] += pkt_len
         STATE.bytes_per_ip_per_sec[src_ip].append((_now_ms, pkt_len))
         # App identification — which local process owns this connection
-        process_label = process_for_packet(src_ip, src_port, dst_ip, dst_port)
+        process_label = process_label or process_for_packet(src_ip, src_port, dst_ip, dst_port)
         if process_label:
             # Remember which process talks to this remote IP (most useful for non-private IPs)
             non_private = src_ip if not is_private(src_ip) else (dst_ip if not is_private(dst_ip) else "")
@@ -3738,6 +3774,8 @@ def build_state_message() -> dict:
             "geo_online_enabled": CFG.geo_online_enabled,   # pages must honour the same privacy knob
             "block_failures":     STATE.block_failures,
             "data_dir":           DATA_DIR,
+            "capture_engine":     STATE.capture_engine,
+            "capture_capabilities": list(STATE.capture_caps),
             "top_ips":            [_build_top_ip_entry(ip, h) for ip, h in top_ips],
             "dpi_alerts":         list(STATE.dpi_alerts)[:20],
             "suricata_enabled":   SURICATA_ENABLED,
@@ -3773,7 +3811,10 @@ def build_state_message() -> dict:
                 ]
             )(_group_ips_by_process(STATE.process_per_ip)))(),
             # v1.9.0
-            "ip_risk_scores": dict(list(sorted(STATE.ip_risk_scores.items(), key=lambda x: -x[1]))[:20]),
+            # "Suspect" needs more than one weak signal: a hosting/VPN-range address alone
+            # scores 20 and every CDN or cloud server would be listed (ETW sees them all).
+            "ip_risk_scores": dict(list(sorted(((ip, sc) for ip, sc in STATE.ip_risk_scores.items() if sc >= 30),
+                                               key=lambda x: -x[1]))[:20]),
             "ip_intel": {ip: v for ip, v in list(STATE.ip_intel.items())[:50]},
             "attack_by_country": {
                 country: dict(types)
@@ -5218,6 +5259,130 @@ def _capture_failed(msg: str):
         "ip": "", "country": "", "severity": "critical",
     })
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Capture engines (ETW / polling / Npcap) → process_observation
+# ═══════════════════════════════════════════════════════════════════════════
+_CAPTURE_ENGINE = None
+_PROC_LABELS: dict = {}
+_PORT_PROTO = {443: "HTTPS", 80: "HTTP", 22: "SSH", 21: "FTP", 25: "SMTP", 3389: "RDP", 53: "DNS"}
+_LOCAL_IPS_REFRESHED = 0.0
+
+
+def _refresh_local_ips(force: bool = False):
+    """Keep _LOCAL_IPS in sync with the interfaces (Wi-Fi roaming, VPN up/down)."""
+    global _LOCAL_IPS, _LOCAL_IPS_REFRESHED
+    now = time.time()
+    if not force and now - _LOCAL_IPS_REFRESHED < 60:
+        return
+    _LOCAL_IPS_REFRESHED = now
+    try:
+        from capture.etw_engine import local_ip_set
+        ips = local_ip_set()
+        if ips:
+            _LOCAL_IPS = ips
+    except Exception as e:
+        log.debug(f"[CAPTURE] adresses locales: {e}")
+
+
+def _proc_label(pid: int) -> str:
+    """'chrome.exe (1234)' from a pid, cached (ETW gives the owning pid directly)."""
+    if not pid:
+        return ""
+    lbl = _PROC_LABELS.get(pid)
+    if lbl is None:
+        try:
+            import psutil
+            lbl = f"{psutil.Process(pid).name()} ({pid})"
+        except Exception:
+            lbl = "System" if pid == 4 else f"pid {pid}"
+        if len(_PROC_LABELS) > 4096:
+            _PROC_LABELS.clear()
+        _PROC_LABELS[pid] = lbl
+    return lbl
+
+
+def analyze_flow(ev):
+    """Adapter: capture.FlowEvent (ETW / polling engine) → process_observation."""
+    if ev.kind == "disconnect":
+        return
+    if ev.remote_ip in ("127.0.0.1", "::1") or ev.remote_ip.startswith("127."):
+        return                                   # loopback chatter is not network traffic
+    _refresh_local_ips()
+    if ev.inbound:
+        src_ip, src_port, dst_ip, dst_port = ev.remote_ip, ev.remote_port, ev.local_ip, ev.local_port
+    else:
+        src_ip, src_port, dst_ip, dst_port = ev.local_ip, ev.local_port, ev.remote_ip, ev.remote_port
+    proto = _PORT_PROTO.get(ev.remote_port) or _PORT_PROTO.get(ev.local_port) or ev.proto
+    opening = ev.kind in ("connect", "accept")
+    try:
+        label = _proc_label(ev.pid)
+        process_observation(src_ip, dst_ip, src_port, dst_port, proto, int(ev.size),
+                            flags="S" if opening else "", is_syn=opening,
+                            is_dns=(ev.remote_port == 53 or ev.local_port == 53),
+                            process_label=label)
+        # Polling engine only sees the opening of a connection. Mirror an outbound
+        # one as "the remote end talks back" so it shows on the map and in the
+        # per-IP views (ETW provides real receive events instead).
+        if STATE.capture_engine == "poll" and ev.kind == "connect":
+            process_observation(dst_ip, src_ip, dst_port, src_port, proto, 0,
+                                is_dns=(ev.remote_port == 53), process_label=label)
+    except Exception as e:
+        log.debug(f"[CAPTURE] flow analysis error: {e}")
+
+
+def analyze_dns(ev):
+    """Adapter: capture.DnsEvent (ETW DNS-Client provider) → DNS detections."""
+    name = _safe_str(ev.name, 253)
+    if not name:
+        return
+    _refresh_local_ips()
+    src_ip = next((ip for ip in sorted(_LOCAL_IPS) if ip.count(".") == 3 and not ip.startswith("127.")), "127.0.0.1")
+    try:
+        with STATE.lock:
+            if RULES.get("detect_malicious_dns", {}).get("enabled", True) and dns_blackhole_check(name):
+                who = _proc_label(ev.pid)
+                add_threat(src_ip, "DNS Blackhole",
+                           f"Requête vers domaine bloqué: {name}" + (f" par {who}" if who else ""), "high")
+            if CFG.entropy_enabled:
+                entropy_check_dns(src_ip, name)
+    except Exception as e:
+        log.debug(f"[CAPTURE] dns analysis error: {e}")
+
+
+def _capture_totals(rx: int, tx: int):
+    """Polling engine: global byte rates from the interface counters."""
+    with STATE.lock:
+        STATE.bytes_in += int(rx)
+        STATE.bytes_out += int(tx)
+
+
+def start_capture_engine(interface):
+    """Pick and start the capture engine (ETW by default on Windows — nothing to install)."""
+    global _CAPTURE_ENGINE
+    from capture import ENGINE_CAPABILITIES, select_engine_name
+    name = select_engine_name(
+        CFG.capture_engine, is_windows=IS_WINDOWS, is_admin=_is_admin(),
+        has_scapy=HAS_SCAPY, npcap_installed=_npcap_installed(), store_build=is_store_build())
+    STATE.capture_engine = name
+    STATE.capture_caps = ENGINE_CAPABILITIES.get(name, ())
+    _refresh_local_ips(force=True)
+    log.info(f"[CAPTURE] moteur: {name} — capacités: {', '.join(STATE.capture_caps)}")
+    if name == "npcap":
+        threading.Thread(target=start_capture, args=(interface,), name="capture-npcap", daemon=True).start()
+        return name
+    if name == "etw":
+        from capture.etw_engine import EtwEngine
+        _CAPTURE_ENGINE = EtwEngine(on_flow=analyze_flow, on_dns=analyze_dns, on_error=_capture_failed)
+    else:
+        from capture.poll_engine import PollEngine
+        _CAPTURE_ENGINE = PollEngine(on_flow=analyze_flow, on_error=_capture_failed, on_totals=_capture_totals)
+        if IS_WINDOWS and not _is_admin():
+            log.warning("[CAPTURE] mode limité (sans administrateur) : connexions visibles, pas d'octets par flux. "
+                        "Relance en tant qu'administrateur pour le moteur ETW complet.")
+    _CAPTURE_ENGINE.start()
+    return name
+
+
 def start_capture(interface: str):
     if not HAS_SCAPY:
         _capture_failed("scapy non disponible (pip install scapy) ; sur Windows installe aussi Npcap : https://npcap.com/#download")
@@ -5243,6 +5408,11 @@ def start_capture(interface: str):
 def _shutdown():
     """atexit: flush the pcap writer and persist settings on every exit path
     (window close, tray Quit, SIGTERM), not only on Ctrl+C."""
+    try:
+        if _CAPTURE_ENGINE is not None:
+            _CAPTURE_ENGINE.stop()      # ETW: closes the trace session
+    except Exception:
+        pass
     try:
         if STATE.record_active:
             record_stop()
@@ -5276,7 +5446,7 @@ def remove_all_firewall_rules() -> int:
     return count
 
 async def main_async(interface: str):
-    threading.Thread(target=start_capture, args=(interface,), daemon=True).start()
+    start_capture_engine(interface)
     # v3.0 — Start threat feeds
     if CFG.threat_feeds_enabled:
         _schedule_feed_refresh()
@@ -5483,6 +5653,8 @@ def load_settings():
         CFG.geo_online_enabled = bool(s.get("geo_online_enabled", CFG.geo_online_enabled))
         CFG.npcap_kill_rogue   = bool(s.get("npcap_kill_rogue", False))
         CFG.honeypot_bind      = s.get("honeypot_bind", "0.0.0.0") if _validate_ip(s.get("honeypot_bind", "0.0.0.0")) else "0.0.0.0"
+        _eng = s.get("capture_engine", "auto")
+        CFG.capture_engine     = _eng if _eng in ("auto", "etw", "poll", "npcap") else "auto"
         # AbuseIPDB key was never resolved before (the lookup path was dead code)
         ABUSEIPDB_API_KEY = (get_secret("netguard.abuseipdb.api_key", "abuseipdb_api_key") or "") if CFG.abuseipdb_enabled else ""
 
@@ -5605,7 +5777,7 @@ def _first_run_checks_gui():
     try:
         import ctypes, webbrowser as _wb
         MB_YESNO, MB_ICONWARNING, IDYES = 0x4, 0x30, 6
-        if not _npcap_installed():
+        if CFG.capture_engine == "npcap" and not _npcap_installed():
             r = ctypes.windll.user32.MessageBoxW(
                 None,
                 "Npcap n'est pas installé : NetGuard AI ne pourra pas capturer le trafic.\n\n"
@@ -5632,7 +5804,7 @@ def main_webview():
     try:
         print("""
 +--------------------------------------------------------------+
-|       NetGuard AI v4.1.0 -- Fenetre native (pywebview)      |
+|       NetGuard AI v4.2.0 -- Fenetre native (pywebview)      |
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5641,12 +5813,12 @@ def main_webview():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard AI v4.1.0] Demarrage (pywebview)...")
+        print("[NetGuard AI v4.2.0] Demarrage (pywebview)...")
 
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
 
     # Start packet capture in background
-    threading.Thread(target=start_capture, args=(interface,), daemon=True).start()
+    start_capture_engine(interface)
 
     # Start threat feeds
     if CFG.threat_feeds_enabled:
@@ -5697,7 +5869,7 @@ def main_webview():
     dashboard_path = resource_path("netguard_dashboard.html")
 
     window = webview.create_window(
-        "NetGuard AI v4.1.0",
+        "NetGuard AI v4.2.0",
         dashboard_path,
         js_api=api,
         width=1360,
@@ -5740,7 +5912,7 @@ def main():
     try:
         print(f"""
 +--------------------------------------------------------------+
-|       NetGuard AI v4.1.0 -- Mode {mode_label:<24}|
+|       NetGuard AI v4.2.0 -- Mode {mode_label:<24}|
 +--------------------------------------------------------------+
 |  IDS - DPI - Honeypot - DNS BH - Scan LAN - GeoBlock        |
 |  Anomaly Detection - JA3 - Entropy - Attack Correlation      |
@@ -5749,7 +5921,7 @@ def main():
 +--------------------------------------------------------------+
 """)
     except UnicodeEncodeError:
-        print("[NetGuard AI v4.1.0] Demarrage...")
+        print("[NetGuard AI v4.2.0] Demarrage...")
     log.info("[MODE] Protection active" if CFG.can_block else "[MODE] Surveillance uniquement")
     try:
         asyncio.run(main_async(interface))

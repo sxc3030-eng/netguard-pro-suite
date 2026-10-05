@@ -2347,6 +2347,31 @@ function initConnection() {
 // Privacy: online geo lookups follow the backend's geo_online_enabled setting (remembered for page load time).
 function ngGeoOnline(){ try { return localStorage.getItem('ng_geo_online') !== '0'; } catch(_) { return true; } }
 function ngRememberGeoOnline(msg){ if (msg && typeof msg.geo_online_enabled === 'boolean') { try { localStorage.setItem('ng_geo_online', msg.geo_online_enabled ? '1' : '0'); } catch(_) {} } }
+// Capture engine badge: tells the user what the running engine can see, and why
+// some panels are empty (no payloads without the Npcap expert engine).
+function ngShowEngine(msg){
+  if (!msg || msg.type !== 'state') return;
+  const st = document.getElementById('conn-status');
+  if (!st || !st.parentNode) return;
+  let b = document.getElementById('ng-engine-badge');
+  if (!b) {
+    b = document.createElement('span');
+    b.id = 'ng-engine-badge';
+    b.style.cssText = 'margin-left:10px;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;border:1px solid var(--border2,#333)';
+    st.parentNode.insertBefore(b, st.nextSibling);
+  }
+  const labels = {
+    etw:   ['Moteur Windows (ETW)', 'var(--green)', 'Flux, octets, processus et DNS en temps reel. Aucun pilote a installer. Inspection du contenu et pcap : mode expert Npcap.'],
+    poll:  ['Mode limite', 'var(--amber)', 'Sans droits administrateur : connexions visibles, pas d octets par flux. Relance NetGuard AI en tant qu administrateur pour le moteur complet.'],
+    npcap: ['Mode expert (Npcap)', 'var(--purple)', 'Capture de paquets : DPI, regles IDS, JA3, enregistrement pcap.']
+  };
+  let [text, color, tip] = labels[msg.capture_engine] || ['', 'var(--text3)', ''];
+  if (msg.capture_error) { text = 'Capture arretee'; color = 'var(--red)'; tip = String(msg.capture_error); }
+  b.textContent = text;
+  b.style.color = color;
+  b.title = tip;
+  b.style.display = text ? '' : 'none';
+}
 function getNgToken() {
   // Argus shell injects the token as ?ng_token=… on the iframe URL — pick that up first.
   try {
@@ -2435,6 +2460,7 @@ window.addEventListener('pywebviewready', function() {
 
 function handleMsg(msg) {
   ngRememberGeoOnline(msg);
+  ngShowEngine(msg);
   if (msg.type === 'state' && !paused) {
     lastState = msg;
     render(msg);
