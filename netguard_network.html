@@ -346,16 +346,16 @@ function getNgToken() {
     const _argusTok = new URLSearchParams(window.location.search).get('ng_token');
     if (_argusTok && _argusTok.length >= 32) {
       try { localStorage.setItem('ng_ws_token', _argusTok); } catch(_) {}
+      window._ngUrlTok = _argusTok;
+      try { const u = new URL(window.location.href); u.searchParams.delete('ng_token'); history.replaceState(null, '', u.toString()); } catch(_) {}
       return _argusTok;
     }
   } catch(_) {}
-  let t = '';
-  try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {}
-  if (!t || t.length < 32) {
-    t = (prompt('Token NetGuard requis.\nOuvre .netguard_token et copie son contenu:') || '').trim();
-    if (t.length >= 32) { localStorage.setItem('ng_ws_token', t); window._ngNoToken = false; }
-    else { localStorage.removeItem('ng_ws_token'); window._ngNoToken = true; return ''; }  // no prompt storm: retry in 60 s
-  }
+  let t = window._ngUrlTok || '';
+  if (!t) { try { t = localStorage.getItem('ng_ws_token') || ''; } catch(_) {} }
+  // Never ask the user for the token: the main window stores it for this page.
+  if (!t || t.length < 32) { window._ngNoToken = true; return ''; }
+  window._ngNoToken = false;
   return t;
 }
 let ngAuthed = false;
@@ -379,7 +379,7 @@ function connectWS() {
         if (msg.type === 'network_info') handleNetworkInfo(msg);
       } catch(_) {}
     };
-    ws.onclose = () => { wsConnected = false; ngAuthed = false; clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, window._ngNoToken ? 60000 : 3000); };
+    ws.onclose = () => { wsConnected = false; ngAuthed = false; clearTimeout(window._ngReconnectTimer); window._ngReconnectTimer = setTimeout(connectWS, 3000); };
   } catch(_) {}
 }
 
